@@ -20,5 +20,16 @@ wheels/
 *.egg
 .idea/
 .vscode/
+.cursor/
 venv/
 env/
+.venv/
+
+# Audio artifacts
+*.wav
+output/
+debug/
+
+# Nix / lock files
+shell.nix
+uv.lock

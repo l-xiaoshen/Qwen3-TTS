@@ -22,20 +22,20 @@ from qwen_tts import Qwen3TTSModel
 
 def main():
     device = "cuda:0"
-    MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign/"
+    MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 
     tts = Qwen3TTSModel.from_pretrained(
         MODEL_PATH,
         device_map=device,
         dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
     )
 
     # -------- Single --------
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_voice_design(
+    wavs, sr = tts.generate_voice_design_single(
         text="哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
         language="Chinese",
         instruct="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
@@ -45,7 +45,7 @@ def main():
     t1 = time.time()
     print(f"[VoiceDesign Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_voice_design_single.wav", wavs[0], sr)
+    sf.write("qwen3_tts_test_voice_design_single.wav", wavs, sr)
 
     # -------- Batch --------
     texts = [

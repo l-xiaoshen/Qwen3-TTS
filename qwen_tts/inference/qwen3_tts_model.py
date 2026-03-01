@@ -51,6 +51,196 @@ class VoiceClonePromptItem:
     ref_text: Optional[str] = None
 
 
+class VoiceDesignSingleStreamer:
+    """
+    Stateful VoiceDesign streamer for single-sample real-time generation.
+
+    A streamer is created once with fixed language/instruct and keeps decoder
+    state across repeated `stream()` calls.
+    """
+
+    def __init__(
+        self,
+        tts_model: "Qwen3TTSModel",
+        language: str,
+        language_id: Optional[int],
+        instruct: str,
+        instruct_ids: Optional[torch.Tensor],
+        non_streaming_mode: bool,
+        generate_kwargs: Dict[str, Any],
+    ) -> None:
+        self._tts_model = tts_model
+        self.language = language
+        self.instruct = instruct
+        self._language_id = language_id
+        self._instruct_ids = instruct_ids
+        self._non_streaming_mode = non_streaming_mode
+        self._closed = False
+        self._text_buffer = ""
+        self._stream_state = None
+        full_ids = tts_model._tokenize_texts(
+            [tts_model._build_assistant_text("")]
+        )[0]
+        # Split into open-ended prefix (<|im_start|>assistant\n, 3 tokens)
+        # and closing suffix (<|im_end|>\n<|im_start|>assistant\n, 5 tokens).
+        # Text tokens are appended to the prefix; the suffix is only joined
+        # when building input_ids for generation.
+        self._cached_input_ids: torch.Tensor = full_ids[:, :3]
+        self._suffix_ids: torch.Tensor = full_ids[:, 3:]
+        self._all_talker_codes: torch.Tensor = torch.empty(
+            (0, tts_model.model.config.talker_config.num_code_groups),
+            dtype=torch.long,
+        )
+        self._emitted_samples: int = 0
+        self.sample_rate: int = tts_model.model.speech_tokenizer.get_output_sample_rate()
+
+        gen = dict(generate_kwargs)
+        gen.pop("max_new_tokens", None)
+        self._generate_kwargs = gen
+
+    def _append_stream_chunk_to_input_ids(self, text_chunk: str) -> None:
+        """Append tokenized text chunk to the open-ended prefix."""
+        chunk_ids = self._tts_model._tokenize_texts([text_chunk])[0]
+        if chunk_ids.shape[1] == 0:
+            return
+        self._cached_input_ids = torch.cat(
+            [self._cached_input_ids, chunk_ids], dim=1,
+        )
+
+    def _generation_input_ids(self) -> torch.Tensor:
+        """Join open prefix+text with the closing suffix for generation."""
+        return torch.cat([self._cached_input_ids, self._suffix_ids], dim=1)
+
+    def _remaining_text_steps(self, input_ids: torch.Tensor, include_eos: bool = False) -> int:
+        """Return the number of text conditioning steps not yet generated.
+
+        The trailing_text_hidden built from input_ids has length:
+          - with eos:    (M - 1) + 1 = M     where M = input_ids.shape[1] - 8
+          - without eos: (M - 1)     = M - 1  where M = input_ids.shape[1] - 8
+        Here (M - 1) is len(input_id[:, 4:-5]) — text tokens excluding the
+        first (consumed during prefill at position 3) and the 5-token suffix.
+        """
+        # 3 prefix + 1 first-text-token-in-prefill + 5 suffix = 9 framing tokens
+        offset = 8 if include_eos else 9
+        text_steps = max(int(input_ids.shape[1]) - offset, 0)
+        current = 0 if self._stream_state is None else max(int(self._stream_state.generation_step), 0)
+        return max(text_steps - current, 0)
+
+    def _run_generation_step(
+        self,
+        input_ids: torch.Tensor,
+        suppress_eos: bool,
+        max_new_tokens: int,
+    ) -> torch.Tensor:
+        if self._stream_state is None:
+            talker_codes, self._stream_state = self._tts_model.model.init_single_voice_design_stream(
+                input_ids=input_ids,
+                instruct_ids=self._instruct_ids,
+                language_id=self._language_id,
+                non_streaming_mode=self._non_streaming_mode,
+                max_new_tokens=max_new_tokens,
+                suppress_eos=suppress_eos,
+                **self._generate_kwargs,
+            )
+            return talker_codes
+
+        if self._stream_state.finished:
+            return torch.empty((0, self._tts_model.model.config.talker_config.num_code_groups), dtype=torch.long)
+
+        talker_codes, self._stream_state = self._tts_model.model.continue_single_voice_design_stream(
+            input_ids=input_ids,
+            stream_state=self._stream_state,
+            non_streaming_mode=self._non_streaming_mode,
+            max_new_tokens=max_new_tokens,
+            suppress_eos=suppress_eos,
+            **self._generate_kwargs,
+        )
+        return talker_codes
+
+    def _decode_new_audio(self, talker_codes: torch.Tensor) -> np.ndarray:
+        if talker_codes.shape[0] == 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        self._all_talker_codes = torch.cat(
+            [self._all_talker_codes.to(talker_codes.device), talker_codes],
+            dim=0,
+        )
+
+        wavs, _ = self._tts_model.model.speech_tokenizer.decode([{"audio_codes": self._all_talker_codes}])
+        full_wav = wavs[0]
+        if self._emitted_samples >= len(full_wav):
+            return np.zeros((0,), dtype=np.float32)
+        out = full_wav[self._emitted_samples:]
+        self._emitted_samples = len(full_wav)
+        return out
+
+    @torch.no_grad()
+    def stream(self, text_chunk: str) -> np.ndarray:
+        """
+        Consume one text chunk (any length) and return newly generated wav samples.
+        """
+        if self._closed:
+            raise RuntimeError("Streamer is closed. Create a new streamer to continue.")
+        if not isinstance(text_chunk, str):
+            raise TypeError(f"text_chunk must be str, got {type(text_chunk)}")
+        if text_chunk == "":
+            return np.zeros((0,), dtype=np.float32)
+        self._text_buffer += text_chunk
+
+        self._append_stream_chunk_to_input_ids(text_chunk)
+        input_ids = self._generation_input_ids()
+        remaining = self._remaining_text_steps(input_ids, include_eos=False)
+        if remaining <= 0:
+            return np.zeros((0,), dtype=np.float32)
+        talker_codes = self._run_generation_step(
+            input_ids=input_ids,
+            suppress_eos=True,
+            max_new_tokens=remaining,
+        )
+        return self._decode_new_audio(talker_codes)
+
+    @torch.no_grad()
+    def finalize(self) -> np.ndarray:
+        """
+        Generate remaining audio with EOS enabled and return newly generated wav.
+
+        Call repeatedly until an empty array is returned.
+        """
+        if self._closed:
+            raise RuntimeError("Streamer is closed. Create a new streamer to continue.")
+        if self._text_buffer == "":
+            return np.zeros((0,), dtype=np.float32)
+        if self._stream_state is not None and self._stream_state.finished:
+            return np.zeros((0,), dtype=np.float32)
+
+        input_ids = self._generation_input_ids()
+        remaining = self._remaining_text_steps(input_ids, include_eos=True)
+        talker_codes = self._run_generation_step(
+            input_ids=input_ids,
+            suppress_eos=False,
+            max_new_tokens=max(remaining, 512),
+        )
+        return self._decode_new_audio(talker_codes)
+
+    def flush(self) -> np.ndarray:
+        """Alias of finalize() for streaming API naming compatibility."""
+        return self.finalize()
+
+    def close(self) -> None:
+        """Release all streamer-held state."""
+        if self._closed:
+            return
+        self._stream_state = None
+        self._instruct_ids = None
+        self._text_buffer = ""
+        self._cached_input_ids = None
+        self._suffix_ids = None
+        self._all_talker_codes = None
+        self._emitted_samples = 0
+        self._tts_model.model.talker.rope_deltas = None
+        self._closed = True
+
+
 class Qwen3TTSModel:
     """
     A HuggingFace-style wrapper for Qwen3 TTS models (CustomVoice/VoiceDesign/Base) that provides:
@@ -350,6 +540,20 @@ class Qwen3TTSModel:
             max_new_tokens=pick("max_new_tokens", max_new_tokens),
         )
         return merged
+
+    def _resolve_voice_design_language_id(self, language: Optional[str]) -> Tuple[str, Optional[int]]:
+        lang = language if language is not None else "Auto"
+        self._validate_languages([lang])
+        if lang.lower() == "auto":
+            return lang, None
+
+        codec_lang = self.model.config.talker_config.codec_language_id
+        language_id = codec_lang.get(lang.lower())
+        if language_id is None:
+            raise ValueError(
+                f"Language {lang} not in codec_language_id. Supported: {sorted(codec_lang.keys())}"
+            )
+        return lang, language_id
 
     # voice clone model
     @torch.inference_mode()
@@ -726,6 +930,107 @@ class Qwen3TTSModel:
 
         wavs, fs = self.model.speech_tokenizer.decode([{"audio_codes": c} for c in talker_codes_list])
         return wavs, fs
+
+    @torch.no_grad()
+    def generate_voice_design_single(
+        self,
+        text: str,
+        instruct: str = "",
+        language: Optional[str] = None,
+        non_streaming_mode: bool = True,
+        **kwargs,
+    ) -> Tuple[np.ndarray, int]:
+        """
+        Generate speech for a single sample with the VoiceDesign model (no batching).
+
+        Uses the model's generate_single_voice_design path to avoid batch padding and list handling.
+        Same semantics as generate_voice_design but accepts single str arguments and
+        returns a single waveform and sample rate.
+
+        Args:
+            text: Text to synthesize.
+            instruct: Instruction describing desired voice/style. Empty string = no instruction.
+            language: Language for the sample. None or "Auto" for auto-detect.
+            non_streaming_mode: Same as generate_voice_design.
+            **kwargs: Generation options (do_sample, top_k, top_p, temperature, etc.),
+                forwarded to model.generate_single_voice_design().
+
+        Returns:
+            Tuple[np.ndarray, int]: (waveform, sample_rate).
+        """
+        if self.model.tts_model_type != "voice_design":
+            raise ValueError(
+                f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
+                f"tts_model_size: {self.model.tts_model_size}\n"
+                f"tts_model_type: {self.model.tts_model_type}\n"
+                "does not support generate_voice_design_single. Use a VoiceDesign model."
+            )
+
+        _, language_id = self._resolve_voice_design_language_id(language)
+
+        input_ids = self._tokenize_texts([self._build_assistant_text(text)])[0]
+        instruct_ids: Optional[torch.Tensor] = None
+        if instruct is not None and instruct != "":
+            instruct_ids = self._tokenize_texts([self._build_instruct_text(instruct)])[0]
+
+        gen_kwargs = self._merge_generate_kwargs(**kwargs)
+
+        talker_codes, _ = self.model.generate_single_voice_design(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            language_id=language_id,
+            non_streaming_mode=non_streaming_mode,
+            **gen_kwargs,
+        )
+
+        wavs, fs = self.model.speech_tokenizer.decode([{"audio_codes": talker_codes}])
+        return wavs[0], fs
+
+    @torch.no_grad()
+    def stream_voice_design_single(
+        self,
+        language: Optional[str] = None,
+        instruct: str = "",
+        non_streaming_mode: bool = False,
+        **kwargs,
+    ) -> VoiceDesignSingleStreamer:
+        """
+        Create a stateful VoiceDesign streamer for incremental text->audio calls.
+
+        The returned streamer keeps generation context across `stream()` calls.
+        Each `stream()` call generates audio for all the text tokens it received.
+        Use `streamer.finalize()` (or `streamer.flush()`) after the last text chunk
+        to drain remaining audio.
+        """
+        if self.model.tts_model_type != "voice_design":
+            raise ValueError(
+                f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
+                f"tts_model_size: {self.model.tts_model_size}\n"
+                f"tts_model_type: {self.model.tts_model_type}\n"
+                "does not support stream_voice_design_single. Use a VoiceDesign model."
+            )
+        if non_streaming_mode:
+            raise ValueError(
+                "stream_voice_design_single requires non_streaming_mode=False. "
+                "non_streaming_mode=True disables incremental text conditioning."
+            )
+
+        lang, language_id = self._resolve_voice_design_language_id(language)
+        gen_kwargs = self._merge_generate_kwargs(**kwargs)
+
+        instruct_ids: Optional[torch.Tensor] = None
+        if instruct is not None and instruct != "":
+            instruct_ids = self._tokenize_texts([self._build_instruct_text(instruct)])[0]
+
+        return VoiceDesignSingleStreamer(
+            tts_model=self,
+            language=lang,
+            language_id=language_id,
+            instruct=instruct,
+            instruct_ids=instruct_ids,
+            non_streaming_mode=non_streaming_mode,
+            generate_kwargs=gen_kwargs,
+        )
 
     # custom voice model
     @torch.no_grad()
