@@ -81,12 +81,9 @@ class VoiceDesignSingleStreamer:
         full_ids = tts_model._tokenize_texts(
             [tts_model._build_assistant_text("")]
         )[0]
-        # Split into open-ended prefix (<|im_start|>assistant\n, 3 tokens)
-        # and closing suffix (<|im_end|>\n<|im_start|>assistant\n, 5 tokens).
-        # Text tokens are appended to the prefix; the suffix is only joined
-        # when building input_ids for generation.
+        # Open-ended prefix (<|im_start|>assistant\n, 3 tokens). No suffix;
+        # text tokens are appended directly for streaming.
         self._cached_input_ids: torch.Tensor = full_ids[:, :3]
-        self._suffix_ids: torch.Tensor = full_ids[:, 3:]
         self._all_talker_codes: torch.Tensor = torch.empty(
             (0, tts_model.model.config.talker_config.num_code_groups),
             dtype=torch.long,
@@ -108,20 +105,16 @@ class VoiceDesignSingleStreamer:
         )
 
     def _generation_input_ids(self) -> torch.Tensor:
-        """Join open prefix+text with the closing suffix for generation."""
-        return torch.cat([self._cached_input_ids, self._suffix_ids], dim=1)
+        """Return prefix + accumulated text tokens for generation (no suffix)."""
+        return self._cached_input_ids
 
     def _remaining_text_steps(self, input_ids: torch.Tensor, include_eos: bool = False) -> int:
         """Return the number of text conditioning steps not yet generated.
 
-        The trailing_text_hidden built from input_ids has length:
-          - with eos:    (M - 1) + 1 = M     where M = input_ids.shape[1] - 8
-          - without eos: (M - 1)     = M - 1  where M = input_ids.shape[1] - 8
-        Here (M - 1) is len(input_id[:, 4:-5]) — text tokens excluding the
-        first (consumed during prefill at position 3) and the 5-token suffix.
+        No suffix: trailing_text_hidden is built from input_id[:, 4:], so
+        text steps = input_ids.shape[1] - 3 (prefix) with eos, or - 4 without.
         """
-        # 3 prefix + 1 first-text-token-in-prefill + 5 suffix = 9 framing tokens
-        offset = 8 if include_eos else 9
+        offset = 3 if include_eos else 4
         text_steps = max(int(input_ids.shape[1]) - offset, 0)
         current = 0 if self._stream_state is None else max(int(self._stream_state.generation_step), 0)
         return max(text_steps - current, 0)
@@ -140,6 +133,7 @@ class VoiceDesignSingleStreamer:
                 non_streaming_mode=self._non_streaming_mode,
                 max_new_tokens=max_new_tokens,
                 suppress_eos=suppress_eos,
+                suffix_len=0,
                 **self._generate_kwargs,
             )
             return talker_codes
@@ -153,6 +147,7 @@ class VoiceDesignSingleStreamer:
             non_streaming_mode=self._non_streaming_mode,
             max_new_tokens=max_new_tokens,
             suppress_eos=suppress_eos,
+            suffix_len=0,
             **self._generate_kwargs,
         )
         return talker_codes
@@ -234,7 +229,6 @@ class VoiceDesignSingleStreamer:
         self._instruct_ids = None
         self._text_buffer = ""
         self._cached_input_ids = None
-        self._suffix_ids = None
         self._all_talker_codes = None
         self._emitted_samples = 0
         self._tts_model.model.talker.rope_deltas = None

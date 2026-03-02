@@ -2683,6 +2683,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         tts_pad_embed: torch.Tensor,
         non_streaming_mode: bool,
         append_eos: bool = True,
+        suffix_len: int = 5,
     ) -> torch.Tensor:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
@@ -2690,8 +2691,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         if non_streaming_mode:
             return tts_pad_embed
+        text_slice = input_id[:, 4:-suffix_len] if suffix_len else input_id[:, 4:]
         text_hidden = self.talker.text_projection(
-            self.talker.get_text_embeddings()(input_id[:, 4:-5])
+            self.talker.get_text_embeddings()(text_slice)
         )
         if append_eos:
             return torch.cat((text_hidden, tts_eos_embed), dim=1)
@@ -2704,6 +2706,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         language_id: Optional[int] = None,
         non_streaming_mode: bool = False,
         append_eos: bool = True,
+        suffix_len: int = 5,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
@@ -2776,6 +2779,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         )
 
         if non_streaming_mode:
+            text_for_prefill = input_id[:, 3:-suffix_len] if suffix_len else input_id[:, 3:]
             talker_input_embed = talker_input_embed[:, :-1]
             talker_input_embed = torch.cat(
                 [
@@ -2783,7 +2787,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     torch.cat(
                         (
                             self.talker.text_projection(
-                                self.talker.get_text_embeddings()(input_id[:, 3:-5])
+                                self.talker.get_text_embeddings()(text_for_prefill)
                             ),
                             tts_eos_embed,
                         ),
@@ -2791,7 +2795,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     )
                     + self.talker.get_input_embeddings()(
                         torch.tensor(
-                            [[self.config.talker_config.codec_pad_id] * (input_id[:, 3:-5].shape[1] + 1)],
+                            [[self.config.talker_config.codec_pad_id] * (text_for_prefill.shape[1] + 1)],
                             device=self.talker.device,
                             dtype=input_id.dtype,
                         )
@@ -2814,6 +2818,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             tts_pad_embed=tts_pad_embed,
             non_streaming_mode=non_streaming_mode,
             append_eos=append_eos,
+            suffix_len=suffix_len,
         )
 
         if talker_input_embed_parts:
@@ -2922,6 +2927,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
         suppress_eos: bool = True,
+        suffix_len: int = 5,
         **kwargs,
     ) -> Tuple[torch.Tensor, VoiceDesignSingleStreamState]:
         if max_new_tokens < 1:
@@ -2942,6 +2948,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 language_id=language_id,
                 non_streaming_mode=non_streaming_mode,
                 append_eos=not suppress_eos,
+                suffix_len=suffix_len,
             )
         )
         # First generation step is prefill-only (no codec ids), so add one extra step.
@@ -3011,6 +3018,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
         suppress_eos: bool = True,
+        suffix_len: int = 5,
         **kwargs,
     ) -> Tuple[torch.Tensor, VoiceDesignSingleStreamState]:
         if stream_state.finished or max_new_tokens < 1:
@@ -3046,6 +3054,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             tts_pad_embed=stream_state.tts_pad_embed,
             non_streaming_mode=non_streaming_mode,
             append_eos=not suppress_eos,
+            suffix_len=suffix_len,
         )
         talker_kwargs = self._build_voice_design_single_talker_kwargs(
             max_new_tokens=max_new_tokens,

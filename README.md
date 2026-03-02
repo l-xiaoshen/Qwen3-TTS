@@ -20,7 +20,7 @@ The streaming workflow has five steps:
 
 1. Load the VoiceDesign model.
 2. Create a streamer by calling `stream_voice_design_single()` with a language and a voice description.
-3. For each text token from the language model, call `streamer.stream()`. It returns an audio array. If the array is not empty, the audio is ready for playback or storage.
+3. For each text chunk from the language model (single tokens or batches), call `streamer.stream()`. It returns an audio array. If the array is not empty, the audio is ready for playback or storage.
 4. After the last text token, call `streamer.finalize()` repeatedly until it returns an empty array.
 5. Call `streamer.close()` to release resources.
 
@@ -28,7 +28,7 @@ For single-sample non-streaming generation, call `generate_voice_design_single()
 
 ## How it works
 
-The streamer maintains an open-ended prompt prefix that grows as text tokens arrive. On each call to `stream()`, new tokens are appended to the cached prefix and a closing suffix is temporarily joined to form the complete input for the model. The model generates audio codes for the available text with end-of-sequence suppressed so that generation can continue later. Only newly generated waveform samples are returned.
+The streamer maintains an open-ended prompt prefix that grows as text chunks arrive. On each call to `stream()`, new tokens are appended to the cached prefix and passed directly to the model without any framing suffix. The model generates audio codes for the available text with end-of-sequence suppressed so that generation can continue later. Only newly generated waveform samples are returned.
 
 When `finalize()` is called, end-of-sequence suppression is removed so that the model can properly terminate generation.
 
