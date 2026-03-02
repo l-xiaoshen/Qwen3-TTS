@@ -18,8 +18,14 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 import numpy as np
 import torch
 
+from ..prompt_layout import (
+    ASSISTANT_OPEN_SUFFIX_TOKEN_COUNT,
+    ASSISTANT_PREFIX_TOKEN_COUNT,
+    ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX,
+)
+
 if TYPE_CHECKING:
-    from .qwen3_tts_model import Qwen3TTSModel
+    from .voice_design import Qwen3TTSVoiceDesign
 
 
 class VoiceDesignSingleStreamer:
@@ -32,7 +38,7 @@ class VoiceDesignSingleStreamer:
 
     def __init__(
         self,
-        tts_model: "Qwen3TTSModel",
+        tts_model: "Qwen3TTSVoiceDesign",
         language: str,
         language_id: Optional[int],
         instruct: str,
@@ -49,12 +55,9 @@ class VoiceDesignSingleStreamer:
         self._closed = False
         self._text_buffer = ""
         self._stream_state = None
-        full_ids = tts_model._tokenize_texts(
-            [tts_model._build_assistant_text("")]
+        self._accumulated_input_ids: torch.Tensor = tts_model._tokenize_texts(
+            ["<|im_start|>assistant\n"]
         )[0]
-        # Open-ended prefix (<|im_start|>assistant\n, 3 tokens). No suffix;
-        # text tokens are appended directly for streaming.
-        self._cached_input_ids: torch.Tensor = full_ids[:, :3]
         self._all_talker_codes: torch.Tensor = torch.empty(
             (0, tts_model.model.config.talker_config.num_code_groups),
             dtype=torch.long,
@@ -66,26 +69,27 @@ class VoiceDesignSingleStreamer:
         gen.pop("max_new_tokens", None)
         self._generate_kwargs = gen
 
-    def _append_stream_chunk_to_input_ids(self, text_chunk: str) -> None:
-        """Append tokenized text chunk to the open-ended prefix."""
-        chunk_ids = self._tts_model._tokenize_texts([text_chunk])[0]
+    def _tokenize_and_append(self, text: str) -> None:
+        """Tokenize *text* and append the resulting IDs to the accumulated input."""
+        chunk_ids = self._tts_model._tokenize_texts([text])[0]
         if chunk_ids.shape[1] == 0:
             return
-        self._cached_input_ids = torch.cat(
-            [self._cached_input_ids, chunk_ids], dim=1,
+        self._accumulated_input_ids = torch.cat(
+            [self._accumulated_input_ids, chunk_ids], dim=1,
         )
-
-    def _generation_input_ids(self) -> torch.Tensor:
-        """Return prefix + accumulated text tokens for generation (no suffix)."""
-        return self._cached_input_ids
 
     def _remaining_text_steps(self, input_ids: torch.Tensor, include_eos: bool = False) -> int:
         """Return the number of text conditioning steps not yet generated.
 
-        No suffix: trailing_text_hidden is built from input_id[:, 4:], so
-        text steps = input_ids.shape[1] - 3 (prefix) with eos, or - 4 without.
+        No suffix: trailing_text_hidden is built from
+        input_id[:, ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX:], so text
+        steps are computed relative to the shared prompt-layout constants.
         """
-        offset = 3 if include_eos else 4
+        offset = (
+            ASSISTANT_PREFIX_TOKEN_COUNT
+            if include_eos
+            else ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX
+        )
         text_steps = max(int(input_ids.shape[1]) - offset, 0)
         current = 0 if self._stream_state is None else max(int(self._stream_state.generation_step), 0)
         return max(text_steps - current, 0)
@@ -104,7 +108,7 @@ class VoiceDesignSingleStreamer:
                 non_streaming_mode=self._non_streaming_mode,
                 max_new_tokens=max_new_tokens,
                 suppress_eos=suppress_eos,
-                suffix_len=0,
+                suffix_len=ASSISTANT_OPEN_SUFFIX_TOKEN_COUNT,
                 **self._generate_kwargs,
             )
             return talker_codes
@@ -118,7 +122,7 @@ class VoiceDesignSingleStreamer:
             non_streaming_mode=self._non_streaming_mode,
             max_new_tokens=max_new_tokens,
             suppress_eos=suppress_eos,
-            suffix_len=0,
+            suffix_len=ASSISTANT_OPEN_SUFFIX_TOKEN_COUNT,
             **self._generate_kwargs,
         )
         return talker_codes
@@ -153,8 +157,8 @@ class VoiceDesignSingleStreamer:
             return np.zeros((0,), dtype=np.float32)
         self._text_buffer += text_chunk
 
-        self._append_stream_chunk_to_input_ids(text_chunk)
-        input_ids = self._generation_input_ids()
+        self._tokenize_and_append(text_chunk)
+        input_ids = self._accumulated_input_ids
         remaining = self._remaining_text_steps(input_ids, include_eos=False)
         if remaining <= 0:
             return np.zeros((0,), dtype=np.float32)
@@ -179,7 +183,7 @@ class VoiceDesignSingleStreamer:
         if self._stream_state is not None and self._stream_state.finished:
             return np.zeros((0,), dtype=np.float32)
 
-        input_ids = self._generation_input_ids()
+        input_ids = self._accumulated_input_ids
         remaining = self._remaining_text_steps(input_ids, include_eos=True)
         talker_codes = self._run_generation_step(
             input_ids=input_ids,
@@ -199,7 +203,7 @@ class VoiceDesignSingleStreamer:
         self._stream_state = None
         self._instruct_ids = None
         self._text_buffer = ""
-        self._cached_input_ids = None
+        self._accumulated_input_ids = None
         self._all_talker_codes = None
         self._emitted_samples = 0
         self._tts_model.model.talker.rope_deltas = None

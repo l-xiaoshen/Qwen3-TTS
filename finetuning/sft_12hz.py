@@ -21,7 +21,7 @@ import shutil
 import torch
 from accelerate import Accelerator
 from dataset import TTSDataset
-from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceClone
 from safetensors.torch import save_file
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -45,7 +45,7 @@ def train():
 
     MODEL_PATH = args.init_model_path
 
-    qwen3tts = Qwen3TTSModel.from_pretrained(
+    qwen3tts = Qwen3TTSVoiceClone.from_pretrained(
         MODEL_PATH,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",

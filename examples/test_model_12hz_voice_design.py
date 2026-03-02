@@ -17,14 +17,14 @@ import time
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceDesign
 
 
 def main():
     device = "cuda:0"
     MODEL_PATH = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
 
-    tts = Qwen3TTSModel.from_pretrained(
+    tts = Qwen3TTSVoiceDesign.from_pretrained(
         MODEL_PATH,
         device_map=device,
         dtype=torch.bfloat16,

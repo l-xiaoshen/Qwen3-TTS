@@ -68,19 +68,21 @@ Checkpoints will be written to:
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceClone
 
 device = "cuda:0"
-tts = Qwen3TTSModel.from_pretrained(
+tts = Qwen3TTSVoiceClone.from_pretrained(
     "output/checkpoint-epoch-2",
     device_map=device,
     dtype=torch.bfloat16,
     attn_implementation="flash_attention_2",
 )
 
-wavs, sr = tts.generate_custom_voice(
+wavs, sr = tts.generate_voice_clone(
     text="She said she would be here by noon.",
-    speaker="speaker_test",
+    language="English",
+    ref_audio="path/to/ref.wav",
+    ref_text="Reference transcript for the ref audio.",
 )
 sf.write("output.wav", wavs[0], sr)
 ```

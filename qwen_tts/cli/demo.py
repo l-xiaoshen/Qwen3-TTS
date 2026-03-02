@@ -27,7 +27,7 @@ import gradio as gr
 import numpy as np
 import torch
 
-from .. import Qwen3TTSModel, VoiceClonePromptItem
+from .. import Qwen3TTSModelBase, VoiceClonePromptItem, load_qwen3_tts
 
 
 def _title_case_display(s: str) -> str:
@@ -243,7 +243,7 @@ def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> Tuple[int, np.ndarray]:
     return sr, wav
 
 
-def _detect_model_kind(ckpt: str, tts: Qwen3TTSModel) -> str:
+def _detect_model_kind(ckpt: str, tts: Qwen3TTSModelBase) -> str:
     mt = getattr(tts.model, "tts_model_type", None)
     if mt in ("custom_voice", "voice_design", "base"):
         return mt
@@ -251,7 +251,7 @@ def _detect_model_kind(ckpt: str, tts: Qwen3TTSModel) -> str:
         raise ValueError(f"Unknown Qwen-TTS model type: {mt}")
 
 
-def build_demo(tts: Qwen3TTSModel, ckpt: str, gen_kwargs_default: Dict[str, Any]) -> gr.Blocks:
+def build_demo(tts: Qwen3TTSModelBase, ckpt: str, gen_kwargs_default: Dict[str, Any]) -> gr.Blocks:
     model_kind = _detect_model_kind(ckpt, tts)
 
     supported_langs_raw = None
@@ -605,7 +605,7 @@ def main(argv=None) -> int:
     dtype = _dtype_from_str(args.dtype)
     attn_impl = "flash_attention_2" if args.flash_attn else None
 
-    tts = Qwen3TTSModel.from_pretrained(
+    tts = load_qwen3_tts(
         ckpt,
         device_map=args.device,
         dtype=dtype,

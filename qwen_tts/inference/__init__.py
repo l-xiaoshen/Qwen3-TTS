@@ -13,7 +13,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .qwen3_tts_model import Qwen3TTSModel, VoiceClonePromptItem
+from .qwen3_tts_model import (
+    AudioLike,
+    MaybeList,
+    Qwen3TTSModelBase,
+    Qwen3TTSCustomVoice,
+    Qwen3TTSVoiceClone,
+    Qwen3TTSVoiceDesign,
+    VoiceClonePromptItem,
+    load_qwen3_tts,
+)
 from .qwen3_tts_tokenizer import Qwen3TTSTokenizer
 
-__all__ = ["Qwen3TTSModel", "VoiceClonePromptItem", "Qwen3TTSTokenizer"]
+__all__ = [
+    "Qwen3TTSVoiceClone",
+    "Qwen3TTSVoiceDesign",
+    "Qwen3TTSCustomVoice",
+    "Qwen3TTSModelBase",
+    "VoiceClonePromptItem",
+    "AudioLike",
+    "MaybeList",
+    "load_qwen3_tts",
+    "Qwen3TTSTokenizer",
+]

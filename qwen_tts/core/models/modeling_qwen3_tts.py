@@ -44,6 +44,13 @@ from transformers.utils import can_return_tuple, logging
 from transformers.utils.hub import cached_file
 
 from ...inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
+from ...prompt_layout import (
+    ASSISTANT_PREFIX_TOKEN_COUNT,
+    ASSISTANT_SUFFIX_TOKEN_COUNT,
+    ASSISTANT_TEXT_START_TOKEN_INDEX,
+    ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX,
+    REFERENCE_SUFFIX_TOKEN_COUNT,
+)
 from .configuration_qwen3_tts import (Qwen3TTSConfig,
                                       Qwen3TTSSpeakerEncoderConfig,
                                       Qwen3TTSTalkerCodePredictorConfig,
@@ -1858,7 +1865,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         self.post_init()
     
-    def load_speech_tokenizer(self, speech_tokenizer):
+    def load_speech_tokenizer(self, speech_tokenizer: Qwen3TTSTokenizer):
         self.speech_tokenizer = speech_tokenizer
     
     def load_generate_config(self, generate_config):
@@ -2193,7 +2200,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
             # <|im_start|>assistant\n
             _talker_input_embed_role = self.talker.text_projection(
-                                        self.talker.get_text_embeddings()(input_id[:, :3])
+                                        self.talker.get_text_embeddings()(
+                                            input_id[:, :ASSISTANT_PREFIX_TOKEN_COUNT]
+                                        )
                                         )
 
             # tts_pad * 4 + tts_bos
@@ -2205,8 +2214,8 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
             if voice_clone_prompt is not None and voice_clone_prompt["ref_code"] is not None and voice_clone_prompt["icl_mode"][index]:
                 icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
-                    text_id=input_id[:, 3:-5],
-                    ref_id=ref_ids[index][:, 3:-2],
+                    text_id=input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT],
+                    ref_id=ref_ids[index][:, ASSISTANT_TEXT_START_TOKEN_INDEX:-REFERENCE_SUFFIX_TOKEN_COUNT],
                     ref_code=voice_clone_prompt["ref_code"][index].to(self.talker.device),
                     tts_pad_embed=tts_pad_embed,
                     tts_eos_embed=tts_eos_embed,
@@ -2216,18 +2225,22 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             else:
                 #  tts_text_first_token
                 talker_input_embed = torch.cat([talker_input_embed, 
-                                                self.talker.text_projection(self.talker.get_text_embeddings()(input_id[:, 3:4])) + codec_input_emebdding[:, -1:]], 
+                                                self.talker.text_projection(
+                                                    self.talker.get_text_embeddings()(
+                                                        input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX]
+                                                    )
+                                                ) + codec_input_emebdding[:, -1:]], 
                                                 dim=1)
                 if non_streaming_mode:
                     talker_input_embed = talker_input_embed[:, :-1] # 去掉原本放进去的text
                     talker_input_embed = torch.cat([talker_input_embed,
                                                     torch.cat((self.talker.text_projection(
-                                                        self.talker.get_text_embeddings()(input_id[:, 3:-5])
+                                                        self.talker.get_text_embeddings()(input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT])
                                                     ), tts_eos_embed), dim=1) + self.talker.get_input_embeddings()(
                                                         torch.tensor(
                                                             [[
                                                                 self.config.talker_config.codec_pad_id,
-                                                            ] * (input_id[:, 3:-5].shape[1] + 1)],
+                                                            ] * (input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT].shape[1] + 1)],
                                                             device=self.talker.device,
                                                             dtype=input_id.dtype,
                                                         )
@@ -2246,7 +2259,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 else:
                     # 叫通义千问，是阿里云的开源大模型。
                     trailing_text_hidden = torch.cat((self.talker.text_projection(
-                                                        self.talker.get_text_embeddings()(input_id[:, 4:-5])
+                                                        self.talker.get_text_embeddings()(input_id[:, ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT])
                                                     ), tts_eos_embed), dim=1)
             talker_input_embeds[index].append(talker_input_embed)
             trailing_text_hiddens.append(trailing_text_hidden)
@@ -2455,7 +2468,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             ], dim=1)
 
         _talker_input_embed_role = self.talker.text_projection(
-            self.talker.get_text_embeddings()(input_id[:, :3])
+            self.talker.get_text_embeddings()(input_id[:, :ASSISTANT_PREFIX_TOKEN_COUNT])
         )
         _talker_input_embed = torch.cat(
             (
@@ -2472,8 +2485,8 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             and voice_clone_prompt["icl_mode"][0]
         ):
             icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
-                text_id=input_id[:, 3:-5],
-                ref_id=ref_ids[:, 3:-2],
+                text_id=input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT],
+                ref_id=ref_ids[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-REFERENCE_SUFFIX_TOKEN_COUNT],
                 ref_code=voice_clone_prompt["ref_code"][0].to(self.talker.device),
                 tts_pad_embed=tts_pad_embed,
                 tts_eos_embed=tts_eos_embed,
@@ -2483,7 +2496,11 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         else:
             talker_input_embed = torch.cat([
                 talker_input_embed,
-                self.talker.text_projection(self.talker.get_text_embeddings()(input_id[:, 3:4]))
+                self.talker.text_projection(
+                    self.talker.get_text_embeddings()(
+                        input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX]
+                    )
+                )
                 + codec_input_emebdding[:, -1:],
             ], dim=1)
             if non_streaming_mode:
@@ -2493,7 +2510,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     torch.cat(
                         (
                             self.talker.text_projection(
-                                self.talker.get_text_embeddings()(input_id[:, 3:-5])
+                                self.talker.get_text_embeddings()(
+                                    input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT]
+                                )
                             ),
                             tts_eos_embed,
                         ),
@@ -2501,7 +2520,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     )
                     + self.talker.get_input_embeddings()(
                         torch.tensor(
-                            [[self.config.talker_config.codec_pad_id] * (input_id[:, 3:-5].shape[1] + 1)],
+                            [[
+                                self.config.talker_config.codec_pad_id
+                            ] * (input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT].shape[1] + 1)],
                             device=self.talker.device,
                             dtype=input_id.dtype,
                         )
@@ -2520,7 +2541,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 trailing_text_hidden = torch.cat(
                     (
                         self.talker.text_projection(
-                            self.talker.get_text_embeddings()(input_id[:, 4:-5])
+                            self.talker.get_text_embeddings()(
+                                input_id[:, ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX:-ASSISTANT_SUFFIX_TOKEN_COUNT]
+                            )
                         ),
                         tts_eos_embed,
                     ),
@@ -2683,7 +2706,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         tts_pad_embed: torch.Tensor,
         non_streaming_mode: bool,
         append_eos: bool = True,
-        suffix_len: int = 5,
+        suffix_len: int = ASSISTANT_SUFFIX_TOKEN_COUNT,
     ) -> torch.Tensor:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
@@ -2691,7 +2714,11 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         if non_streaming_mode:
             return tts_pad_embed
-        text_slice = input_id[:, 4:-suffix_len] if suffix_len else input_id[:, 4:]
+        text_slice = (
+            input_id[:, ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX:-suffix_len]
+            if suffix_len
+            else input_id[:, ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX:]
+        )
         text_hidden = self.talker.text_projection(
             self.talker.get_text_embeddings()(text_slice)
         )
@@ -2706,7 +2733,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         language_id: Optional[int] = None,
         non_streaming_mode: bool = False,
         append_eos: bool = True,
-        suffix_len: int = 5,
+        suffix_len: int = ASSISTANT_SUFFIX_TOKEN_COUNT,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if input_ids.dim() == 1:
             input_ids = input_ids.unsqueeze(0)
@@ -2758,7 +2785,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         codec_input_emebdding = torch.cat([codec_input_emebdding_0, codec_input_emebdding_1], dim=1)
 
         role_embed = self.talker.text_projection(
-            self.talker.get_text_embeddings()(input_id[:, :3])
+            self.talker.get_text_embeddings()(input_id[:, :ASSISTANT_PREFIX_TOKEN_COUNT])
         )
         prefix_embed = torch.cat(
             (
@@ -2772,14 +2799,22 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         talker_input_embed = torch.cat(
             [
                 talker_input_embed,
-                self.talker.text_projection(self.talker.get_text_embeddings()(input_id[:, 3:4]))
+                self.talker.text_projection(
+                    self.talker.get_text_embeddings()(
+                        input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:ASSISTANT_TRAILING_TEXT_START_TOKEN_INDEX]
+                    )
+                )
                 + codec_input_emebdding[:, -1:],
             ],
             dim=1,
         )
 
         if non_streaming_mode:
-            text_for_prefill = input_id[:, 3:-suffix_len] if suffix_len else input_id[:, 3:]
+            text_for_prefill = (
+                input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:-suffix_len]
+                if suffix_len
+                else input_id[:, ASSISTANT_TEXT_START_TOKEN_INDEX:]
+            )
             talker_input_embed = talker_input_embed[:, :-1]
             talker_input_embed = torch.cat(
                 [
@@ -2927,7 +2962,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
         suppress_eos: bool = True,
-        suffix_len: int = 5,
+        suffix_len: int = ASSISTANT_SUFFIX_TOKEN_COUNT,
         **kwargs,
     ) -> Tuple[torch.Tensor, VoiceDesignSingleStreamState]:
         if max_new_tokens < 1:
@@ -3018,7 +3053,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
         suppress_eos: bool = True,
-        suffix_len: int = 5,
+        suffix_len: int = ASSISTANT_SUFFIX_TOKEN_COUNT,
         **kwargs,
     ) -> Tuple[torch.Tensor, VoiceDesignSingleStreamState]:
         if stream_state.finished or max_new_tokens < 1:

@@ -18,7 +18,27 @@
 qwen_tts: Qwen-TTS package.
 """
 
-from .inference.qwen3_tts_model import Qwen3TTSModel, VoiceClonePromptItem
+from .inference.qwen3_tts_model import (
+    AudioLike,
+    MaybeList,
+    Qwen3TTSModelBase,
+    Qwen3TTSCustomVoice,
+    Qwen3TTSVoiceClone,
+    Qwen3TTSVoiceDesign,
+    VoiceClonePromptItem,
+    load_qwen3_tts,
+)
 from .inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
 
-__all__ = ["__version__"]
+__all__ = [
+    "__version__",
+    "Qwen3TTSVoiceClone",
+    "Qwen3TTSVoiceDesign",
+    "Qwen3TTSCustomVoice",
+    "Qwen3TTSModelBase",
+    "VoiceClonePromptItem",
+    "AudioLike",
+    "MaybeList",
+    "load_qwen3_tts",
+    "Qwen3TTSTokenizer",
+]

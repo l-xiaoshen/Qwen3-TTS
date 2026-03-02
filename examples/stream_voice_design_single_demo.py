@@ -12,7 +12,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceDesign
 
 
 def llm_text_stream():
@@ -40,6 +40,8 @@ def llm_text_stream():
         time.sleep(0.03 * 12)
         yield batch
 
+np.random.seed(42)
+
 
 def main():
     model_path = os.environ.get("QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
@@ -49,7 +51,7 @@ def main():
     dtype_name = os.environ.get("QWEN3_TTS_DTYPE", "float32" if is_cpu else "bfloat16")
     dtype = getattr(torch, dtype_name)
 
-    model = Qwen3TTSModel.from_pretrained(
+    model = Qwen3TTSVoiceDesign.from_pretrained(
         model_path,
         device_map=device,
         dtype=dtype,
@@ -58,7 +60,7 @@ def main():
 
     streamer = model.stream_voice_design_single(
         language="English",
-        instruct="A clear and natural male conversational voice.",
+        instruct="A clear and natural male conversational voice. High quality, podcast style.",
     )
 
     out_dir = pathlib.Path("output")
