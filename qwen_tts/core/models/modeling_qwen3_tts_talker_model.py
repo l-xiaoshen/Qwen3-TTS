@@ -1,0 +1,614 @@
+# coding=utf-8
+# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""PyTorch Qwen3TTS model."""
+
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+from torch import nn
+from transformers.cache_utils import DynamicCache
+from transformers.generation import GenerationMixin
+from transformers.masking_utils import (
+    create_causal_mask,
+    create_sliding_window_causal_mask,
+)
+from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
+from transformers.modeling_layers import GradientCheckpointingLayer
+from transformers.modeling_outputs import (
+    BaseModelOutputWithPast,
+    CausalLMOutputWithPast,
+    ModelOutput,
+)
+from transformers.processing_utils import Unpack
+from transformers.utils import can_return_tuple, logging
+
+from .configuration_qwen3_tts import (
+    Qwen3TTSTalkerConfig,
+)
+from .modeling_qwen3_tts_attention import (
+    Qwen3TTSRMSNorm,
+    Qwen3TTSTalkerAttention,
+    Qwen3TTSTalkerResizeMLP,
+    Qwen3TTSTalkerRotaryEmbedding,
+    Qwen3TTSTalkerTextMLP,
+    Qwen3TTSTalkerTextPreTrainedModel,
+)
+from .modeling_qwen3_tts_talker_predictor import (
+    Qwen3TTSTalkerCodePredictorModelForConditionalGeneration,
+)
+
+logger = logging.get_logger(__name__)
+
+# Extracted from modeling_qwen3_tts_talker.py for better navigation.
+
+
+@dataclass
+class Qwen3TTSTalkerOutputWithPast(ModelOutput):
+    r"""
+    loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
+        Language modeling loss (for next-token prediction).
+    logits (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`):
+        Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
+    past_key_values (`tuple(tuple(torch.FloatTensor))`, *optional*, returned when `use_cache=True` is passed or when `config.use_cache=True`):
+        Tuple of `tuple(torch.FloatTensor)` of length `config.n_layers`, with each tuple having 2 tensors of shape
+        `(batch_size, num_heads, sequence_length, embed_size_per_head)`)
+
+        Contains pre-computed hidden-states (key and values in the self-attention blocks) that can be used (see
+        `past_key_values` input) to speed up sequential decoding.
+    """
+
+    loss: Optional[torch.FloatTensor] = None
+    logits: Optional[torch.FloatTensor] = None
+    past_key_values: Optional[list[torch.FloatTensor]] = None
+    hidden_states: Optional[tuple[torch.FloatTensor]] = None
+    attentions: Optional[tuple[torch.FloatTensor]] = None
+    past_hidden: Optional[torch.FloatTensor] = None
+    generation_step: Optional[int] = None
+    trailing_text_hidden: Optional[torch.FloatTensor] = None
+    tts_pad_embed: Optional[torch.FloatTensor] = None
+
+
+class Qwen3TTSTalkerDecoderLayer(GradientCheckpointingLayer):
+    def __init__(self, config, layer_idx):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.self_attn = Qwen3TTSTalkerAttention(config, layer_idx)
+
+        self.mlp = Qwen3TTSTalkerTextMLP(
+            config, intermediate_size=config.intermediate_size
+        )
+
+        self.input_layernorm = Qwen3TTSRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+        self.post_attention_layernorm = Qwen3TTSRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[
+            tuple[torch.Tensor, torch.Tensor]
+        ] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> tuple[
+        torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]
+    ]:
+        """
+        Args:
+            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
+            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
+                `(batch, sequence_length)` where padding elements are indicated by 0.
+            output_attentions (`bool`, *optional*):
+                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
+                returned tensors for more detail.
+            use_cache (`bool`, *optional*):
+                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
+                (see `past_key_values`).
+            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
+            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
+                Indices depicting the position of the input sequence tokens in the sequence.
+            position_embeddings (`tuple[torch.FloatTensor, torch.FloatTensor]`, *optional*):
+                Tuple containing the cosine and sine positional embeddings of shape `(batch_size, seq_len, head_dim)`,
+                with `head_dim` being the embedding dimension of each attention head.
+            kwargs (`dict`, *optional*):
+                Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
+                into the model
+        """
+
+        residual = hidden_states
+
+        hidden_states = self.input_layernorm(hidden_states)
+
+        # Self Attention
+        hidden_states, self_attn_weights = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            output_attentions=output_attentions,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm(hidden_states)
+
+        hidden_states = self.mlp(hidden_states)
+
+        hidden_states = residual + hidden_states
+
+        outputs = (hidden_states,)
+
+        if output_attentions:
+            outputs += (self_attn_weights,)
+
+        return outputs
+
+
+class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
+    config_class = Qwen3TTSTalkerConfig
+    base_model_prefix = "talker.model"
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+        self.layers = nn.ModuleList(
+            [
+                Qwen3TTSTalkerDecoderLayer(config, layer_idx)
+                for layer_idx in range(config.num_hidden_layers)
+            ]
+        )
+        self.norm = Qwen3TTSRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = Qwen3TTSTalkerRotaryEmbedding(config)
+        self.gradient_checkpointing = False
+        self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.text_embedding = nn.Embedding(
+            config.text_vocab_size, config.text_hidden_size
+        )
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+    def get_input_embeddings(self):
+        return self.codec_embedding
+
+    def get_text_embeddings(self):
+        return self.text_embedding
+
+    def set_input_embeddings(self, value):
+        self.embed_tokens = value
+
+    @can_return_tuple
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[list[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
+    ) -> BaseModelOutputWithPast:
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
+        )
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        use_cache = use_cache if use_cache is not None else self.config.use_cache
+
+        if (input_ids is None) ^ (inputs_embeds is not None):
+            raise ValueError(
+                "You must specify exactly one of input_ids or inputs_embeds"
+            )
+
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
+
+        if use_cache and past_key_values is None:
+            past_key_values = DynamicCache()
+
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
+        if cache_position is None:
+            past_seen_tokens = (
+                past_key_values.get_seq_length() if past_key_values is not None else 0
+            )
+            cache_position = torch.arange(
+                past_seen_tokens,
+                past_seen_tokens + inputs_embeds.shape[1],
+                device=inputs_embeds.device,
+            )
+
+        # the hard coded `3` is for temporal, height and width.
+        if position_ids is None:
+            position_ids = cache_position.view(1, 1, -1).expand(
+                3, inputs_embeds.shape[0], -1
+            )
+        elif position_ids.ndim == 2:
+            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+
+        if position_ids.ndim == 3 and position_ids.shape[0] == 4:
+            text_position_ids = position_ids[0]
+            position_ids = position_ids[1:]
+        else:
+            text_position_ids = position_ids[0]
+
+        mask_function = (
+            create_causal_mask
+            if self.config.sliding_window is None
+            else create_sliding_window_causal_mask
+        )
+        causal_mask = mask_function(
+            config=self.config,
+            input_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            cache_position=cache_position,
+            past_key_values=past_key_values,
+            position_ids=text_position_ids,
+        )
+
+        hidden_states = inputs_embeds
+
+        # create position embeddings to be shared across the decoder layers
+        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+
+        # decoder layers
+        all_hidden_states = () if output_hidden_states else None
+        all_self_attns = () if output_attentions else None
+
+        for decoder_layer in self.layers:
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
+
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                past_key_values=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **flash_attn_kwargs,
+            )
+
+            hidden_states = layer_outputs[0]
+
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+
+        hidden_states = self.norm(hidden_states)
+
+        # add hidden states from the last decoder layer
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
+        return BaseModelOutputWithPast(
+            last_hidden_state=hidden_states,
+            past_key_values=past_key_values,
+            hidden_states=all_hidden_states,
+            attentions=all_self_attns,
+        )
+
+
+class Qwen3TTSTalkerForConditionalGeneration(
+    Qwen3TTSTalkerTextPreTrainedModel, GenerationMixin
+):
+    _tied_weights_keys = ["lm_head.weight"]
+    _tp_plan = {"lm_head": "colwise_rep"}
+    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+    config_class = Qwen3TTSTalkerConfig
+    base_model_prefix = "talker"
+
+    def __init__(self, config: Qwen3TTSTalkerConfig):
+        super().__init__(config)
+        self.model = Qwen3TTSTalkerModel(config)
+        self.vocab_size = config.vocab_size
+        self.text_projection = Qwen3TTSTalkerResizeMLP(
+            config.text_hidden_size,
+            config.text_hidden_size,
+            config.hidden_size,
+            config.hidden_act,
+            bias=True,
+        )
+
+        self.codec_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.code_predictor = Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
+            config=config.code_predictor_config, talker_config=config
+        )
+        self.rope_deltas = None
+
+        # Initialize weights and apply final processing
+        self.post_init()
+
+        # TODO: hack, modular cannot inherit multiple classes
+
+    def get_input_embeddings(self):
+        return self.model.get_input_embeddings()
+
+    def get_text_embeddings(self):
+        return self.model.get_text_embeddings()
+
+    def set_input_embeddings(self, value):
+        self.model.embed_tokens = value
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
+
+    def set_decoder(self, decoder):
+        self.model = decoder
+
+    def get_decoder(self):
+        return self.model
+
+    def forward_sub_talker_finetune(self, codec_ids, talker_hidden_states):
+        assert len(codec_ids.shape) == 2
+        assert len(talker_hidden_states.shape) == 2
+        assert codec_ids.shape[0] == talker_hidden_states.shape[0]
+        assert talker_hidden_states.shape[1] == self.config.hidden_size
+        assert codec_ids.shape[1] == self.config.num_code_groups
+
+        sub_talker_inputs_embeds = [talker_hidden_states.unsqueeze(1)]
+
+        for i in range(self.config.num_code_groups - 1):
+            if i == 0:
+                sub_talker_inputs_embeds.append(
+                    self.get_input_embeddings()(codec_ids[:, :1])
+                )
+            else:
+                sub_talker_inputs_embeds.append(
+                    self.code_predictor.get_input_embeddings()[i - 1](
+                        codec_ids[:, i : i + 1]
+                    )
+                )
+        sub_talker_inputs_embeds = torch.cat(sub_talker_inputs_embeds, dim=1)
+
+        sub_talker_outputs = self.code_predictor.forward_finetune(
+            inputs_embeds=sub_talker_inputs_embeds, labels=codec_ids[:, 1:]
+        )
+
+        sub_talker_logits = sub_talker_outputs.logits
+        sub_talker_loss = sub_talker_outputs.loss
+        return sub_talker_logits, sub_talker_loss
+
+    @can_return_tuple
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        cache_position=None,
+        past_hidden=None,
+        trailing_text_hidden=None,
+        tts_pad_embed=None,
+        generation_step=None,
+        subtalker_dosample=None,
+        subtalker_top_p=None,
+        subtalker_top_k=None,
+        subtalker_temperature=None,
+        **kwargs,
+    ) -> CausalLMOutputWithPast:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        ```"""
+        # Prefill
+        if inputs_embeds is not None and inputs_embeds.shape[1] > 1:
+            generation_step = -1
+            codec_ids = None
+        # Generate
+        else:
+            last_id_hidden = self.get_input_embeddings()(input_ids)
+            predictor_result = self.code_predictor.generate(
+                inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
+                max_new_tokens=self.config.num_code_groups - 1,
+                do_sample=subtalker_dosample,
+                top_p=subtalker_top_p,
+                top_k=subtalker_top_k,
+                temperature=subtalker_temperature,
+                output_hidden_states=True,
+                return_dict_in_generate=True,
+            )
+            codec_ids = torch.cat((input_ids, predictor_result.sequences), dim=-1)
+            codec_hiddens = torch.cat(
+                [last_id_hidden]
+                + [
+                    self.code_predictor.get_input_embeddings()[i](
+                        predictor_result.sequences[..., i : i + 1]
+                    )
+                    for i in range(self.config.num_code_groups - 1)
+                ],
+                dim=1,
+            )
+            inputs_embeds = codec_hiddens.sum(1, keepdim=True)
+
+            if generation_step < trailing_text_hidden.shape[1]:
+                inputs_embeds = inputs_embeds + trailing_text_hidden[
+                    :, generation_step
+                ].unsqueeze(1)
+            else:
+                inputs_embeds = inputs_embeds + tts_pad_embed
+        if attention_mask is not None:
+            if (
+                cache_position is None
+                or (cache_position is not None and cache_position[0] == 0)
+                or self.rope_deltas is None
+            ):
+                delta0 = (1 - attention_mask).sum(dim=-1).unsqueeze(1)
+                position_ids, rope_deltas = self.get_rope_index(
+                    attention_mask,
+                )
+                rope_deltas = rope_deltas - delta0
+                self.rope_deltas = rope_deltas
+            else:
+                batch_size, seq_length = input_ids.shape
+                delta = (
+                    cache_position[0] + self.rope_deltas
+                    if cache_position is not None
+                    else 0
+                )
+                position_ids = torch.arange(seq_length, device=input_ids.device)
+                position_ids = position_ids.view(1, -1).expand(batch_size, -1)
+                position_ids = position_ids.add(delta)
+                position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+
+        outputs: BaseModelOutputWithPast = self.model(
+            input_ids=None,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
+            **kwargs,
+        )
+
+        hidden_states = outputs.last_hidden_state
+        logits = self.codec_head(hidden_states)
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(
+                logits=logits,
+                labels=labels,
+                vocab_size=self.config.vocab_size,
+                **kwargs,
+            )
+
+        return Qwen3TTSTalkerOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=(outputs.hidden_states, codec_ids),
+            attentions=outputs.attentions,
+            past_hidden=hidden_states[:, -1:, :],
+            generation_step=generation_step + 1,
+            trailing_text_hidden=trailing_text_hidden,
+            tts_pad_embed=tts_pad_embed,
+        )
+
+    def get_rope_index(
+        self,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
+
+        Explanation:
+            Each embedding sequence contains vision embedding and text embedding or just contains text embedding.
+
+            For pure text embedding sequence, the rotary position embedding has no difference with modern LLMs.
+            Examples:
+                input_ids: [T T T T T], here T is for text.
+                temporal position_ids: [0, 1, 2, 3, 4]
+                height position_ids: [0, 1, 2, 3, 4]
+                width position_ids: [0, 1, 2, 3, 4]
+
+            For vision and text embedding sequence, we calculate 3D rotary position embedding for vision part
+            and 1D rotary position embedding for text part.
+            Examples:
+                Temporal (Time): 3 patches, representing different segments of the video in time.
+                Height: 2 patches, dividing each frame vertically.
+                Width: 2 patches, dividing each frame horizontally.
+                We also have some important parameters:
+                fps (Frames Per Second): The video's frame rate, set to 1. This means one frame is processed each second.
+                interval: The step size for the temporal position IDs, calculated as tokens_per_second * temporal_patch_size / fps. In this case, 25 * 2 / 1 = 50. This means that each temporal patch will be have a difference of 50 in the temporal position IDs.
+                input_ids: [V V V V V V V V V V V V T T T T T], here V is for vision.
+                text temporal position_ids: [101, 102, 103, 104, 105]
+                text height position_ids: [101, 102, 103, 104, 105]
+                text width position_ids: [101, 102, 103, 104, 105]
+                Here we calculate the text start position_ids as the max vision position_ids plus 1.
+
+        Args:
+            input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`):
+                Indices of input sequence tokens in the vocabulary. Padding will be ignored by default should you provide
+                it.
+            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
+
+                - 1 for tokens that are **not masked**,
+                - 0 for tokens that are **masked**.
+
+        Returns:
+            position_ids (`torch.LongTensor` of shape `(3, batch_size, sequence_length)`)
+            mrope_position_deltas (`torch.Tensor` of shape `(batch_size)`)
+        """
+        mrope_position_deltas = []
+
+        position_ids = attention_mask.float().cumsum(-1) - 1
+        position_ids.masked_fill_(attention_mask == 0, 1)
+        position_ids = (
+            position_ids.unsqueeze(0).expand(3, -1, -1).to(attention_mask.device)
+        )
+        max_position_ids = position_ids.max(0, keepdim=False)[0].max(-1, keepdim=True)[
+            0
+        ]
+        mrope_position_deltas = (
+            max_position_ids + 1 - torch.sum(attention_mask, dim=-1, keepdim=True)
+        )
+
+        return position_ids, mrope_position_deltas
+
+    def _update_model_kwargs_for_generation(
+        self, outputs, model_kwargs, is_encoder_decoder=False, num_new_tokens=1
+    ):
+        model_kwargs = super()._update_model_kwargs_for_generation(
+            outputs, model_kwargs, is_encoder_decoder, num_new_tokens
+        )
+        model_kwargs["past_hidden"] = outputs.past_hidden
+        model_kwargs["generation_step"] = outputs.generation_step
+        model_kwargs["trailing_text_hidden"] = outputs.trailing_text_hidden
+        model_kwargs["tts_pad_embed"] = outputs.tts_pad_embed
+        return model_kwargs

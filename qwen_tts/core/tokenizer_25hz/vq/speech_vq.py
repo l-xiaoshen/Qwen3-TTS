@@ -385,7 +385,6 @@ class WhisperEncoderVQ(WhisperEncoder):
 
         pe_for_vq = torch.cat(pe_for_vq_list, dim=0)
         x = torch.cat(aftercnn_x_list, dim=0)
-        src_len = x.size(0)
 
         output_list = []
         for item in audio_aftercnnlens:

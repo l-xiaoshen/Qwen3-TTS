@@ -120,10 +120,8 @@ class TTSDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data_list[idx]
 
-        audio_path = item["audio"]
         text = item["text"]
         audio_codes = item["audio_codes"]
-        language = item.get("language", "Auto")
         ref_audio_path = item["ref_audio"]
 
         text = self._build_assistant_text(text)

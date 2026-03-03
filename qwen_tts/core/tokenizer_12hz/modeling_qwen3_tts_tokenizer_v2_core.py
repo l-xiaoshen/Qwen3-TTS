@@ -1,6 +1,5 @@
 # coding=utf-8
-# Copyright 2026 The Alibaba Qwen team.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,12 +12,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .configuration_qwen3_tts import Qwen3TTSConfig
-from .modeling_qwen3_tts import Qwen3TTSForConditionalGeneration
-from .processing_qwen3_tts import Qwen3TTSProcessor
+"""Core exports for split Qwen3TTSTokenizerV2 modules."""
+
+from .modeling_qwen3_tts_tokenizer_v2_decoder import (
+    Qwen3TTSTokenizerV2Decoder,
+    Qwen3TTSTokenizerV2Encoder,
+)
 
 __all__ = [
-    "Qwen3TTSConfig",
-    "Qwen3TTSForConditionalGeneration",
-    "Qwen3TTSProcessor",
+    "Qwen3TTSTokenizerV2Decoder",
+    "Qwen3TTSTokenizerV2Encoder",
 ]

@@ -390,7 +390,6 @@ class WhisperEncoder(nn.Module):
                 )
 
         x = torch.cat(aftercnn_x_list, dim=0)
-        src_len = x.size(0)
 
         output_list = []
         for item in audio_aftercnnlens:
