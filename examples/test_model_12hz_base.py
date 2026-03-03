@@ -53,8 +53,12 @@ def main():
     )
 
     # Reference audio(s)
-    ref_audio_path_1 = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav"
-    ref_audio_path_2 = "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_1.wav"
+    ref_audio_path_1 = (
+        "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_2.wav"
+    )
+    ref_audio_path_2 = (
+        "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen3-TTS-Repo/clone_1.wav"
+    )
 
     ref_audio_single = ref_audio_path_1
     ref_audio_batch = [ref_audio_path_1, ref_audio_path_2]
@@ -66,7 +70,9 @@ def main():
     ]
 
     # Synthesis targets
-    syn_text_single = "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye."
+    syn_text_single = (
+        "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye."
+    )
     syn_lang_single = "Auto"
 
     syn_text_batch = [
@@ -93,7 +99,9 @@ def main():
 
         # Case 1: prompt single + synth single, direct
         run_case(
-            tts, OUT_DIR, f"case1_promptSingle_synSingle_direct_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case1_promptSingle_synSingle_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
                 text=syn_text_single,
                 language=syn_lang_single,
@@ -119,13 +127,17 @@ def main():
             )
 
         run_case(
-            tts, OUT_DIR, f"case1_promptSingle_synSingle_promptThenGen_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case1_promptSingle_synSingle_promptThenGen_{mode_tag}",
             _case1b,
         )
 
         # Case 2: prompt single + synth batch, direct
         run_case(
-            tts, OUT_DIR, f"case2_promptSingle_synBatch_direct_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case2_promptSingle_synBatch_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
                 text=syn_text_batch,
                 language=syn_lang_batch,
@@ -151,13 +163,17 @@ def main():
             )
 
         run_case(
-            tts, OUT_DIR, f"case2_promptSingle_synBatch_promptThenGen_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case2_promptSingle_synBatch_promptThenGen_{mode_tag}",
             _case2b,
         )
 
         # Case 3: prompt batch + synth batch, direct
         run_case(
-            tts, OUT_DIR, f"case3_promptBatch_synBatch_direct_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case3_promptBatch_synBatch_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
                 text=syn_text_batch,
                 language=syn_lang_batch,
@@ -183,7 +199,9 @@ def main():
             )
 
         run_case(
-            tts, OUT_DIR, f"case3_promptBatch_synBatch_promptThenGen_{mode_tag}",
+            tts,
+            OUT_DIR,
+            f"case3_promptBatch_synBatch_promptThenGen_{mode_tag}",
             _case3b,
         )
 

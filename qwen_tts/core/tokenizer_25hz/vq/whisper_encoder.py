@@ -27,12 +27,18 @@ from torch import nn, Tensor
 from itertools import accumulate
 
 try:
-    from flash_attn.flash_attn_interface import flash_attn_varlen_func as flash_attn_varlen_func
+    from flash_attn.flash_attn_interface import (
+        flash_attn_varlen_func as flash_attn_varlen_func,
+    )
 except ImportError:
     try:
-        from flash_attn.flash_attn_interface import flash_attn_unpadded_func as flash_attn_varlen_func
+        from flash_attn.flash_attn_interface import (
+            flash_attn_unpadded_func as flash_attn_varlen_func,
+        )
     except ImportError:
-        print("\n********\nWarning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.\n********\n ")
+        print(
+            "\n********\nWarning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.\n********\n "
+        )
         flash_attn_varlen_func = None
 
 
@@ -108,14 +114,14 @@ def log_mel_spectrogram(
 
 
 def get_T_after_cnn(L_in, dilation=1):
-    for (padding, kernel_size, stride) in eval("[(1,3,1)] + [(1,3,2)] "):
+    for padding, kernel_size, stride in eval("[(1,3,1)] + [(1,3,2)] "):
         L_out = L_in + 2 * padding - dilation * (kernel_size - 1) - 1
         L_out = 1 + L_out // stride
         L_in = L_out
     return L_out
 
 
-def get_mel_audio(audio, padding=False, audio_vq_ds_rate = 1, n_mels = 128):
+def get_mel_audio(audio, padding=False, audio_vq_ds_rate=1, n_mels=128):
     audio_len = len(audio)
     if padding:
         reduction = 160 * 2 * audio_vq_ds_rate
@@ -155,7 +161,11 @@ class ConvTranspose1d(nn.ConvTranspose1d):
 
 class Linear(nn.Linear):
     def forward(self, x: Tensor) -> Tensor:
-        return F.linear(x, self.weight.to(x.dtype), None if self.bias is None else self.bias.to(x.dtype) )
+        return F.linear(
+            x,
+            self.weight.to(x.dtype),
+            None if self.bias is None else self.bias.to(x.dtype),
+        )
 
 
 class MultiHeadAttention(nn.Module):
@@ -172,12 +182,12 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self,
         x: Tensor,
-        cu_seqlens = None,
+        cu_seqlens=None,
     ):
         q = self.query(x)
         k = self.key(x)
         v = self.value(x)
-        
+
         if self.use_flash_attention:
             if flash_attn_varlen_func is None:
                 x = self.qkv_attention_manual(q, k, v, cu_seqlens=cu_seqlens)
@@ -193,17 +203,14 @@ class MultiHeadAttention(nn.Module):
         output = self.out(x)
         return output
 
-    def qkv_flash_attention(
-        self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens=None
-    ):
+    def qkv_flash_attention(self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens=None):
         n_ctx, n_state = q.shape
         # scale = (n_state // self.n_head) ** -0.25
-        q = q.view(n_ctx, self.n_head, -1)# (batch_size, seqlen, nheads, headdim)
+        q = q.view(n_ctx, self.n_head, -1)  # (batch_size, seqlen, nheads, headdim)
         k = k.view(n_ctx, self.n_head, -1)
         v = v.view(n_ctx, self.n_head, -1)
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
-
 
         x = flash_attn_varlen_func(
             q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, dropout_p=0.0
@@ -211,12 +218,10 @@ class MultiHeadAttention(nn.Module):
         x = x.reshape(n_ctx, n_state)
         return x
 
-    def qkv_attention_manual(
-        self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens: Tensor
-    ):
+    def qkv_attention_manual(self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens: Tensor):
         n_ctx, n_state = q.shape
         head_dim = n_state // self.n_head
-        scale = head_dim ** -0.5
+        scale = head_dim**-0.5
 
         q = q.view(n_ctx, self.n_head, head_dim)
         k = k.view(n_ctx, self.n_head, head_dim)
@@ -226,23 +231,33 @@ class MultiHeadAttention(nn.Module):
         batch_size = len(seqlens)
         max_seqlen = max(seqlens)
 
-        q_padded = torch.zeros(batch_size, max_seqlen, self.n_head, head_dim, dtype=q.dtype, device=q.device)
+        q_padded = torch.zeros(
+            batch_size,
+            max_seqlen,
+            self.n_head,
+            head_dim,
+            dtype=q.dtype,
+            device=q.device,
+        )
         k_padded = torch.zeros_like(q_padded)
         v_padded = torch.zeros_like(q_padded)
 
         for i in range(batch_size):
             start_idx = cu_seqlens[i]
-            end_idx = cu_seqlens[i+1]
+            end_idx = cu_seqlens[i + 1]
             seq_len = seqlens[i]
             q_padded[i, :seq_len] = q[start_idx:end_idx]
             k_padded[i, :seq_len] = k[start_idx:end_idx]
             v_padded[i, :seq_len] = v[start_idx:end_idx]
-        
+
         q_padded = q_padded.transpose(1, 2)
         k_padded = k_padded.transpose(1, 2)
         v_padded = v_padded.transpose(1, 2)
 
-        attn_mask = torch.arange(max_seqlen, device=q.device)[None, :] < torch.tensor(seqlens, device=q.device)[:, None]
+        attn_mask = (
+            torch.arange(max_seqlen, device=q.device)[None, :]
+            < torch.tensor(seqlens, device=q.device)[:, None]
+        )
         attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
 
         attn_mask = attn_mask.masked_fill(attn_mask == 0, -torch.finfo(q.dtype).max)
@@ -252,19 +267,28 @@ class MultiHeadAttention(nn.Module):
         attn_weights = F.softmax(attn_scores, dim=-1)
 
         context = torch.matmul(attn_weights, v_padded)
-        
-        context = context.transpose(1, 2).contiguous().view(batch_size, max_seqlen, n_state)
 
-        output_packed = torch.cat([context[i, :seqlens[i]] for i in range(batch_size)], dim=0)
+        context = (
+            context.transpose(1, 2).contiguous().view(batch_size, max_seqlen, n_state)
+        )
+
+        output_packed = torch.cat(
+            [context[i, : seqlens[i]] for i in range(batch_size)], dim=0
+        )
 
         assert output_packed.shape == (n_ctx, n_state)
-        
+
         return output_packed
 
 
 class ResidualAttentionBlock(nn.Module):
-    def __init__(self, n_state: int, n_head: int,
-                 enable_mp: bool = False, sequence_parallel: bool = False):
+    def __init__(
+        self,
+        n_state: int,
+        n_head: int,
+        enable_mp: bool = False,
+        sequence_parallel: bool = False,
+    ):
         super().__init__()
         n_mlp = n_state * 4
         self.attn_ln = nn.LayerNorm(n_state)
@@ -272,14 +296,10 @@ class ResidualAttentionBlock(nn.Module):
 
         self.attn = MultiHeadAttention(n_state, n_head)
         self.mlp = nn.Sequential(
-                Linear(n_state, n_mlp), nn.GELU(), Linear(n_mlp, n_state)
-            )
+            Linear(n_state, n_mlp), nn.GELU(), Linear(n_mlp, n_state)
+        )
 
-    def forward(
-        self,
-        x: Tensor,
-        cu_seqlens = None
-    ):
+    def forward(self, x: Tensor, cu_seqlens=None):
         x = x + self.attn(self.attn_ln(x), cu_seqlens=cu_seqlens)
         x = x + self.mlp(self.mlp_ln(x))
         return x
@@ -287,17 +307,17 @@ class ResidualAttentionBlock(nn.Module):
 
 class WhisperEncoder(nn.Module):
     def __init__(
-            self,
-            n_mels: int,
-            n_ctx: int,
-            n_state: int,
-            n_head: int,
-            n_layer: int,
-            n_window: int = 1500,
-            output_dim: int = 512,
-            grad_checkpointing: bool = False,
-            enable_mp: bool = False,
-            audio_sequence_parallel: bool = False,
+        self,
+        n_mels: int,
+        n_ctx: int,
+        n_state: int,
+        n_head: int,
+        n_layer: int,
+        n_window: int = 1500,
+        output_dim: int = 512,
+        grad_checkpointing: bool = False,
+        enable_mp: bool = False,
+        audio_sequence_parallel: bool = False,
     ):
         super().__init__()
         self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1)
@@ -307,8 +327,15 @@ class WhisperEncoder(nn.Module):
         self.n_mels = n_mels
 
         self.blocks = nn.ModuleList(
-            [ResidualAttentionBlock(n_state, n_head, enable_mp=enable_mp, sequence_parallel=audio_sequence_parallel)
-             for _ in range(n_layer)]
+            [
+                ResidualAttentionBlock(
+                    n_state,
+                    n_head,
+                    enable_mp=enable_mp,
+                    sequence_parallel=audio_sequence_parallel,
+                )
+                for _ in range(n_layer)
+            ]
         )
         self.ln_post = nn.LayerNorm(n_state)
         self.avg_pooler = nn.AvgPool1d(2, stride=2)
@@ -335,7 +362,13 @@ class WhisperEncoder(nn.Module):
             if not name.startswith("blocks"):
                 setattr(param, "audio_sync", True)
 
-    def forward(self, x_list: List[Tensor], audio_mellens:List[int], audio_aftercnnlens:List[int], audio_seqlens:List[int]):
+    def forward(
+        self,
+        x_list: List[Tensor],
+        audio_mellens: List[int],
+        audio_aftercnnlens: List[int],
+        audio_seqlens: List[int],
+    ):
         """
         x : torch.Tensor, shape = (n_mels, n_ctx)
             the mel spectrogram of the audio
@@ -347,9 +380,14 @@ class WhisperEncoder(nn.Module):
             for each_x_split in each_x_split_list:
                 each_x_split = F.gelu(self.conv1(each_x_split))
                 each_x_split = F.gelu(self.conv2(each_x_split))
-                each_x_split = each_x_split.permute(1, 0) # L,D
-                each_positional_embedding_split = self.positional_embedding[:each_x_split.shape[0]]
-                aftercnn_x_list.append(each_x_split+each_positional_embedding_split.to(each_x_split.dtype))
+                each_x_split = each_x_split.permute(1, 0)  # L,D
+                each_positional_embedding_split = self.positional_embedding[
+                    : each_x_split.shape[0]
+                ]
+                aftercnn_x_list.append(
+                    each_x_split
+                    + each_positional_embedding_split.to(each_x_split.dtype)
+                )
 
         x = torch.cat(aftercnn_x_list, dim=0)
         src_len = x.size(0)
@@ -361,12 +399,12 @@ class WhisperEncoder(nn.Module):
                 item -= self.n_window
             output_list.append(item)
 
-        cu_seqlens = list(accumulate(output_list, func=operator.add,initial=0))
+        cu_seqlens = list(accumulate(output_list, func=operator.add, initial=0))
         cu_seqlens = torch.Tensor(cu_seqlens).to(device=x.device, dtype=torch.int32)
 
         layer_id = 0
         for block in self.blocks:
-            layer_id+=1
+            layer_id += 1
             x = block(x, cu_seqlens=cu_seqlens)
 
         if self.avg_pooler:
@@ -384,14 +422,23 @@ class WhisperEncoder(nn.Module):
 
         output = torch.zeros(
             (x.size(0) + len(audio_seqlens) * 2, x.size(1)),
-            device=x.device, dtype=x.dtype
+            device=x.device,
+            dtype=x.dtype,
         )
 
-        audio_seqlens_acc = list(accumulate(audio_seqlens, func=operator.add, initial=0))
-        start_ids = torch.tensor(audio_seqlens_acc[:-1], device=x.device, dtype=torch.int32)
-        end_ids = torch.tensor(audio_seqlens_acc[1:], device=x.device, dtype=torch.int32) - 1
+        audio_seqlens_acc = list(
+            accumulate(audio_seqlens, func=operator.add, initial=0)
+        )
+        start_ids = torch.tensor(
+            audio_seqlens_acc[:-1], device=x.device, dtype=torch.int32
+        )
+        end_ids = (
+            torch.tensor(audio_seqlens_acc[1:], device=x.device, dtype=torch.int32) - 1
+        )
 
-        audio_tokens_mask = torch.ones(output.size(0), device=x.device, dtype=torch.bool)
+        audio_tokens_mask = torch.ones(
+            output.size(0), device=x.device, dtype=torch.bool
+        )
         audio_tokens_mask[start_ids] = False
         audio_tokens_mask[end_ids] = False
         output[start_ids] = self.audio_bos_eos_token.weight[0].to(x.dtype)

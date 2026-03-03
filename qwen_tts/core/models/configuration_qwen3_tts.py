@@ -44,6 +44,7 @@ class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
         enc_se_channels (`int`, *optional*, defaults to 128):
             The number of channels in the squeeze part of the `SqueezeExcitationBlock`.
     """
+
     def __init__(
         self,
         mel_dim=128,
@@ -432,11 +433,15 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         if code_predictor_config is None:
             code_predictor_config = {}
             self.code_predictor_config = Qwen3TTSTalkerCodePredictorConfig()
-            logger.info("code_predictor_config is None. Initializing code_predictor model with default values")
+            logger.info(
+                "code_predictor_config is None. Initializing code_predictor model with default values"
+            )
         elif isinstance(code_predictor_config, Qwen3TTSTalkerCodePredictorConfig):
             self.code_predictor_config = code_predictor_config
         else:
-            self.code_predictor_config = Qwen3TTSTalkerCodePredictorConfig(**code_predictor_config)
+            self.code_predictor_config = Qwen3TTSTalkerCodePredictorConfig(
+                **code_predictor_config
+            )
         self.num_code_groups = num_code_groups
         self.text_hidden_size = text_hidden_size
         self.codec_eos_token_id = codec_eos_token_id
@@ -453,7 +458,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
 
 class Qwen3TTSConfig(PretrainedConfig):
     """
-    This is the configuration class to store the configuration of a [`Qwen3TTSForConditionalGeneration`]. 
+    This is the configuration class to store the configuration of a [`Qwen3TTSForConditionalGeneration`].
     """
 
     model_type = "qwen3_tts"
@@ -480,13 +485,19 @@ class Qwen3TTSConfig(PretrainedConfig):
 
         if talker_config is None:
             talker_config = {}
-            logger.info("talker_config is None. Initializing talker model with default values")
+            logger.info(
+                "talker_config is None. Initializing talker model with default values"
+            )
         if speaker_encoder_config is None:
             speaker_encoder_config = {}
-            logger.info("speaker_encoder_config is None. Initializing talker model with default values")
+            logger.info(
+                "speaker_encoder_config is None. Initializing talker model with default values"
+            )
 
         self.talker_config = Qwen3TTSTalkerConfig(**talker_config)
-        self.speaker_encoder_config = Qwen3TTSSpeakerEncoderConfig(**speaker_encoder_config)
+        self.speaker_encoder_config = Qwen3TTSSpeakerEncoderConfig(
+            **speaker_encoder_config
+        )
 
         self.tokenizer_type = tokenizer_type
         self.tts_model_size = tts_model_size

@@ -49,7 +49,10 @@ def main():
     sf.write("qwen3_tts_test_custom_single.wav", wavs[0], sr)
 
     # -------- Batch (some empty instruct) --------
-    texts = ["其实我真的有发现，我是一个特别善于观察别人情绪的人。", "She said she would be here by noon."]
+    texts = [
+        "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+        "She said she would be here by noon.",
+    ]
     languages = ["Chinese", "English"]
     speakers = ["Vivian", "Ryan"]
     instructs = ["", "Very happy."]

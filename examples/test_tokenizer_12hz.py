@@ -45,7 +45,9 @@ wavs_d1, out_sr_d1 = tokenizer_12hz.decode(dict_input_12hz)
 sf.write("decoded_dict_12hz.wav", wavs_d1[0], out_sr_d1)
 
 # -------- Decode input as list[dict] (12hz) --------
-list_dict_input_12hz = [{"audio_codes": c} for c in enc2.audio_codes]  # list of torch.Tensor
+list_dict_input_12hz = [
+    {"audio_codes": c} for c in enc2.audio_codes
+]  # list of torch.Tensor
 wavs_d2, out_sr_d2 = tokenizer_12hz.decode(list_dict_input_12hz)
 for i, w in enumerate(wavs_d2):
     sf.write(f"decoded_listdict_12hz_{i}.wav", w, out_sr_d2)

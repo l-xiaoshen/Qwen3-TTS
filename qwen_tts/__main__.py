@@ -14,11 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 def main():
-    print(
-        "qwen_tts package.\n"
-        "Use CLI entrypoints:\n"
-        "  - qwen-tts-demo\n"
-    )
+    print("qwen_tts package.\nUse CLI entrypoints:\n  - qwen-tts-demo\n")
+
 
 if __name__ == "__main__":
     main()

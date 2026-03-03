@@ -50,12 +50,12 @@ def main():
     # -------- Batch --------
     texts = [
         "哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
-        "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there!"
+        "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there!",
     ]
     languages = ["Chinese", "English"]
     instructs = [
         "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
-        "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice."
+        "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice.",
     ]
 
     torch.cuda.synchronize()

@@ -30,6 +30,7 @@
 # SOFTWARE.
 
 """Core vector quantization implementation."""
+
 import random
 import typing as tp
 from random import randrange
@@ -44,6 +45,7 @@ import torch.nn.functional as F
 
 def round_up_multiple(num, mult):
     return ceil(num / mult) * mult
+
 
 def default(val: tp.Any, d: tp.Any) -> tp.Any:
     return val if val is not None else d
@@ -82,9 +84,9 @@ def kmeans(samples, num_clusters: int, num_iters: int = 10):
 
     for _ in range(num_iters):
         dists = -(
-                samples.pow(2).sum(1, keepdim=True)
-                - 2 * torch.matmul(samples, means.t())
-                + means.t().pow(2).sum(0, keepdim=True)
+            samples.pow(2).sum(1, keepdim=True)
+            - 2 * torch.matmul(samples, means.t())
+            + means.t().pow(2).sum(0, keepdim=True)
         )
 
         buckets = dists.max(dim=-1).indices
@@ -127,14 +129,14 @@ class EuclideanCodebook(nn.Module):
     """
 
     def __init__(
-            self,
-            dim: int,
-            codebook_size: int,
-            kmeans_init: int = False,
-            kmeans_iters: int = 10,
-            decay: float = 0.99,
-            epsilon: float = 1e-5,
-            threshold_ema_dead_code: float = 2.0,
+        self,
+        dim: int,
+        codebook_size: int,
+        kmeans_init: int = False,
+        kmeans_iters: int = 10,
+        decay: float = 0.99,
+        epsilon: float = 1e-5,
+        threshold_ema_dead_code: float = 2.0,
     ):
         super().__init__()
         self.decay = decay
@@ -176,7 +178,9 @@ class EuclideanCodebook(nn.Module):
         if not torch.any(expired_codes):
             return
         else:
-            print(f"VQ expire infos: num_expire={sum(expired_codes)}, cluster_size[:5]={cluster_size[:5]}")
+            print(
+                f"VQ expire infos: num_expire={sum(expired_codes)}, cluster_size[:5]={cluster_size[:5]}"
+            )
 
         batch_samples = rearrange(batch_samples, "... d -> (...) d")
         self.replace_(batch_samples, mask=expired_codes)
@@ -264,32 +268,42 @@ class VectorQuantization(nn.Module):
             randomly selected vector from the current batch.
         commitment_weight (float): Weight for commitment loss.
     """
+
     def __init__(
-            self,
-            dim: int,
-            codebook_size: int,
-            codebook_dim: tp.Optional[int] = None,
-            decay: float = 0.99,
-            epsilon: float = 1e-5,
-            kmeans_init: bool = True,
-            kmeans_iters: int = 50,
-            threshold_ema_dead_code: float = 2.0,
-            commitment_weight: float = 1.,
+        self,
+        dim: int,
+        codebook_size: int,
+        codebook_dim: tp.Optional[int] = None,
+        decay: float = 0.99,
+        epsilon: float = 1e-5,
+        kmeans_init: bool = True,
+        kmeans_iters: int = 50,
+        threshold_ema_dead_code: float = 2.0,
+        commitment_weight: float = 1.0,
     ):
         super().__init__()
         _codebook_dim: int = default(codebook_dim, dim)
 
         requires_projection = _codebook_dim != dim
-        self.project_in = (nn.Linear(dim, _codebook_dim)) if requires_projection else (nn.Identity())
-        self.project_out = (nn.Linear(_codebook_dim, dim)) if requires_projection else (nn.Identity())
+        self.project_in = (
+            (nn.Linear(dim, _codebook_dim)) if requires_projection else (nn.Identity())
+        )
+        self.project_out = (
+            (nn.Linear(_codebook_dim, dim)) if requires_projection else (nn.Identity())
+        )
 
         self.epsilon = epsilon
         self.commitment_weight = commitment_weight
 
-        self._codebook = EuclideanCodebook(dim=_codebook_dim, codebook_size=codebook_size,
-                                           kmeans_init=kmeans_init, kmeans_iters=kmeans_iters,
-                                           decay=decay, epsilon=epsilon,
-                                           threshold_ema_dead_code=threshold_ema_dead_code)
+        self._codebook = EuclideanCodebook(
+            dim=_codebook_dim,
+            codebook_size=codebook_size,
+            kmeans_init=kmeans_init,
+            kmeans_iters=kmeans_iters,
+            decay=decay,
+            epsilon=epsilon,
+            threshold_ema_dead_code=threshold_ema_dead_code,
+        )
         self.codebook_size = codebook_size
         self.training = True
 
@@ -335,18 +349,25 @@ class DistributedResidualVectorQuantization(nn.Module):
     """Efficient distributed residual vector quantization implementation.
     Follows Algorithm 1. in https://arxiv.org/pdf/2107.03312.pdf
     """
-    def __init__(self, *,
-                 num_quantizers,
-                 quantize_dropout: bool = False,
-                 rand_num_quant: tp.Optional[tp.List] = None,
-                 **kwargs):
+
+    def __init__(
+        self,
+        *,
+        num_quantizers,
+        quantize_dropout: bool = False,
+        rand_num_quant: tp.Optional[tp.List] = None,
+        **kwargs,
+    ):
         super().__init__()
         """
         dim: int,
         codebook_size: int,
         codebook_dim: tp.Optional[int] = None,
         """
-        codebook_size, codebook_dim = kwargs["codebook_size"], kwargs["codebook_dim"] if kwargs["codebook_dim"] else kwargs["dim"]
+        codebook_size, codebook_dim = (
+            kwargs["codebook_size"],
+            kwargs["codebook_dim"] if kwargs["codebook_dim"] else kwargs["dim"],
+        )
         kmeans_init = kwargs["kmeans_init"]
         if isinstance(kmeans_init, bool):
             if not kwargs["kmeans_init"]:
@@ -365,9 +386,13 @@ class DistributedResidualVectorQuantization(nn.Module):
                 embed = embed.unsqueeze(0)
             inited = True
         else:
-            raise TypeError("kmeans_init should be either a bool or string path to init weights.")
+            raise TypeError(
+                "kmeans_init should be either a bool or string path to init weights."
+            )
 
-        self.register_buffer("inited", torch.Tensor([[inited] for _ in range(num_quantizers)]))
+        self.register_buffer(
+            "inited", torch.Tensor([[inited] for _ in range(num_quantizers)])
+        )
         self.register_buffer("cluster_size", torch.zeros(num_quantizers, codebook_size))
         self.register_buffer("embed", embed)
         self.register_buffer("embed_avg", embed.clone())
@@ -396,18 +421,25 @@ class DistributedResidualVectorQuantization(nn.Module):
         all_sub_quants = []
         n_q = n_q or len(self.layers)
 
-        should_quantize_dropout = self.training and self.quantize_dropout and self.rand_num_quant is not None
+        should_quantize_dropout = (
+            self.training and self.quantize_dropout and self.rand_num_quant is not None
+        )
         if should_quantize_dropout:
             rand_quantize_dropout_index = random.choice(self.rand_num_quant)
 
             null_indices_shape = (x.shape[0], x.shape[2])
-            null_indices = torch.full(null_indices_shape, -1., device=device, dtype=torch.long)
-            null_loss = torch.full((1,), 0., device=device, dtype=x.dtype)
+            null_indices = torch.full(
+                null_indices_shape, -1.0, device=device, dtype=torch.long
+            )
+            null_loss = torch.full((1,), 0.0, device=device, dtype=x.dtype)
             null_sub_quant = torch.full(x.shape, -1, device=device, dtype=x.dtype)
 
         for quantizer_index, layer in enumerate(self.layers[:n_q]):
             # dropout except the first quantizer
-            if should_quantize_dropout and quantizer_index >= rand_quantize_dropout_index:
+            if (
+                should_quantize_dropout
+                and quantizer_index >= rand_quantize_dropout_index
+            ):
                 all_indices.append(null_indices)
                 all_losses.append(null_loss)
                 all_sub_quants.append(null_sub_quant)
@@ -415,16 +447,23 @@ class DistributedResidualVectorQuantization(nn.Module):
 
             quant_in = residual
             if self.q0_ds_ratio > 1 and quantizer_index == 0:
-                quant_in = F.interpolate(quant_in, size=[tt//2])
-            quantized, indices, loss = layer(quant_in, [
-                self.inited[quantizer_index],
-                self.cluster_size[quantizer_index],
-                self.embed[quantizer_index],
-                self.embed_avg[quantizer_index]
-            ])
+                quant_in = F.interpolate(quant_in, size=[tt // 2])
+            quantized, indices, loss = layer(
+                quant_in,
+                [
+                    self.inited[quantizer_index],
+                    self.cluster_size[quantizer_index],
+                    self.embed[quantizer_index],
+                    self.embed_avg[quantizer_index],
+                ],
+            )
             if self.q0_ds_ratio > 1 and quantizer_index == 0:
                 quantized = F.interpolate(quantized, size=[tt])
-                indices = F.interpolate(indices.unsqueeze(1).float(), size=[tt]).squeeze(1).long()
+                indices = (
+                    F.interpolate(indices.unsqueeze(1).float(), size=[tt])
+                    .squeeze(1)
+                    .long()
+                )
             residual = residual - quantized
             quantized_out = quantized_out + quantized
 
@@ -434,7 +473,9 @@ class DistributedResidualVectorQuantization(nn.Module):
 
         # sync buffers after one forward step
         # distrib.broadcast_tensors(self.buffers())
-        out_losses, out_indices, out_sub_quants = map(torch.stack, (all_losses, all_indices, all_sub_quants))
+        out_losses, out_indices, out_sub_quants = map(
+            torch.stack, (all_losses, all_indices, all_sub_quants)
+        )
 
         return quantized_out, out_indices, out_losses
 
@@ -443,18 +484,24 @@ class DistributedResidualVectorQuantization(nn.Module):
         all_indices = []
         n_q = n_q or len(self.layers)
         for i, layer in enumerate(self.layers[:n_q]):
-            indices = layer.encode(residual, [
-                self.inited[i],
-                self.cluster_size[i],
-                self.embed[i],
-                self.embed_avg[i]
-            ])
-            quantized = layer.decode(indices, [
-                self.inited[i],
-                self.cluster_size[i],
-                self.embed[i],
-                self.embed_avg[i]
-            ])
+            indices = layer.encode(
+                residual,
+                [
+                    self.inited[i],
+                    self.cluster_size[i],
+                    self.embed[i],
+                    self.embed_avg[i],
+                ],
+            )
+            quantized = layer.decode(
+                indices,
+                [
+                    self.inited[i],
+                    self.cluster_size[i],
+                    self.embed[i],
+                    self.embed_avg[i],
+                ],
+            )
             residual = residual - quantized
             all_indices.append(indices)
         out_indices = torch.stack(all_indices)
@@ -464,12 +511,15 @@ class DistributedResidualVectorQuantization(nn.Module):
         quantized_out = torch.tensor(0.0, device=q_indices.device)
         for i, indices in enumerate(q_indices):
             layer = self.layers[i]
-            quantized = layer.decode(indices, [
-                self.inited[i],
-                self.cluster_size[i],
-                self.embed[i],
-                self.embed_avg[i]
-            ])
+            quantized = layer.decode(
+                indices,
+                [
+                    self.inited[i],
+                    self.cluster_size[i],
+                    self.embed[i],
+                    self.embed_avg[i],
+                ],
+            )
             quantized_out = quantized_out + quantized
         return quantized_out
 
@@ -479,12 +529,16 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
     Follows Algorithm 1. in https://arxiv.org/abs/2305.02765
     Group Then rvq
     """
-    def __init__(self, *,
-                 num_groups,
-                 num_quantizers,
-                 quantize_dropout: bool = False,
-                 rand_num_quant: tp.Optional[tp.List] = None,
-                 **kwargs):
+
+    def __init__(
+        self,
+        *,
+        num_groups,
+        num_quantizers,
+        quantize_dropout: bool = False,
+        rand_num_quant: tp.Optional[tp.List] = None,
+        **kwargs,
+    ):
         super().__init__()
         self.rvqs = nn.ModuleList(
             [
@@ -492,7 +546,7 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
                     num_quantizers=num_quantizers,
                     quantize_dropout=quantize_dropout,
                     rand_num_quant=rand_num_quant,
-                    **kwargs
+                    **kwargs,
                 )
                 for _ in range(num_groups)
             ]
@@ -512,12 +566,24 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
 
         out_losses = torch.stack(all_losses, dim=1).mean(dim=1)
 
-        return torch.cat(all_quantized_out, dim=1), torch.stack(all_indices, dim=1), out_losses
+        return (
+            torch.cat(all_quantized_out, dim=1),
+            torch.stack(all_indices, dim=1),
+            out_losses,
+        )
 
     def encode(self, x: torch.Tensor, n_q: tp.Optional[int] = None) -> torch.Tensor:
         x_lst = torch.chunk(x, chunks=self.num_groups, dim=1)
-        return torch.stack([mod.encode(item, n_q) for mod, item in zip(self.rvqs, x_lst)], dim=1)
+        return torch.stack(
+            [mod.encode(item, n_q) for mod, item in zip(self.rvqs, x_lst)], dim=1
+        )
 
     def decode(self, q_indices: torch.Tensor) -> torch.Tensor:
         q_indices_lst = torch.chunk(q_indices, chunks=self.num_groups, dim=1)
-        return torch.cat([mod.decode(item.squeeze(1)) for mod, item in zip(self.rvqs, q_indices_lst)], dim=1)
+        return torch.cat(
+            [
+                mod.decode(item.squeeze(1))
+                for mod, item in zip(self.rvqs, q_indices_lst)
+            ],
+            dim=1,
+        )

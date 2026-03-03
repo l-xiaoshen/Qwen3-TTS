@@ -24,6 +24,7 @@ class Qwen3TTSProcessorKwargs(ProcessingKwargs, total=False):
         }
     }
 
+
 class Qwen3TTSProcessor(ProcessorMixin):
     r"""
     Constructs a Qwen3TTS processor.
@@ -38,16 +39,14 @@ class Qwen3TTSProcessor(ProcessorMixin):
     attributes = ["tokenizer"]
     tokenizer_class = ("Qwen2Tokenizer", "Qwen2TokenizerFast")
 
-    def __init__(
-        self, tokenizer=None, chat_template=None
-    ):
+    def __init__(self, tokenizer=None, chat_template=None):
         super().__init__(tokenizer, chat_template=chat_template)
 
     def __call__(self, text=None, **kwargs) -> BatchFeature:
         """
         Main method to prepare for the model one or several sequences(s) and audio(s). This method forwards the `text`
         and `kwargs` arguments to Qwen2TokenizerFast's [`~Qwen2TokenizerFast.__call__`] if `text` is not `None` to encode
-        the text. 
+        the text.
 
         Args:
             text (`str`, `List[str]`, `List[List[str]]`):
@@ -96,11 +95,7 @@ class Qwen3TTSProcessor(ProcessorMixin):
     @property
     def model_input_names(self):
         tokenizer_input_names = self.tokenizer.model_input_names
-        return list(
-            dict.fromkeys(
-                tokenizer_input_names
-            )
-        )
+        return list(dict.fromkeys(tokenizer_input_names))
 
 
 __all__ = ["Qwen3TTSProcessor"]
