@@ -143,7 +143,7 @@ Also, you should have hardware that is compatible with FlashAttention 2. Read mo
 
 ### Python Package Usage
 
-After installation, you can import `Qwen3TTSModel` to run custom voice TTS, voice design, and voice clone. The model weights can be specified either as a Hugging Face model id (recommended) or as a local directory path you downloaded. For all the `generate_*` functions below, besides the parameters shown and explicitly documented, you can also pass generation kwargs supported by Hugging Face Transformers `model.generate`, e.g., `max_new_tokens`, `top_p`, etc.
+After installation, import the feature-specific model class (`Qwen3TTSCustomVoiceModel`, `Qwen3TTSVoiceDesignModel`, or `Qwen3TTSVoiceCloneModel`) to run custom voice TTS, voice design, and voice clone. The model weights can be specified either as a Hugging Face model id (recommended) or as a local directory path you downloaded. For all the `generate_*` functions below, besides the parameters shown and explicitly documented, you can also pass generation kwargs supported by Hugging Face Transformers `model.generate`, e.g., `max_new_tokens`, `top_p`, etc.
 
 #### Custom Voice Generate
 
@@ -152,9 +152,9 @@ For custom voice models (`Qwen3-TTS-12Hz-1.7B/0.6B-CustomVoice`), you just need 
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSCustomVoiceModel
 
-model = Qwen3TTSModel.from_pretrained(
+model = Qwen3TTSCustomVoiceModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     device_map="cuda:0",
     dtype=torch.bfloat16,
@@ -205,9 +205,9 @@ For the voice design model (`Qwen3-TTS-12Hz-1.7B-VoiceDesign`), you can use `gen
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceDesignModel
 
-model = Qwen3TTSModel.from_pretrained(
+model = Qwen3TTSVoiceDesignModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     device_map="cuda:0",
     dtype=torch.bfloat16,
@@ -245,9 +245,9 @@ For the voice clone model (`Qwen3-TTS-12Hz-1.7B/0.6B-Base`), to clone a voice an
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceCloneModel
 
-model = Qwen3TTSModel.from_pretrained(
+model = Qwen3TTSVoiceCloneModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     device_map="cuda:0",
     dtype=torch.bfloat16,
@@ -292,10 +292,10 @@ If you want a designed voice that you can reuse like a cloned speaker, a practic
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceCloneModel, Qwen3TTSVoiceDesignModel
 
 # create a reference audio in the target style using the VoiceDesign model
-design_model = Qwen3TTSModel.from_pretrained(
+design_model = Qwen3TTSVoiceDesignModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
     device_map="cuda:0",
     dtype=torch.bfloat16,
@@ -312,7 +312,7 @@ ref_wavs, sr = design_model.generate_voice_design(
 sf.write("voice_design_reference.wav", ref_wavs[0], sr)
 
 # build a reusable clone prompt from the voice design reference
-clone_model = Qwen3TTSModel.from_pretrained(
+clone_model = Qwen3TTSVoiceCloneModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     device_map="cuda:0",
     dtype=torch.bfloat16,

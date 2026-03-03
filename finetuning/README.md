@@ -68,10 +68,10 @@ Checkpoints will be written to:
 ```python
 import torch
 import soundfile as sf
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSCustomVoiceModel
 
 device = "cuda:0"
-tts = Qwen3TTSModel.from_pretrained(
+tts = Qwen3TTSCustomVoiceModel.from_pretrained(
     "output/checkpoint-epoch-2",
     device_map=device,
     dtype=torch.bfloat16,

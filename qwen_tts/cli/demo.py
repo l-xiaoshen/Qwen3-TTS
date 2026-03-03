@@ -21,13 +21,25 @@ import argparse
 import os
 import tempfile
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gradio as gr
 import numpy as np
 import torch
 
-from .. import Qwen3TTSModel, VoiceClonePromptItem
+from .. import (
+    Qwen3TTSBaseModel,
+    Qwen3TTSCustomVoiceModel,
+    Qwen3TTSVoiceCloneModel,
+    Qwen3TTSVoiceDesignModel,
+    VoiceClonePromptItem,
+)
+
+Qwen3TTSFeatureModel = Union[
+    Qwen3TTSCustomVoiceModel,
+    Qwen3TTSVoiceDesignModel,
+    Qwen3TTSVoiceCloneModel,
+]
 
 
 def _title_case_display(s: str) -> str:
@@ -277,7 +289,30 @@ def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> Tuple[int, np.ndarray]:
     return sr, wav
 
 
-def _detect_model_kind(ckpt: str, tts: Qwen3TTSModel) -> str:
+def _specialize_model(tts: Qwen3TTSBaseModel) -> Qwen3TTSFeatureModel:
+    mt = getattr(tts.model, "tts_model_type", None)
+    if mt == "custom_voice":
+        return Qwen3TTSCustomVoiceModel(
+            model=tts.model,
+            processor=tts.processor,
+            generate_defaults=tts.generate_defaults,
+        )
+    if mt == "voice_design":
+        return Qwen3TTSVoiceDesignModel(
+            model=tts.model,
+            processor=tts.processor,
+            generate_defaults=tts.generate_defaults,
+        )
+    if mt == "base":
+        return Qwen3TTSVoiceCloneModel(
+            model=tts.model,
+            processor=tts.processor,
+            generate_defaults=tts.generate_defaults,
+        )
+    raise ValueError(f"Unknown Qwen-TTS model type: {mt}")
+
+
+def _detect_model_kind(tts: Qwen3TTSFeatureModel) -> str:
     mt = getattr(tts.model, "tts_model_type", None)
     if mt in ("custom_voice", "voice_design", "base"):
         return mt
@@ -286,9 +321,9 @@ def _detect_model_kind(ckpt: str, tts: Qwen3TTSModel) -> str:
 
 
 def build_demo(
-    tts: Qwen3TTSModel, ckpt: str, gen_kwargs_default: Dict[str, Any]
+    tts: Qwen3TTSFeatureModel, ckpt: str, gen_kwargs_default: Dict[str, Any]
 ) -> gr.Blocks:
-    model_kind = _detect_model_kind(ckpt, tts)
+    model_kind = _detect_model_kind(tts)
 
     supported_langs_raw = None
     if callable(getattr(tts.model, "get_supported_languages", None)):
@@ -720,12 +755,13 @@ def main(argv=None) -> int:
     dtype = _dtype_from_str(args.dtype)
     attn_impl = "flash_attention_2" if args.flash_attn else None
 
-    tts = Qwen3TTSModel.from_pretrained(
+    base_tts = Qwen3TTSBaseModel.from_pretrained(
         ckpt,
         device_map=args.device,
         dtype=dtype,
         attn_implementation=attn_impl,
     )
+    tts = _specialize_model(base_tts)
 
     gen_kwargs_default = _collect_gen_kwargs(args)
     demo = build_demo(tts, ckpt, gen_kwargs_default)

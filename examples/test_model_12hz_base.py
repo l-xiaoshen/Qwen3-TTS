@@ -18,14 +18,14 @@ import time
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSModel
+from qwen_tts import Qwen3TTSVoiceCloneModel
 
 
 def ensure_dir(d: str):
     os.makedirs(d, exist_ok=True)
 
 
-def run_case(tts: Qwen3TTSModel, out_dir: str, case_name: str, call_fn):
+def run_case(tts: Qwen3TTSVoiceCloneModel, out_dir: str, case_name: str, call_fn):
     torch.cuda.synchronize()
     t0 = time.time()
 
@@ -45,7 +45,7 @@ def main():
     OUT_DIR = "qwen3_tts_test_voice_clone_output_wav"
     ensure_dir(OUT_DIR)
 
-    tts = Qwen3TTSModel.from_pretrained(
+    tts = Qwen3TTSVoiceCloneModel.from_pretrained(
         MODEL_PATH,
         device_map=device,
         dtype=torch.bfloat16,
