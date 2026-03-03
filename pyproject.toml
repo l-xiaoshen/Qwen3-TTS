@@ -7,28 +7,28 @@ name = "qwen-tts"
 version = "0.1.1"
 description = "Qwen-TTS python package"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Alibaba Qwen Team" }]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
 ]
-license = { text = "Apache-2.0" }
-authors = [{ name = "Alibaba Qwen Team" }]
-
 dependencies = [
-  "transformers==4.57.3",
-  "accelerate==1.12.0",
-  "gradio",
-  "librosa",
-  "torchaudio",
-  "soundfile",
-  "sox",
-  "onnxruntime",
-  "einops",
+  "accelerate>=1.12.0,<2",
+  "einops>=0.8.2",
+  "gradio>=6.8.0",
+  "librosa>=0.11.0",
+  "onnxruntime>=1.24.2",
+  "soundfile>=0.13.1",
+  "sox>=1.5.0",
+  "torch>=2.9.1,<2.10",
+  "torchaudio>=2.9.1,<2.10",
+  "transformers>=4.57.3,<5",
+  "typing-extensions>=4.15.0",
 ]
 
 [project.urls]
@@ -38,8 +38,21 @@ Repository = "https://github.com/Qwen/Qwen3-TTS"
 [project.scripts]
 qwen-tts-demo = "qwen_tts.cli.demo:main"
 
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchaudio = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
 [tool.setuptools]
-packages = { find = { where = ["."] , include = ["qwen_tts*"] } }
+packages = { find = { where = ["."], include = ["qwen_tts*"] } }
 include-package-data = true
 
 [tool.setuptools.package-data]
