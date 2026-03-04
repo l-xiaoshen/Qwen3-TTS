@@ -5,7 +5,8 @@
 import base64
 import io
 import urllib.request
-from typing import List, Optional, Union
+from collections.abc import Sequence
+from typing import Optional, Protocol, Union, runtime_checkable
 from urllib.parse import urlparse
 
 import librosa
@@ -15,9 +16,14 @@ import soundfile as sf
 AudioInput = Union[
     str,
     np.ndarray,
-    List[str],
-    List[np.ndarray],
+    Sequence[str],
+    Sequence[np.ndarray],
 ]
+
+
+@runtime_checkable
+class _FeatureExtractorWithSamplingRate(Protocol):
+    sampling_rate: int | float
 
 
 class Qwen3TTSTokenizerAudioMixin:
@@ -84,7 +90,7 @@ class Qwen3TTSTokenizerAudioMixin:
         self,
         audios: AudioInput,
         sr: Optional[int],
-    ) -> List[np.ndarray]:
+    ) -> list[np.ndarray]:
         """
         Normalize all supported input types into a list of 1-D numpy float32 waveforms
         at `self.feature_extractor.sampling_rate`.
@@ -98,38 +104,56 @@ class Qwen3TTSTokenizerAudioMixin:
                 Sampling rate for raw numpy input. Required if input is np.ndarray or list[np.ndarray].
 
         Returns:
-            List[np.ndarray]:
+            list[np.ndarray]:
                 List of float32 waveforms resampled to model input SR.
         """
-        target_sr = int(self.feature_extractor.sampling_rate)
+        feature_extractor = getattr(self, "feature_extractor", None)
+        if feature_extractor is None or not isinstance(
+            feature_extractor, _FeatureExtractorWithSamplingRate
+        ):
+            raise RuntimeError("Feature extractor is not initialized.")
+        target_sr = int(feature_extractor.sampling_rate)
 
-        if isinstance(audios, (str, np.ndarray)):
-            audios = [audios]
+        audio_items: list[str | np.ndarray]
+        if isinstance(audios, str):
+            audio_items = [audios]
+        elif isinstance(audios, np.ndarray):
+            audio_items = [audios]
+        else:
+            audio_items = list(audios)
 
-        if len(audios) == 0:
+        if len(audio_items) == 0:
             return []
 
-        if isinstance(audios[0], str):
-            # wav path list or base64 list
-            return [self.load_audio(x, target_sr=target_sr) for x in audios]  # type: ignore[arg-type]
+        if all(isinstance(item, str) for item in audio_items):
+            path_items = [item for item in audio_items if isinstance(item, str)]
+            load_audio_fn = getattr(self, "load_audio", None)
+            if not callable(load_audio_fn):
+                raise RuntimeError("Tokenizer does not implement `load_audio`.")
+            return [load_audio_fn(path, target_sr=target_sr) for path in path_items]
 
-        # numpy list
+        waveform_items = [item for item in audio_items if isinstance(item, np.ndarray)]
+        if len(waveform_items) != len(audio_items):
+            raise TypeError(
+                "Mixed input types are not supported. Use all paths/base64 or all numpy arrays."
+            )
+
         if sr is None:
             raise ValueError(
                 "For numpy waveform input, you must provide `sr` (original sampling rate)."
             )
 
-        out: List[np.ndarray] = []
-        for a in audios:  # type: ignore[assignment]
-            if not isinstance(a, np.ndarray):
-                raise TypeError(
-                    "Mixed input types are not supported. Use all paths/base64 or all numpy arrays."
+        out: list[np.ndarray] = []
+        source_sr = int(sr)
+        for waveform in waveform_items:
+            if waveform.ndim > 1:
+                waveform = waveform.mean(axis=-1)
+            wave_fp32 = np.asarray(waveform, dtype=np.float32)
+            if source_sr != target_sr:
+                wave_fp32 = librosa.resample(
+                    y=wave_fp32,
+                    orig_sr=source_sr,
+                    target_sr=target_sr,
                 )
-            if a.ndim > 1:
-                a = np.mean(a, axis=-1)
-            if int(sr) != target_sr:
-                a = librosa.resample(
-                    y=a.astype(np.float32), orig_sr=int(sr), target_sr=target_sr
-                )
-            out.append(a.astype(np.float32))
+            out.append(np.asarray(wave_fp32, dtype=np.float32))
         return out

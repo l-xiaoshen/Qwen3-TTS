@@ -350,8 +350,10 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
 
         hidden = self.pre_transformer(inputs_embeds=hidden).last_hidden_state
         hidden = hidden.permute(0, 2, 1)
-        for blocks in self.upsample:
-            for block in blocks:
+        for blocks_module in self.upsample:
+            if not isinstance(blocks_module, nn.ModuleList):
+                raise TypeError("Unexpected upsample module container type.")
+            for block in blocks_module:
                 hidden = block(hidden)
         wav = hidden
         for block in self.decoder:

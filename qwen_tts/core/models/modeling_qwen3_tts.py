@@ -16,12 +16,13 @@
 
 import json
 import os
-from typing import Optional
+from collections.abc import Sequence
+from typing import Optional, TypedDict
 
 import huggingface_hub
+import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-from transformers.generation import GenerationMixin
 from transformers.utils import logging
 from transformers.utils.hub import cached_file
 
@@ -40,6 +41,21 @@ from .modeling_qwen3_tts_talker import (
 )
 
 logger = logging.get_logger(__name__)
+
+
+class VoiceClonePrompt(TypedDict):
+    ref_code: list[torch.Tensor | None]
+    ref_spk_embedding: list[torch.Tensor]
+    x_vector_only_mode: list[bool]
+    icl_mode: list[bool]
+
+
+GenerateConfigPrimitive = str | int | float | bool | None
+GenerateConfigValue = (
+    GenerateConfigPrimitive
+    | list["GenerateConfigValue"]
+    | dict[str, "GenerateConfigValue"]
+)
 
 
 def download_weights_from_hf_specific(
@@ -82,7 +98,7 @@ def download_weights_from_hf_specific(
     return hf_folder
 
 
-class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin):
+class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel):
     config_class = Qwen3TTSConfig
 
     def __init__(self, config: Qwen3TTSConfig):
@@ -92,18 +108,20 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         self.talker = Qwen3TTSTalkerForConditionalGeneration(self.config.talker_config)
 
         if config.tts_model_type == "base":
-            self.speaker_encoder = Qwen3TTSSpeakerEncoder(
-                self.config.speaker_encoder_config
+            self.speaker_encoder: Qwen3TTSSpeakerEncoder | None = (
+                Qwen3TTSSpeakerEncoder(self.config.speaker_encoder_config)
             )
         else:
             self.speaker_encoder = None
 
-        self.speech_tokenizer = None
-        self.generate_config = None
+        self.speech_tokenizer: Qwen3TTSTokenizer | None = None
+        self.generate_config: dict[str, GenerateConfigValue] | None = None
 
-        self.supported_speakers = self.config.talker_config.spk_id.keys()
+        supported_speakers = self.config.talker_config.spk_id or {}
+        supported_languages = self.config.talker_config.codec_language_id or {}
+        self.supported_speakers = list(supported_speakers.keys())
         self.supported_languages = ["auto"]
-        for language_id in self.config.talker_config.codec_language_id.keys():
+        for language_id in supported_languages.keys():
             if "dialect" not in language_id:
                 self.supported_languages.append(language_id)
 
@@ -116,16 +134,18 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
 
         self.post_init()
 
-    def load_speech_tokenizer(self, speech_tokenizer):
+    def load_speech_tokenizer(self, speech_tokenizer: Qwen3TTSTokenizer) -> None:
         self.speech_tokenizer = speech_tokenizer
 
-    def load_generate_config(self, generate_config):
+    def load_generate_config(
+        self, generate_config: dict[str, GenerateConfigValue]
+    ) -> None:
         self.generate_config = generate_config
 
-    def get_supported_speakers(self):
+    def get_supported_speakers(self) -> list[str]:
         return self.supported_speakers
 
-    def get_supported_languages(self):
+    def get_supported_languages(self) -> list[str]:
         return self.supported_languages
 
     @classmethod
@@ -213,6 +233,10 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             token=kwargs.pop("use_auth_token", None),
             revision=kwargs.pop("revision", None),
         )
+        if generate_config_path is None:
+            raise ValueError(
+                f"{pretrained_model_name_or_path}/generation_config.json not exists"
+            )
         with open(generate_config_path, "r", encoding="utf-8") as f:
             generate_config = json.load(f)
         model.load_generate_config(generate_config)
@@ -220,10 +244,11 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         return model
 
     @torch.inference_mode()
-    def extract_speaker_embedding(self, audio, sr):
+    def extract_speaker_embedding(self, audio: np.ndarray, sr: int) -> torch.Tensor:
         assert sr == 24000, "Only support 24kHz audio"
+        audio_tensor = torch.from_numpy(audio).unsqueeze(0)
         mels = mel_spectrogram(
-            torch.from_numpy(audio).unsqueeze(0),
+            audio_tensor,
             n_fft=1024,
             num_mels=128,
             sampling_rate=24000,
@@ -232,12 +257,17 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             fmin=0,
             fmax=12000,
         ).transpose(1, 2)
-        speaker_embedding = self.speaker_encoder(mels.to(self.device).to(self.dtype))[0]
+        speaker_encoder = self.speaker_encoder
+        if speaker_encoder is None:
+            raise RuntimeError("Speaker encoder is not available for this model.")
+        speaker_embedding = speaker_encoder(mels.to(self.device).to(self.dtype))[0]
         return speaker_embedding
 
     @torch.inference_mode()
-    def generate_speaker_prompt(self, voice_clone_prompt: list[dict]):
-        voice_clone_spk_embeds = []
+    def generate_speaker_prompt(
+        self, voice_clone_prompt: VoiceClonePrompt
+    ) -> list[torch.Tensor]:
+        voice_clone_spk_embeds: list[torch.Tensor] = []
         for index in range(len(voice_clone_prompt["ref_spk_embedding"])):
             ref_spk_embedding = (
                 voice_clone_prompt["ref_spk_embedding"][index]
@@ -256,7 +286,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         tts_pad_embed: torch.Tensor,
         tts_eos_embed: torch.Tensor,
         non_streaming_mode: bool,
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # text embed (ref id + text id + eos) 1 T1 D
         text_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(torch.cat([ref_id, text_id], dim=-1))
@@ -326,12 +356,12 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
     def generate(
         self,
         input_ids: Optional[list[torch.Tensor]] = None,
-        instruct_ids: Optional[list[torch.Tensor]] = None,
-        ref_ids: Optional[list[torch.Tensor]] = None,
-        voice_clone_prompt: list[dict] = None,
-        languages: list[str] = None,
-        speakers: list[str] = None,
-        non_streaming_mode=False,
+        instruct_ids: Optional[list[torch.Tensor | None]] = None,
+        ref_ids: Optional[list[torch.Tensor | None]] = None,
+        voice_clone_prompt: Optional[VoiceClonePrompt] = None,
+        languages: Optional[list[str]] = None,
+        speakers: Optional[list[str | None]] = None,
+        non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
         top_k: int = 50,
@@ -343,76 +373,99 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         subtalker_temperature: float = 0.9,
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
-        **kwargs,
-    ):
-        talker_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "min_new_tokens": 2,
-            "do_sample": do_sample,
-            "top_k": top_k,
-            "top_p": top_p,
-            "temperature": temperature,
-            "subtalker_dosample": subtalker_dosample,
-            "subtalker_top_k": subtalker_top_k,
-            "subtalker_top_p": subtalker_top_p,
-            "subtalker_temperature": subtalker_temperature,
-            "eos_token_id": eos_token_id
-            if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id,
-            "repetition_penalty": repetition_penalty,
-            "suppress_tokens": [
-                i
-                for i in range(
-                    self.config.talker_config.vocab_size - 1024,
-                    self.config.talker_config.vocab_size,
+        output_hidden_states: bool = True,
+        return_dict_in_generate: bool = True,
+        **kwargs: GenerateConfigPrimitive,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        if input_ids is None or len(input_ids) == 0:
+            raise ValueError("`input_ids` must be a non-empty list of tensors.")
+
+        batch_size = len(input_ids)
+        if languages is None:
+            languages = ["auto"] * batch_size
+        if len(languages) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, languages={len(languages)}"
+            )
+
+        if speakers is None:
+            speakers = [None] * batch_size
+        if len(speakers) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, speakers={len(speakers)}"
+            )
+
+        if instruct_ids is None:
+            instruct_ids = [None] * batch_size
+        elif len(instruct_ids) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, instruct_ids={len(instruct_ids)}"
+            )
+
+        if ref_ids is None:
+            ref_ids = [None] * batch_size
+        elif len(ref_ids) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, ref_ids={len(ref_ids)}"
+            )
+
+        if voice_clone_prompt is not None:
+            if not (
+                len(voice_clone_prompt["ref_code"])
+                == len(voice_clone_prompt["ref_spk_embedding"])
+                == len(voice_clone_prompt["x_vector_only_mode"])
+                == len(voice_clone_prompt["icl_mode"])
+                == batch_size
+            ):
+                raise ValueError(
+                    "Batch size mismatch in `voice_clone_prompt` fields and `input_ids`."
                 )
-                if i not in (self.config.talker_config.codec_eos_token_id,)
-            ],
-            "output_hidden_states": getattr(kwargs, "output_hidden_states", True),
-            "return_dict_in_generate": getattr(kwargs, "return_dict_in_generate", True),
-        }
 
-        talker_input_embeds = [[] for _ in range(len(input_ids))]
+        suppress_tokens = [
+            i
+            for i in range(
+                self.config.talker_config.vocab_size - 1024,
+                self.config.talker_config.vocab_size,
+            )
+            if i not in (self.config.talker_config.codec_eos_token_id,)
+        ]
+        _ = kwargs
 
-        voice_clone_spk_embeds = None
-        # voice clone speaker prompt generate
+        talker_input_embeds: list[list[torch.Tensor]] = [[] for _ in range(batch_size)]
+
+        voice_clone_spk_embeds: list[torch.Tensor] | None = None
         if voice_clone_prompt is not None:
             voice_clone_spk_embeds = self.generate_speaker_prompt(voice_clone_prompt)
 
-        # instruct text prompt generate
-        if instruct_ids is not None:
-            for index, instruct_id in enumerate(instruct_ids):
-                if instruct_id is not None:
-                    talker_input_embeds[index].append(
-                        self.talker.text_projection(
-                            self.talker.get_text_embeddings()(instruct_id)
-                        )
+        for index, instruct_id in enumerate(instruct_ids):
+            if instruct_id is not None:
+                talker_input_embeds[index].append(
+                    self.talker.text_projection(
+                        self.talker.get_text_embeddings()(instruct_id)
                     )
+                )
 
-        # tts text prompt generate
-        trailing_text_hiddens = []
-        if speakers is None:
-            speakers = [None] * len(input_ids)
+        trailing_text_hiddens: list[torch.Tensor] = []
+        tts_pad_embed_last: torch.Tensor | None = None
         for index, (input_id, language, speaker) in enumerate(
             zip(input_ids, languages, speakers)
         ):
             if voice_clone_spk_embeds is None:
-                if speaker == "" or speaker is None:  # Instruct create speaker
+                if speaker == "" or speaker is None:
                     speaker_embed = None
                 else:
                     if speaker.lower() not in self.config.talker_config.spk_id:
                         raise NotImplementedError(f"Speaker {speaker} not implemented")
-                    else:
-                        spk_id = self.config.talker_config.spk_id[speaker.lower()]
-                        speaker_embed = self.talker.get_input_embeddings()(
-                            torch.tensor(
-                                spk_id,
-                                device=self.talker.device,
-                                dtype=input_id.dtype,
-                            )
+                    spk_id = self.config.talker_config.spk_id[speaker.lower()]
+                    speaker_embed = self.talker.get_input_embeddings()(
+                        torch.tensor(
+                            spk_id,
+                            device=self.talker.device,
+                            dtype=input_id.dtype,
                         )
+                    )
             else:
-                if (
+                if voice_clone_prompt is not None and (
                     voice_clone_prompt["x_vector_only_mode"][index]
                     or voice_clone_prompt["icl_mode"][index]
                 ):
@@ -420,20 +473,18 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 else:
                     speaker_embed = None
 
-            assert language is not None
-
-            if language.lower() == "auto":
+            language_lower = language.lower()
+            if language_lower == "auto":
                 language_id = None
             else:
-                if language.lower() not in self.config.talker_config.codec_language_id:
+                if language_lower not in self.config.talker_config.codec_language_id:
                     raise NotImplementedError(f"Language {language} not implemented")
-                else:
-                    language_id = self.config.talker_config.codec_language_id[
-                        language.lower()
-                    ]
+                language_id = self.config.talker_config.codec_language_id[
+                    language_lower
+                ]
 
             if (
-                language.lower() in ["chinese", "auto"]
+                language_lower in ["chinese", "auto"]
                 and speaker != ""
                 and speaker is not None
                 and self.config.talker_config.spk_is_dialect[speaker.lower()]
@@ -456,9 +507,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                         dtype=input_id.dtype,
                     )
                 )
-            ).chunk(3, dim=1)  # 3 * [1 1 d]
+            ).chunk(3, dim=1)
+            tts_pad_embed_last = tts_pad_embed
 
-            # codec: tag and speaker
             if language_id is None:
                 codec_prefill_list = [
                     [
@@ -510,14 +561,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     dim=1,
                 )
 
-            # '<|im_start|>assistant\n我叫通义千问，是阿里云的开源大模型。<|im_end|>\n<|im_start|>assistant\n'
-
-            # <|im_start|>assistant\n
             _talker_input_embed_role = self.talker.text_projection(
                 self.talker.get_text_embeddings()(input_id[:, :3])
             )
-
-            # tts_pad * 4 + tts_bos
             _talker_input_embed = (
                 torch.cat(
                     (
@@ -530,22 +576,29 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 )
                 + codec_input_emebdding[:, :-1]
             )
-
             talker_input_embed = torch.cat(
                 (_talker_input_embed_role, _talker_input_embed), dim=1
             )
 
+            ref_code_item = (
+                voice_clone_prompt["ref_code"][index]
+                if voice_clone_prompt is not None
+                else None
+            )
             if (
                 voice_clone_prompt is not None
-                and voice_clone_prompt["ref_code"] is not None
+                and ref_code_item is not None
                 and voice_clone_prompt["icl_mode"][index]
             ):
+                ref_id = ref_ids[index]
+                if ref_id is None:
+                    raise ValueError(
+                        "`ref_ids` is required for ICL mode voice clone generation."
+                    )
                 icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
                     text_id=input_id[:, 3:-5],
-                    ref_id=ref_ids[index][:, 3:-2],
-                    ref_code=voice_clone_prompt["ref_code"][index].to(
-                        self.talker.device
-                    ),
+                    ref_id=ref_id[:, 3:-2],
+                    ref_code=ref_code_item.to(self.talker.device),
                     tts_pad_embed=tts_pad_embed,
                     tts_eos_embed=tts_eos_embed,
                     non_streaming_mode=non_streaming_mode,
@@ -554,7 +607,6 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     [talker_input_embed, icl_input_embed], dim=1
                 )
             else:
-                #  tts_text_first_token
                 talker_input_embed = torch.cat(
                     [
                         talker_input_embed,
@@ -566,9 +618,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     dim=1,
                 )
                 if non_streaming_mode:
-                    talker_input_embed = talker_input_embed[
-                        :, :-1
-                    ]  # 去掉原本放进去的text
+                    talker_input_embed = talker_input_embed[:, :-1]
                     talker_input_embed = torch.cat(
                         [
                             talker_input_embed,
@@ -612,7 +662,6 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                     )
                     trailing_text_hidden = tts_pad_embed
                 else:
-                    # 叫通义千问，是阿里云的开源大模型。
                     trailing_text_hidden = torch.cat(
                         (
                             self.talker.text_projection(
@@ -625,29 +674,40 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             talker_input_embeds[index].append(talker_input_embed)
             trailing_text_hiddens.append(trailing_text_hidden)
 
-        for index, talker_input_embed in enumerate(talker_input_embeds):
-            talker_input_embeds[index] = torch.cat(
-                [item for item in talker_input_embed if item is not None], dim=1
-            )
+        merged_talker_input_embeds: list[torch.Tensor] = []
+        for sample_embeds in talker_input_embeds:
+            if len(sample_embeds) == 0:
+                raise RuntimeError(
+                    "Each batch item must contain at least one embed block."
+                )
+            merged_talker_input_embeds.append(torch.cat(sample_embeds, dim=1))
 
-        # for batch inferquence
-        original_lengths = torch.tensor([t.shape[1] for t in talker_input_embeds])
-        # left padding for talker input embeds
-        sequences = [t.squeeze(0) for t in talker_input_embeds]
+        if tts_pad_embed_last is None:
+            raise RuntimeError("`tts_pad_embed` was not created during generation.")
+
+        original_lengths = torch.tensor(
+            [t.shape[1] for t in merged_talker_input_embeds]
+        )
+        sequences = [t.squeeze(0) for t in merged_talker_input_embeds]
         sequences_reversed = [t.flip(dims=[0]) for t in sequences]
         padded_reversed = torch.nn.utils.rnn.pad_sequence(
             sequences_reversed, batch_first=True, padding_value=0.0
         )
-        talker_input_embeds = padded_reversed.flip(dims=[1])
-        # generate mask
-        batch_size, max_len = talker_input_embeds.shape[0], talker_input_embeds.shape[1]
-        indices = torch.arange(max_len).expand(batch_size, -1)
+        talker_input_embeds_tensor = padded_reversed.flip(dims=[1])
+
+        generated_batch_size, max_len = (
+            talker_input_embeds_tensor.shape[0],
+            talker_input_embeds_tensor.shape[1],
+        )
+        indices = torch.arange(max_len).expand(generated_batch_size, -1)
         num_pads = max_len - original_lengths
         talker_attention_mask = (
-            (indices >= num_pads.unsqueeze(1)).long().to(talker_input_embeds.device)
+            (indices >= num_pads.unsqueeze(1))
+            .long()
+            .to(talker_input_embeds_tensor.device)
         )
-        # padding trailing text hiddens
-        pad_embedding_vector = tts_pad_embed.squeeze()
+
+        pad_embedding_vector = tts_pad_embed_last.squeeze()
         sequences_to_pad = [t.squeeze(0) for t in trailing_text_hiddens]
         trailing_text_original_lengths = [s.shape[0] for s in sequences_to_pad]
         padded_hiddens = torch.nn.utils.rnn.pad_sequence(
@@ -661,24 +721,64 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         ).unsqueeze(1)
         padding_mask = arange_tensor >= lengths_tensor
         padded_hiddens[padding_mask] = pad_embedding_vector
-        trailing_text_hiddens = padded_hiddens
+        trailing_text_hiddens_tensor = padded_hiddens
 
-        # forward
         talker_result = self.talker.generate(
-            inputs_embeds=talker_input_embeds,
+            inputs_embeds=talker_input_embeds_tensor,
             attention_mask=talker_attention_mask,
-            trailing_text_hidden=trailing_text_hiddens,
-            tts_pad_embed=tts_pad_embed,
-            **talker_kwargs,
+            trailing_text_hidden=trailing_text_hiddens_tensor,
+            tts_pad_embed=tts_pad_embed_last,
+            max_new_tokens=max_new_tokens,
+            min_new_tokens=2,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+            eos_token_id=(
+                eos_token_id
+                if eos_token_id is not None
+                else self.config.talker_config.codec_eos_token_id
+            ),
+            repetition_penalty=repetition_penalty,
+            suppress_tokens=suppress_tokens,
+            output_hidden_states=output_hidden_states,
+            return_dict_in_generate=return_dict_in_generate,
         )
 
-        talker_codes = torch.stack(
-            [hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None],
-            dim=1,
-        )
-        talker_hidden_states = torch.cat(
-            [hid[0][-1][:, -1:] for hid in talker_result.hidden_states], dim=1
-        )[:, :-1]
+        hidden_states = getattr(talker_result, "hidden_states", None)
+        if not isinstance(hidden_states, Sequence):
+            raise RuntimeError(
+                "Talker generate output does not contain `hidden_states`."
+            )
+
+        talker_code_steps: list[torch.Tensor] = []
+        talker_hidden_steps: list[torch.Tensor] = []
+        for step in hidden_states:
+            if not isinstance(step, tuple) or len(step) == 0:
+                continue
+            codec_ids = step[-1]
+            if isinstance(codec_ids, torch.Tensor):
+                talker_code_steps.append(codec_ids)
+
+            text_hidden_states = step[0]
+            if (
+                isinstance(text_hidden_states, tuple)
+                and len(text_hidden_states) > 0
+                and isinstance(text_hidden_states[-1], torch.Tensor)
+            ):
+                talker_hidden_steps.append(text_hidden_states[-1][:, -1:])
+
+        if len(talker_code_steps) == 0 or len(talker_hidden_steps) == 0:
+            raise RuntimeError(
+                "Talker generation returned empty hidden/code states; cannot decode."
+            )
+
+        talker_codes = torch.stack(talker_code_steps, dim=1)
+        talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
 
         first_codebook = talker_codes[:, :, 0]
         is_stop_token = first_codebook == self.config.talker_config.codec_eos_token_id
@@ -689,17 +789,12 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         )
 
         talker_codes_list = [
-            talker_codes[
-                i,
-                :length,
-            ]
-            for i, length in enumerate(effective_lengths)
+            talker_codes[i, :length] for i, length in enumerate(effective_lengths)
         ]
         talker_hidden_states_list = [
             talker_hidden_states[i, :length, :]
             for i, length in enumerate(effective_lengths)
         ]
-
         return talker_codes_list, talker_hidden_states_list
 
 

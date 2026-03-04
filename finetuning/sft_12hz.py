@@ -178,6 +178,7 @@ def train():
                 del state_dict[k]
 
             weight = state_dict["talker.model.codec_embedding.weight"]
+            assert target_speaker_embedding is not None
             state_dict["talker.model.codec_embedding.weight"][3000] = (
                 target_speaker_embedding[0].detach().to(weight.device).to(weight.dtype)
             )

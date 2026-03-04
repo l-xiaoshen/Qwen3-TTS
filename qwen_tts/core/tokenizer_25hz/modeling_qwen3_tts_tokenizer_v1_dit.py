@@ -24,7 +24,7 @@ from transformers.utils import logging
 
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
-    Qwen3TTSTokenizerV1DecoderBigVGANConfig,
+    Qwen3TTSTokenizerV1DecoderDiTConfig,
 )
 from .modeling_qwen3_tts_tokenizer_v1_speaker import ECAPA_TimeDelayNet
 
@@ -60,7 +60,7 @@ class Qwen3TTSTokenizerV1DecoderDiTRotaryEmbedding(nn.Module):
 
 
 class DiTInputEmbedding(nn.Module):
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderBigVGANConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
         super().__init__()
         self.proj = nn.Linear(
             config.mel_dim + config.enc_dim + config.enc_emb_dim + config.emb_dim,
@@ -75,10 +75,14 @@ class DiTInputEmbedding(nn.Module):
         condition_vector: torch.Tensor,
         code_embed: torch.Tensor,
         drop_audio_cond: Optional[bool] = False,
-        code_embed_uncond: Optional[bool] = None,
+        code_embed_uncond: Optional[torch.Tensor] = None,
         apply_cfg: Optional[bool] = True,
     ):
         if apply_cfg:
+            if code_embed_uncond is None:
+                raise ValueError(
+                    "`code_embed_uncond` is required when classifier-free guidance is enabled."
+                )
             hidden_states = torch.cat([hidden_states, hidden_states], dim=0)
             speaker_embedding = torch.cat(
                 [speaker_embedding, torch.zeros_like(speaker_embedding)], dim=0
@@ -222,7 +226,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 
 class DiTAttention(nn.Module):
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderBigVGANConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
         super().__init__()
 
         self.config = config
@@ -243,7 +247,9 @@ class DiTAttention(nn.Module):
     def forward(
         self,
         hidden_states,  # noised input x
-        position_embeddings=None,  # rotary position embedding for x
+        position_embeddings: Optional[
+            tuple[torch.Tensor, torch.Tensor]
+        ] = None,  # rotary position embedding for x
         attention_mask=None,
     ) -> torch.Tensor:
         batch_size = hidden_states.shape[0]
@@ -262,6 +268,8 @@ class DiTAttention(nn.Module):
 
         # apply rotary position embedding
         # Due to training process, only first head is applied with RoPE, will be fixed at next release
+        if position_embeddings is None:
+            raise ValueError("`position_embeddings` must be provided.")
         cos, sin = position_embeddings
         query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
@@ -323,7 +331,7 @@ class DiTTimestepEmbedding(nn.Module):
 class DiTDecoderLayer(nn.Module):
     def __init__(
         self,
-        config: Qwen3TTSTokenizerV1DecoderBigVGANConfig,
+        config: Qwen3TTSTokenizerV1DecoderDiTConfig,
         look_ahead_block=0,
         look_backward_block=0,
     ):
@@ -341,7 +349,11 @@ class DiTDecoderLayer(nn.Module):
         )
 
     def forward(
-        self, hidden_states, timestep, position_embeddings=None, block_diff=None
+        self,
+        hidden_states,
+        timestep,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        block_diff: Optional[torch.Tensor] = None,
     ):  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
@@ -349,6 +361,8 @@ class DiTDecoderLayer(nn.Module):
         )
 
         # attention
+        if block_diff is None:
+            raise ValueError("`block_diff` must be provided.")
         attn_output = self.attn(
             hidden_states=norm,
             position_embeddings=position_embeddings,

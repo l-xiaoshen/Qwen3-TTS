@@ -24,6 +24,7 @@ from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.integrations import use_kernel_forward_from_hub
 from transformers.masking_utils import (
+    BlockMask,
     create_causal_mask,
     create_sliding_window_causal_mask,
 )
@@ -42,6 +43,7 @@ from .configuration_qwen3_tts_tokenizer_v2 import (
 )
 
 logger = logging.get_logger(__name__)
+AttentionMask = torch.Tensor | BlockMask | None
 
 
 # Extracted from modeling_qwen3_tts_tokenizer_v2.py for better navigation.
@@ -99,7 +101,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 def eager_attention_forward(
-    module: nn.Module,
+    module: "Qwen3TTSTokenizerV2DecoderAttention",
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -251,7 +253,8 @@ class Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(nn.Module):
         self.config = config
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        rope_device = torch.device("cpu") if device is None else device
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
@@ -328,7 +331,7 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
+        attention_mask: AttentionMask,
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -362,17 +365,33 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
                 self.config._attn_implementation
             ]
 
-        attn_output, attn_weights = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,  # diff with Llama
-            **kwargs,
-        )
+        if attention_interface is eager_attention_forward:
+            eager_attention_mask = (
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            )
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                eager_attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
+        else:
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -452,15 +471,13 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: AttentionMask = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs,
-    ) -> tuple[
-        torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+        **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> torch.FloatTensor:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -516,11 +533,13 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
 
     def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig):
         super().__init__(config)
-        self.layers = nn.ModuleList(
-            [
-                Qwen3TTSTokenizerV2DecoderTransformerLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+        transformer_layers = [
+            Qwen3TTSTokenizerV2DecoderTransformerLayer(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
+        ]
+        self.layers: nn.ModuleList = nn.ModuleList(transformer_layers)
+        self.transformer_layers: list[Qwen3TTSTokenizerV2DecoderTransformerLayer] = (
+            transformer_layers
         )
         self.norm = Qwen3TTSTokenizerV2DecoderRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
@@ -540,14 +559,14 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
     @auto_docstring
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        use_cache=None,
-        cache_position=None,
-        **kwargs,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        use_cache: Optional[bool] = None,
+        cache_position: Optional[torch.Tensor] = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         if input_ids is not None:
             raise ValueError("input_ids is not expected")
@@ -557,7 +576,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
             )
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            raise ValueError("`inputs_embeds` is required for tokenizer decoder.")
 
         inputs_embeds = self.input_proj(inputs_embeds)
 
@@ -578,24 +597,41 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
             position_ids = cache_position.unsqueeze(0)
 
         # It may already have been prepared by e.g. `generate`
-        if not isinstance(causal_mask_mapping := attention_mask, dict):
-            # Prepare mask arguments
-            mask_kwargs = {
-                "config": self.config,
-                "input_embeds": inputs_embeds,
-                "attention_mask": attention_mask,
-                "cache_position": cache_position,
-                "past_key_values": past_key_values,
-                "position_ids": position_ids,
-            }
+        causal_mask_mapping: dict[str, AttentionMask]
+        if isinstance(attention_mask, dict):
+            causal_mask_mapping = {}
+            for mask_key, mask_value in attention_mask.items():
+                if isinstance(mask_key, str) and (
+                    mask_value is None
+                    or isinstance(mask_value, (torch.Tensor, BlockMask))
+                ):
+                    causal_mask_mapping[mask_key] = mask_value
+        else:
+            attention_mask_tensor = (
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            )
             # Create the masks
             causal_mask_mapping = {
-                "full_attention": create_causal_mask(**mask_kwargs),
+                "full_attention": create_causal_mask(
+                    config=self.config,
+                    input_embeds=inputs_embeds,
+                    attention_mask=attention_mask_tensor,
+                    cache_position=cache_position,
+                    past_key_values=past_key_values,
+                    position_ids=position_ids,
+                ),
             }
             # The sliding window alternating layers are not always activated depending on the config
             if self.has_sliding_layers:
                 causal_mask_mapping["sliding_attention"] = (
-                    create_sliding_window_causal_mask(**mask_kwargs)
+                    create_sliding_window_causal_mask(
+                        config=self.config,
+                        input_embeds=inputs_embeds,
+                        attention_mask=attention_mask_tensor,
+                        cache_position=cache_position,
+                        past_key_values=past_key_values,
+                        position_ids=position_ids,
+                    )
                 )
 
         hidden_states = inputs_embeds
@@ -603,7 +639,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for decoder_layer in self.transformer_layers[: self.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[decoder_layer.attention_type],

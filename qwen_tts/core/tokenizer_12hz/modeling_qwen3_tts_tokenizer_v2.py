@@ -14,8 +14,8 @@
 # limitations under the License.
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
-from dataclasses import dataclass
-from typing import Optional, Union, List
+from dataclasses import dataclass, field
+from typing import Optional, Union
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
@@ -40,7 +40,7 @@ class Qwen3TTSTokenizerV2EncoderOutput(ModelOutput):
         Discret code embeddings computed using `model.encode`, each tensor has shape (codes_length_i, num_quantizers).
     """
 
-    audio_codes: List[torch.LongTensor] = None
+    audio_codes: list[torch.LongTensor] = field(default_factory=list)
 
 
 @dataclass
@@ -52,7 +52,7 @@ class Qwen3TTSTokenizerV2DecoderOutput(ModelOutput):
         Each tensor has shape (segment_length_i).
     """
 
-    audio_values: List[torch.FloatTensor] = None
+    audio_values: list[torch.FloatTensor] = field(default_factory=list)
 
 
 @auto_docstring
@@ -114,9 +114,7 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         input_values: torch.Tensor,
         padding_mask: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[
-        tuple[torch.Tensor, Optional[torch.Tensor]], Qwen3TTSTokenizerV2EncoderOutput
-    ]:
+    ) -> Union[tuple[list[torch.LongTensor]], Qwen3TTSTokenizerV2EncoderOutput]:
         """
         Encodes the input audio waveform into discrete codes.
 
@@ -132,13 +130,17 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         return_dict = (
             return_dict if return_dict is not None else self.config.return_dict
         )
+        if padding_mask is None:
+            raise ValueError("`padding_mask` is required for encode.")
 
         encoded_frames = self.encoder.encode(
             input_values=input_values.unsqueeze(1), return_dict=True
         )
         audio_codes = encoded_frames.audio_codes[:, : self.encoder_valid_num_quantizers]
         audio_codes = [
-            code[..., : -(-mask.sum() // self.encode_downsample_rate)].transpose(0, 1)
+            code[
+                ..., : -(-int(mask.sum().item()) // self.encode_downsample_rate)
+            ].transpose(0, 1)
             for code, mask in zip(audio_codes, padding_mask)
         ]
 
@@ -151,7 +153,7 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         self,
         audio_codes: torch.Tensor,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.Tensor, torch.Tensor], Qwen3TTSTokenizerV2DecoderOutput]:
+    ) -> Union[tuple[list[torch.FloatTensor]], Qwen3TTSTokenizerV2DecoderOutput]:
         """
         Decodes the given frames into an output audio waveform.
 

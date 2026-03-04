@@ -17,29 +17,28 @@ import os
 import math
 import torch
 import operator
+import importlib
 
 import numpy as np
 import torch.nn.functional as F
 
 from functools import lru_cache
-from typing import Optional, Union, List
+from typing import Callable, Optional, Union, List
 from torch import nn, Tensor
 from itertools import accumulate
 
+flash_attn_varlen_func: Optional[Callable[..., Tensor]] = None
 try:
-    from flash_attn.flash_attn_interface import (
-        flash_attn_varlen_func as flash_attn_varlen_func,
-    )
+    flash_attn_module = importlib.import_module("flash_attn.flash_attn_interface")
+    flash_attn_varlen_func = getattr(flash_attn_module, "flash_attn_varlen_func", None)
+    if flash_attn_varlen_func is None:
+        flash_attn_varlen_func = getattr(
+            flash_attn_module, "flash_attn_unpadded_func", None
+        )
 except ImportError:
-    try:
-        from flash_attn.flash_attn_interface import (
-            flash_attn_unpadded_func as flash_attn_varlen_func,
-        )
-    except ImportError:
-        print(
-            "\n********\nWarning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.\n********\n "
-        )
-        flash_attn_varlen_func = None
+    print(
+        "\n********\nWarning: flash-attn is not installed. Will only run the manual PyTorch version. Please install flash-attn for faster inference.\n********\n "
+    )
 
 
 N_FFT = 400
@@ -143,28 +142,32 @@ def sinusoids(length, channels, max_timescale=10000):
 
 class Conv1d(nn.Conv1d):
     def _conv_forward(
-        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
+        self, input: Tensor, weight: Tensor, bias: Optional[Tensor]
     ) -> Tensor:
         return super()._conv_forward(
-            x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
+            input,
+            weight.to(input.dtype),
+            None if bias is None else bias.to(input.dtype),
         )
 
 
 class ConvTranspose1d(nn.ConvTranspose1d):
     def _conv_forward(
-        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
+        self, input: Tensor, weight: Tensor, bias: Optional[Tensor]
     ) -> Tensor:
         return super()._conv_forward(
-            x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
+            input,
+            weight.to(input.dtype),
+            None if bias is None else bias.to(input.dtype),
         )
 
 
 class Linear(nn.Linear):
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         return F.linear(
-            x,
-            self.weight.to(x.dtype),
-            None if self.bias is None else self.bias.to(x.dtype),
+            input,
+            self.weight.to(input.dtype),
+            None if self.bias is None else self.bias.to(input.dtype),
         )
 
 
@@ -182,28 +185,42 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self,
         x: Tensor,
-        cu_seqlens=None,
+        cu_seqlens: Optional[Tensor] = None,
     ):
         q = self.query(x)
         k = self.key(x)
         v = self.value(x)
+        normalized_cu_seqlens = self._normalize_cu_seqlens(
+            cu_seqlens, q.shape[0], q.device
+        )
 
         if self.use_flash_attention:
             if flash_attn_varlen_func is None:
-                x = self.qkv_attention_manual(q, k, v, cu_seqlens=cu_seqlens)
+                x = self.qkv_attention_manual(q, k, v, cu_seqlens=normalized_cu_seqlens)
             else:
                 if q.dtype not in [torch.float16, torch.bfloat16]:
-                    x = self.qkv_attention_manual(q, k, v, cu_seqlens=cu_seqlens)
+                    x = self.qkv_attention_manual(
+                        q, k, v, cu_seqlens=normalized_cu_seqlens
+                    )
                     self.use_flash_attention = False
                 else:
-                    x = self.qkv_flash_attention(q, k, v, cu_seqlens=cu_seqlens)
+                    x = self.qkv_flash_attention(
+                        q, k, v, cu_seqlens=normalized_cu_seqlens
+                    )
         else:
-            x = self.qkv_attention_manual(q, k, v, cu_seqlens=cu_seqlens)
+            x = self.qkv_attention_manual(q, k, v, cu_seqlens=normalized_cu_seqlens)
 
         output = self.out(x)
         return output
 
-    def qkv_flash_attention(self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens=None):
+    def _normalize_cu_seqlens(
+        self, cu_seqlens: Optional[Tensor], n_ctx: int, device: torch.device
+    ) -> Tensor:
+        if cu_seqlens is None:
+            return torch.tensor([0, n_ctx], device=device, dtype=torch.int32)
+        return cu_seqlens
+
+    def qkv_flash_attention(self, q: Tensor, k: Tensor, v: Tensor, cu_seqlens: Tensor):
         n_ctx, n_state = q.shape
         # scale = (n_state // self.n_head) ** -0.25
         q = q.view(n_ctx, self.n_head, -1)  # (batch_size, seqlen, nheads, headdim)
@@ -211,6 +228,8 @@ class MultiHeadAttention(nn.Module):
         v = v.view(n_ctx, self.n_head, -1)
 
         max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        if flash_attn_varlen_func is None:
+            raise RuntimeError("flash-attn is not available.")
 
         x = flash_attn_varlen_func(
             q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, dropout_p=0.0
@@ -374,6 +393,9 @@ class WhisperEncoder(nn.Module):
             the mel spectrogram of the audio
         """
 
+        positional_embedding = self.positional_embedding
+        if not isinstance(positional_embedding, torch.Tensor):
+            raise RuntimeError("`positional_embedding` is not initialized as a tensor.")
         aftercnn_x_list = []
         for each_x in x_list:
             each_x_split_list = each_x.split(self.n_window * 2, dim=1)
@@ -381,7 +403,7 @@ class WhisperEncoder(nn.Module):
                 each_x_split = F.gelu(self.conv1(each_x_split))
                 each_x_split = F.gelu(self.conv2(each_x_split))
                 each_x_split = each_x_split.permute(1, 0)  # L,D
-                each_positional_embedding_split = self.positional_embedding[
+                each_positional_embedding_split = positional_embedding[
                     : each_x_split.shape[0]
                 ]
                 aftercnn_x_list.append(

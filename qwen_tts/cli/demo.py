@@ -21,7 +21,7 @@ import argparse
 import os
 import tempfile
 from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, TypedDict, Union
 
 import gradio as gr
 import numpy as np
@@ -40,6 +40,26 @@ Qwen3TTSFeatureModel = Union[
     Qwen3TTSVoiceDesignModel,
     Qwen3TTSVoiceCloneModel,
 ]
+
+
+class DemoGenKwargs(TypedDict, total=False):
+    max_new_tokens: int
+    temperature: float
+    top_k: int
+    top_p: float
+    repetition_penalty: float
+    subtalker_top_k: int
+    subtalker_top_p: float
+    subtalker_temperature: float
+
+
+class DemoLaunchKwargs(TypedDict, total=False):
+    server_name: str
+    server_port: int
+    share: bool
+    ssl_verify: bool
+    ssl_certfile: str
+    ssl_keyfile: str
 
 
 def _title_case_display(s: str) -> str:
@@ -221,21 +241,28 @@ def _resolve_checkpoint(args: argparse.Namespace) -> str:
     return ckpt
 
 
-def _collect_gen_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
-    mapping = {
-        "max_new_tokens": args.max_new_tokens,
-        "temperature": args.temperature,
-        "top_k": args.top_k,
-        "top_p": args.top_p,
-        "repetition_penalty": args.repetition_penalty,
-        "subtalker_top_k": args.subtalker_top_k,
-        "subtalker_top_p": args.subtalker_top_p,
-        "subtalker_temperature": args.subtalker_temperature,
-    }
-    return {k: v for k, v in mapping.items() if v is not None}
+def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
+    mapping: DemoGenKwargs = {}
+    if args.max_new_tokens is not None:
+        mapping["max_new_tokens"] = int(args.max_new_tokens)
+    if args.temperature is not None:
+        mapping["temperature"] = float(args.temperature)
+    if args.top_k is not None:
+        mapping["top_k"] = int(args.top_k)
+    if args.top_p is not None:
+        mapping["top_p"] = float(args.top_p)
+    if args.repetition_penalty is not None:
+        mapping["repetition_penalty"] = float(args.repetition_penalty)
+    if args.subtalker_top_k is not None:
+        mapping["subtalker_top_k"] = int(args.subtalker_top_k)
+    if args.subtalker_top_p is not None:
+        mapping["subtalker_top_p"] = float(args.subtalker_top_p)
+    if args.subtalker_temperature is not None:
+        mapping["subtalker_temperature"] = float(args.subtalker_temperature)
+    return mapping
 
 
-def _normalize_audio(wav, eps=1e-12, clip=True):
+def _normalize_audio(wav: object, eps: float = 1e-12, clip: bool = True) -> np.ndarray:
     x = np.asarray(wav)
 
     if np.issubdtype(x.dtype, np.integer):
@@ -267,19 +294,28 @@ def _normalize_audio(wav, eps=1e-12, clip=True):
     return y
 
 
-def _audio_to_tuple(audio: Any) -> Optional[Tuple[np.ndarray, int]]:
+def _audio_to_tuple(audio: object) -> Optional[Tuple[np.ndarray, int]]:
     if audio is None:
         return None
 
-    if isinstance(audio, tuple) and len(audio) == 2 and isinstance(audio[0], int):
-        sr, wav = audio
-        wav = _normalize_audio(wav)
-        return wav, int(sr)
+    if isinstance(audio, tuple) and len(audio) == 2:
+        sr = audio[0]
+        wav = audio[1]
+        if isinstance(sr, int):
+            wav = _normalize_audio(wav)
+            return wav, sr
 
-    if isinstance(audio, dict) and "sampling_rate" in audio and "data" in audio:
-        sr = int(audio["sampling_rate"])
-        wav = _normalize_audio(audio["data"])
-        return wav, sr
+    if isinstance(audio, dict):
+        audio_map: dict[str, object] = {}
+        for key, value in audio.items():
+            audio_map[str(key)] = value
+        if "sampling_rate" in audio_map and "data" in audio_map:
+            sr = audio_map["sampling_rate"]
+            if not isinstance(sr, (int, float)):
+                return None
+            sr = int(sr)
+            wav = _normalize_audio(audio_map["data"])
+            return wav, sr
 
     return None
 
@@ -321,7 +357,7 @@ def _detect_model_kind(tts: Qwen3TTSFeatureModel) -> str:
 
 
 def build_demo(
-    tts: Qwen3TTSFeatureModel, ckpt: str, gen_kwargs_default: Dict[str, Any]
+    tts: Qwen3TTSFeatureModel, ckpt: str, gen_kwargs_default: DemoGenKwargs
 ) -> gr.Blocks:
     model_kind = _detect_model_kind(tts)
 
@@ -340,8 +376,8 @@ def build_demo(
         [x for x in (supported_spks_raw or [])]
     )
 
-    def _gen_common_kwargs() -> Dict[str, Any]:
-        return dict(gen_kwargs_default)
+    def _gen_common_kwargs() -> DemoGenKwargs:
+        return DemoGenKwargs(gen_kwargs_default)
 
     theme = gr.themes.Soft(
         font=[gr.themes.GoogleFont("Source Sans Pro"), "Arial", "sans-serif"],
@@ -359,6 +395,10 @@ def build_demo(
         )
 
         if model_kind == "custom_voice":
+            if not isinstance(tts, Qwen3TTSCustomVoiceModel):
+                raise TypeError(
+                    f"Expected Qwen3TTSCustomVoiceModel, got {type(tts).__name__}"
+                )
             with gr.Row():
                 with gr.Column(scale=2):
                     text_in = gr.Textbox(
@@ -416,6 +456,10 @@ def build_demo(
             )
 
         elif model_kind == "voice_design":
+            if not isinstance(tts, Qwen3TTSVoiceDesignModel):
+                raise TypeError(
+                    f"Expected Qwen3TTSVoiceDesignModel, got {type(tts).__name__}"
+                )
             with gr.Row():
                 with gr.Column(scale=2):
                     text_in = gr.Textbox(
@@ -468,6 +512,10 @@ def build_demo(
             )
 
         else:  # voice_clone for base
+            if not isinstance(tts, Qwen3TTSVoiceCloneModel):
+                raise TypeError(
+                    f"Expected Qwen3TTSVoiceCloneModel, got {type(tts).__name__}"
+                )
             with gr.Tabs():
                 with gr.Tab("Clone & Generate (克隆并合成)"):
                     with gr.Row():
@@ -766,7 +814,7 @@ def main(argv=None) -> int:
     gen_kwargs_default = _collect_gen_kwargs(args)
     demo = build_demo(tts, ckpt, gen_kwargs_default)
 
-    launch_kwargs: Dict[str, Any] = dict(
+    launch_kwargs: DemoLaunchKwargs = dict(
         server_name=args.ip,
         server_port=args.port,
         share=args.share,

@@ -15,10 +15,25 @@
 # limitations under the License.
 import os
 import time
+from typing import TypedDict
+
 import torch
 import soundfile as sf
 
 from qwen_tts import Qwen3TTSVoiceCloneModel
+
+
+class VoiceCloneGenKwargs(TypedDict):
+    max_new_tokens: int
+    do_sample: bool
+    top_k: int
+    top_p: float
+    temperature: float
+    repetition_penalty: float
+    subtalker_dosample: bool
+    subtalker_top_k: int
+    subtalker_top_p: float
+    subtalker_temperature: float
 
 
 def ensure_dir(d: str):
@@ -81,18 +96,18 @@ def main():
     ]
     syn_lang_batch = ["Chinese", "English"]
 
-    common_gen_kwargs = dict(
-        max_new_tokens=2048,
-        do_sample=True,
-        top_k=50,
-        top_p=1.0,
-        temperature=0.9,
-        repetition_penalty=1.05,
-        subtalker_dosample=True,
-        subtalker_top_k=50,
-        subtalker_top_p=1.0,
-        subtalker_temperature=0.9,
-    )
+    common_gen_kwargs: VoiceCloneGenKwargs = {
+        "max_new_tokens": 2048,
+        "do_sample": True,
+        "top_k": 50,
+        "top_p": 1.0,
+        "temperature": 0.9,
+        "repetition_penalty": 1.05,
+        "subtalker_dosample": True,
+        "subtalker_top_k": 50,
+        "subtalker_top_p": 1.0,
+        "subtalker_temperature": 0.9,
+    }
 
     for xvec_only in [False, True]:
         mode_tag = "xvec_only" if xvec_only else "icl"

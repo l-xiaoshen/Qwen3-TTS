@@ -14,8 +14,8 @@
 # limitations under the License.
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
-from dataclasses import dataclass
-from typing import Optional, Union, List
+from dataclasses import dataclass, field
+from typing import Optional, Union
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
@@ -54,9 +54,9 @@ class Qwen3TTSTokenizerV1EncoderOutput(ModelOutput):
         Reference mel spectrogram computed using `model.encode`, each tensor has shape (mel_length_i, mel_dim,).
     """
 
-    audio_codes: List[torch.LongTensor] = None
-    xvectors: List[torch.FloatTensor] = None
-    ref_mels: List[torch.FloatTensor] = None
+    audio_codes: list[torch.LongTensor] = field(default_factory=list)
+    xvectors: list[torch.FloatTensor] = field(default_factory=list)
+    ref_mels: list[torch.FloatTensor] = field(default_factory=list)
 
 
 @dataclass
@@ -68,7 +68,7 @@ class Qwen3TTSTokenizerV1DecoderOutput(ModelOutput):
         Each tensor has shape (segment_length_i).
     """
 
-    audio_values: List[torch.FloatTensor] = None
+    audio_values: list[torch.FloatTensor] = field(default_factory=list)
 
 
 @auto_docstring
@@ -84,15 +84,26 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
         super().__init__(config)
         attn_impl = config._attn_implementation
         if config._attn_implementation == "flash_attention_2":
-            logger.warning_once(
-                "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
-                "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
-            )
+            if callable(getattr(logger, "warning_once", None)):
+                getattr(logger, "warning_once")(
+                    "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
+                    "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
+                )
+            else:
+                logger.warning(
+                    "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
+                    "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
+                )
             attn_impl = "sdpa"
         elif config._attn_implementation == "eager":
-            logger.warning_once(
-                "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
-            )
+            if callable(getattr(logger, "warning_once", None)):
+                getattr(logger, "warning_once")(
+                    "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
+                )
+            else:
+                logger.warning(
+                    "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
+                )
             attn_impl = "sdpa"
         self.dit = Qwen3TTSTokenizerV1DecoderDiTModel._from_config(
             config.dit_config, attn_implementation=attn_impl
@@ -182,7 +193,7 @@ class Qwen3TTSTokenizerV1Encoder(Qwen3TTSTokenizerV1EncoderPreTrainedModel):
 
         indice_lens = [T // self.tokenizer.audio_vq_ds_rate for T in audio_aftercnnlens]
         indices = pad_sequence(
-            torch.split(indices, indice_lens), batch_first=True, padding_value=0
+            list(torch.split(indices, indice_lens)), batch_first=True, padding_value=0
         )
 
         return indices, indice_lens
@@ -306,7 +317,8 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
         padding_mask: Optional[torch.Tensor] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[
-        tuple[torch.Tensor, Optional[torch.Tensor]], Qwen3TTSTokenizerV1EncoderOutput
+        tuple[list[torch.LongTensor], list[torch.FloatTensor], list[torch.FloatTensor]],
+        Qwen3TTSTokenizerV1EncoderOutput,
     ]:
         """
         Encodes the input audio waveform into discrete codes.
@@ -323,18 +335,24 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
         return_dict = (
             return_dict if return_dict is not None else self.config.return_dict
         )
+        if padding_mask is None:
+            raise ValueError("`padding_mask` is required for encode.")
 
-        wavs = [value[: mask.sum()] for value, mask in zip(input_values, padding_mask)]
+        wavs = [
+            value[: int(mask.sum().item())]
+            for value, mask in zip(input_values, padding_mask)
+        ]
 
         codes, codes_lens = self.encoder.quantize_speech(wavs)
-        codes = [code[:length] for code, length in zip(codes, codes_lens)]
+        codes = [code[: int(length)] for code, length in zip(codes, codes_lens)]
 
         xvectors = []
         ref_mels = []
+        xvector_extractor = self.encoder_xvector_extractor
+        if xvector_extractor is None:
+            raise RuntimeError("Encoder xvector extractor is not initialized.")
         for wav in wavs:
-            xvector, ref_mel = self.encoder_xvector_extractor.extract_code(
-                wav.cpu().numpy()
-            )
+            xvector, ref_mel = xvector_extractor.extract_code(wav.cpu().numpy())
             xvector = torch.tensor(xvector).to(wav.dtype).to(wav.device)
             ref_mel = torch.tensor(ref_mel).to(wav.dtype).to(wav.device)
             xvectors.append(xvector)
@@ -351,7 +369,7 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
         xvectors: torch.Tensor,
         ref_mels: torch.Tensor,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.Tensor, torch.Tensor], Qwen3TTSTokenizerV1DecoderOutput]:
+    ) -> Union[tuple[list[torch.FloatTensor]], Qwen3TTSTokenizerV1DecoderOutput]:
         """
         Decodes the given frames into an output audio waveform.
 

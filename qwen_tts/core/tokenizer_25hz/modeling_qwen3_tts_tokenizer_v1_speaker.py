@@ -22,6 +22,7 @@ from transformers.utils import logging
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderBigVGANConfig,
+    Qwen3TTSTokenizerV1DecoderDiTConfig,
 )
 
 logger = logging.get_logger(__name__)
@@ -261,7 +262,11 @@ class ECAPA_TimeDelayNet(torch.nn.Module):
     TDNN Based Speaker Verification" (https://huggingface.co/papers/2005.07143).
     """
 
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderBigVGANConfig):
+    def __init__(
+        self,
+        config: Qwen3TTSTokenizerV1DecoderBigVGANConfig
+        | Qwen3TTSTokenizerV1DecoderDiTConfig,
+    ):
         super().__init__()
         if len(config.enc_channels) != len(config.enc_kernel_sizes) or len(
             config.enc_channels

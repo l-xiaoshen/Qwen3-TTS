@@ -13,40 +13,47 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Union
 
 import numpy as np
 import torch
 
-from .qwen3_tts_base_model import Qwen3TTSBaseModel
+from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
 
 
 class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
     @torch.no_grad()
     def generate_voice_design(
         self,
-        text: Union[str, List[str]],
-        instruct: Union[str, List[str]],
-        language: Union[str, List[str]] = None,
+        text: Union[str, list[str]],
+        instruct: Union[str, list[str]],
+        language: Optional[Union[str, list[str]]] = None,
         non_streaming_mode: bool = True,
-        **kwargs,
-    ) -> Tuple[List[np.ndarray], int]:
+        do_sample: Optional[bool] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        temperature: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        subtalker_dosample: Optional[bool] = None,
+        subtalker_top_k: Optional[int] = None,
+        subtalker_top_p: Optional[float] = None,
+        subtalker_temperature: Optional[float] = None,
+        max_new_tokens: Optional[int] = None,
+        **kwargs: GenerateExtraArg,
+    ) -> tuple[list[np.ndarray], int]:
         """
         Generate speech with the VoiceDesign model using natural-language style instructions.
         """
         self._ensure_model_type("voice_design", "generate_voice_design")
 
         texts = self._ensure_list(text)
-        languages = (
-            self._ensure_list(language)
-            if isinstance(language, list)
-            else (
-                [language] * len(texts)
-                if language is not None
-                else ["Auto"] * len(texts)
-            )
-        )
-        instructs = self._ensure_list(instruct)
+        if isinstance(language, list):
+            languages = list(language)
+        elif language is None:
+            languages = ["Auto"] * len(texts)
+        else:
+            languages = [language] * len(texts)
+        instructs = list(instruct) if isinstance(instruct, list) else [instruct]
 
         if len(languages) == 1 and len(texts) > 1:
             languages = languages * len(texts)
@@ -62,7 +69,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
 
         input_ids = self._tokenize_texts([self._build_assistant_text(t) for t in texts])
 
-        instruct_ids: List[Optional[torch.Tensor]] = []
+        instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
             if ins is None or ins == "":
                 instruct_ids.append(None)
@@ -71,7 +78,19 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
                     self._tokenize_texts([self._build_instruct_text(ins)])[0]
                 )
 
-        gen_kwargs = self._merge_generate_kwargs(**kwargs)
+        gen_kwargs = self._merge_generate_kwargs(
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+            max_new_tokens=max_new_tokens,
+            **kwargs,
+        )
 
         talker_codes_list, _ = self.model.generate(
             input_ids=input_ids,
@@ -81,7 +100,8 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
             **gen_kwargs,
         )
 
-        wavs, fs = self.model.speech_tokenizer.decode(
+        speech_tokenizer = self._require_speech_tokenizer()
+        wavs, fs = speech_tokenizer.decode(
             [{"audio_codes": c} for c in talker_codes_list]
         )
         return wavs, fs

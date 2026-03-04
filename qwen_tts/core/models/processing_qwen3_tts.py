@@ -12,17 +12,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Mapping, Sequence
+import typing as tp
+
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin
 
 
-class Qwen3TTSProcessorKwargs(ProcessingKwargs, total=False):
-    _defaults = {
-        "text_kwargs": {
-            "padding": False,
-            "padding_side": "left",
-        }
-    }
+@tp.runtime_checkable
+class _TokenizerProtocol(tp.Protocol):
+    init_kwargs: Mapping[str, object]
+    model_input_names: list[str]
+
+    def __call__(
+        self, text: Sequence[object], **kwargs: object
+    ) -> Mapping[str, object]: ...
+
+    def batch_decode(self, *args: object, **kwargs: object) -> object: ...
+
+    def decode(self, *args: object, **kwargs: object) -> object: ...
 
 
 class Qwen3TTSProcessor(ProcessorMixin):
@@ -42,7 +50,13 @@ class Qwen3TTSProcessor(ProcessorMixin):
     def __init__(self, tokenizer=None, chat_template=None):
         super().__init__(tokenizer, chat_template=chat_template)
 
-    def __call__(self, text=None, **kwargs) -> BatchFeature:
+    def _require_tokenizer(self) -> _TokenizerProtocol:
+        tokenizer = getattr(self, "tokenizer", None)
+        if not isinstance(tokenizer, _TokenizerProtocol):
+            raise RuntimeError("Tokenizer is not initialized.")
+        return tokenizer
+
+    def __call__(self, *args: object, **kwargs: object) -> BatchFeature:
         """
         Main method to prepare for the model one or several sequences(s) and audio(s). This method forwards the `text`
         and `kwargs` arguments to Qwen2TokenizerFast's [`~Qwen2TokenizerFast.__call__`] if `text` is not `None` to encode
@@ -55,22 +69,43 @@ class Qwen3TTSProcessor(ProcessorMixin):
                 `is_split_into_words=True` (to lift the ambiguity with a batch of sequences).
         """
 
+        tokenizer = self._require_tokenizer()
+        text = kwargs.pop("text", args[0] if args else None)
         if text is None:
             raise ValueError("You need to specify either a `text` input to process.")
 
-        output_kwargs = self._merge_kwargs(
-            Qwen3TTSProcessorKwargs,
-            tokenizer_init_kwargs=self.tokenizer.init_kwargs,
+        text_inputs = text if isinstance(text, list) else [text]
+
+        merge_kwargs_fn = getattr(self, "_merge_kwargs", None)
+        if not callable(merge_kwargs_fn):
+            raise RuntimeError("Processor kwargs merge helper is not available.")
+        output_kwargs_raw = merge_kwargs_fn(
+            ProcessingKwargs,
+            tokenizer_init_kwargs=dict(tokenizer.init_kwargs),
             **kwargs,
         )
-        if not isinstance(text, list):
-            text = [text]
+        if not isinstance(output_kwargs_raw, dict):
+            raise RuntimeError("Processor kwargs merge returned an invalid structure.")
 
-        texts_inputs = self.tokenizer(text, **output_kwargs["text_kwargs"])
+        text_kwargs: dict[str, object] = {"padding": False, "padding_side": "left"}
+        text_kwargs_raw = output_kwargs_raw.get("text_kwargs", {})
+        if not isinstance(text_kwargs_raw, dict):
+            raise TypeError("Merged `text_kwargs` must be a dictionary.")
+        for key, value in text_kwargs_raw.items():
+            if not isinstance(key, str):
+                raise TypeError("`text_kwargs` keys must be strings.")
+            text_kwargs[key] = value
+
+        common_kwargs_raw = output_kwargs_raw.get("common_kwargs", {})
+        return_tensors: object = None
+        if isinstance(common_kwargs_raw, dict):
+            return_tensors = common_kwargs_raw.get("return_tensors")
+        texts_inputs = tokenizer(text_inputs, **text_kwargs)
+        tensor_type = return_tensors if isinstance(return_tensors, str) else None
 
         return BatchFeature(
             data={**texts_inputs},
-            tensor_type=kwargs.get("return_tensors"),
+            tensor_type=tensor_type,
         )
 
     def batch_decode(self, *args, **kwargs):
@@ -78,14 +113,16 @@ class Qwen3TTSProcessor(ProcessorMixin):
         This method forwards all its arguments to Qwen2TokenizerFast's [`~PreTrainedTokenizer.batch_decode`]. Please
         refer to the docstring of this method for more information.
         """
-        return self.tokenizer.batch_decode(*args, **kwargs)
+        tokenizer = self._require_tokenizer()
+        return tokenizer.batch_decode(*args, **kwargs)
 
     def decode(self, *args, **kwargs):
         """
         This method forwards all its arguments to Qwen2TokenizerFast's [`~PreTrainedTokenizer.decode`]. Please refer to
         the docstring of this method for more information.
         """
-        return self.tokenizer.decode(*args, **kwargs)
+        tokenizer = self._require_tokenizer()
+        return tokenizer.decode(*args, **kwargs)
 
     def apply_chat_template(self, conversations, chat_template=None, **kwargs):
         if isinstance(conversations[0], dict):
@@ -94,7 +131,8 @@ class Qwen3TTSProcessor(ProcessorMixin):
 
     @property
     def model_input_names(self):
-        tokenizer_input_names = self.tokenizer.model_input_names
+        tokenizer = self._require_tokenizer()
+        tokenizer_input_names = tokenizer.model_input_names
         return list(dict.fromkeys(tokenizer_input_names))
 
 

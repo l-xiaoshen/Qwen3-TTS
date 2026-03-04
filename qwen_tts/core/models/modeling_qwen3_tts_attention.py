@@ -22,6 +22,7 @@ from torch import nn
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 from transformers.integrations import use_kernel_forward_from_hub
+from transformers.masking_utils import BlockMask
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
@@ -34,10 +35,12 @@ from transformers.utils import logging
 
 from .configuration_qwen3_tts import (
     Qwen3TTSConfig,
+    Qwen3TTSTalkerCodePredictorConfig,
     Qwen3TTSTalkerConfig,
 )
 
 logger = logging.get_logger(__name__)
+AttentionMask = torch.Tensor | BlockMask | None
 
 
 # Extracted from modeling_qwen3_tts.py for better navigation.
@@ -125,7 +128,8 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
         self.config = config
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        rope_device = torch.device("cpu") if device is None else device
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
@@ -134,8 +138,11 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
     def forward(self, x, position_ids):
         # In contrast to other models, Qwen3TTSThinkerText has different position ids for the grids
         # So we expand the inv_freq to shape (3, ...)
+        inv_freq = self.inv_freq
+        if not isinstance(inv_freq, torch.Tensor):
+            raise RuntimeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
-            self.inv_freq[None, None, :, None]
+            inv_freq[None, None, :, None]
             .float()
             .expand(3, position_ids.shape[1], -1, 1)
         )
@@ -160,7 +167,9 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
 
 
 class Qwen3TTSRotaryEmbedding(nn.Module):
-    def __init__(self, config: Qwen3TTSConfig, device=None):
+    def __init__(
+        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, device=None
+    ):
         super().__init__()
         # BC: "rope_type" was originally "type"
         if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
@@ -175,15 +184,19 @@ class Qwen3TTSRotaryEmbedding(nn.Module):
         self.config = config
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
-        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
+        rope_device = torch.device("cpu") if device is None else device
+        inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
+        inv_freq = self.inv_freq
+        if not isinstance(inv_freq, torch.Tensor):
+            raise RuntimeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
-            self.inv_freq[None, :, None]
+            inv_freq[None, :, None]
             .float()
             .expand(position_ids.shape[0], -1, 1)
             .to(x.device)
@@ -249,7 +262,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
 
 
 def eager_attention_forward(
-    module: nn.Module,
+    module: "Qwen3TTSAttention | Qwen3TTSTalkerAttention",
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -399,11 +412,11 @@ class Qwen3TTSTalkerAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
+        attention_mask: AttentionMask,
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -438,17 +451,33 @@ class Qwen3TTSTalkerAttention(nn.Module):
                 self.config._attn_implementation
             ]
 
-        attn_output, attn_weights = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,  # diff with Llama
-            **kwargs,
-        )
+        if attention_interface is eager_attention_forward:
+            eager_attention_mask = (
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            )
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                eager_attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
+        else:
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -488,11 +517,11 @@ class Qwen3TTSTalkerCodePredictorOutputWithPast(ModelOutput):
         `past_key_values` input) to speed up sequential decoding.
     """
 
-    loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    past_key_values: Optional[list[torch.FloatTensor]] = None
-    hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    attentions: Optional[tuple[torch.FloatTensor]] = None
+    loss: Optional[torch.Tensor] = None
+    logits: Optional[torch.Tensor] = None
+    past_key_values: Optional[Cache] = None
+    hidden_states: Optional[tuple[torch.Tensor, ...]] = None
+    attentions: Optional[tuple[torch.Tensor, ...]] = None
     generation_steps: Optional[int] = None
 
 
@@ -546,7 +575,9 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 class Qwen3TTSAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: Qwen3TTSConfig, layer_idx: int):
+    def __init__(
+        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
+    ):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -586,9 +617,12 @@ class Qwen3TTSAttention(nn.Module):
         self.k_norm = Qwen3TTSRMSNorm(
             self.head_dim, eps=config.rms_norm_eps
         )  # thus post q_norm does not need reshape
+        layer_types = config.layer_types
+        if layer_types is None:
+            raise TypeError("`config.layer_types` must be initialized.")
         self.sliding_window = (
             config.sliding_window
-            if config.layer_types[layer_idx] == "sliding_attention"
+            if layer_types[layer_idx] == "sliding_attention"
             else None
         )
 
@@ -596,11 +630,11 @@ class Qwen3TTSAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
+        attention_mask: AttentionMask,
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -630,17 +664,33 @@ class Qwen3TTSAttention(nn.Module):
                 self.config._attn_implementation
             ]
 
-        attn_output, attn_weights = attention_interface(
-            self,
-            query_states,
-            key_states,
-            value_states,
-            attention_mask,
-            dropout=0.0 if not self.training else self.attention_dropout,
-            scaling=self.scaling,
-            sliding_window=self.sliding_window,  # diff with Llama
-            **kwargs,
-        )
+        if attention_interface is eager_attention_forward:
+            eager_attention_mask = (
+                attention_mask if isinstance(attention_mask, torch.Tensor) else None
+            )
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                eager_attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
+        else:
+            attn_output, attn_weights = attention_interface(
+                self,
+                query_states,
+                key_states,
+                value_states,
+                attention_mask,
+                dropout=0.0 if not self.training else self.attention_dropout,
+                scaling=self.scaling,
+                sliding_window=self.sliding_window,  # diff with Llama
+                **kwargs,
+            )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
@@ -648,7 +698,9 @@ class Qwen3TTSAttention(nn.Module):
 
 
 class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
-    def __init__(self, config: Qwen3TTSConfig, layer_idx: int):
+    def __init__(
+        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
+    ):
         super().__init__()
         self.hidden_size = config.hidden_size
 
@@ -661,12 +713,15 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
         self.post_attention_layernorm = Qwen3TTSRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        self.attention_type = config.layer_types[layer_idx]
+        layer_types = config.layer_types
+        if layer_types is None:
+            raise TypeError("`config.layer_types` must be initialized.")
+        self.attention_type = layer_types[layer_idx]
 
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: AttentionMask = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         output_attentions: Optional[bool] = False,
@@ -676,9 +731,7 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
             tuple[torch.Tensor, torch.Tensor]
         ] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[
-        torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 

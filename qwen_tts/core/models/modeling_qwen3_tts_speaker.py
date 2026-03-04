@@ -14,6 +14,8 @@
 # limitations under the License.
 """PyTorch Qwen3TTS model."""
 
+from typing import Optional
+
 import torch
 from librosa.filters import mel as librosa_mel_fn
 from torch import nn
@@ -357,7 +359,7 @@ def mel_spectrogram(
     hop_size: int,
     win_size: int,
     fmin: int,
-    fmax: int = None,
+    fmax: Optional[int] = None,
     center: bool = False,
 ) -> torch.Tensor:
     """

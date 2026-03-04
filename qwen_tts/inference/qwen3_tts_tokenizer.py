@@ -13,11 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import List, Optional, Union
+from typing import Optional, Protocol, Union
 
 import numpy as np
 import torch
 from transformers import AutoConfig, AutoFeatureExtractor, AutoModel
+from transformers.feature_extraction_utils import BatchFeature
 
 from ..core import (
     Qwen3TTSTokenizerV1Config,
@@ -31,9 +32,24 @@ from .qwen3_tts_tokenizer_decode_mixin import Qwen3TTSTokenizerDecodeMixin
 AudioInput = Union[
     str,  # wav path, or base64 string
     np.ndarray,  # 1-D float array
-    List[str],
-    List[np.ndarray],
+    list[str],
+    list[np.ndarray],
 ]
+
+
+class _TokenizerFeatureExtractor(Protocol):
+    sampling_rate: int | float
+
+    def __call__(
+        self,
+        *,
+        raw_audio: list[np.ndarray],
+        sampling_rate: int,
+        return_tensors: str,
+    ) -> BatchFeature: ...
+
+
+TokenizerModel = Qwen3TTSTokenizerV1Model | Qwen3TTSTokenizerV2Model
 
 
 class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixin):
@@ -50,10 +66,21 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
     """
 
     def __init__(self):
-        self.model = None
-        self.feature_extractor = None
-        self.config = None
-        self.device = None
+        self.model: TokenizerModel | None = None
+        self.feature_extractor: _TokenizerFeatureExtractor | None = None
+        self.config: Qwen3TTSTokenizerV1Config | Qwen3TTSTokenizerV2Config | None = None
+        self.device: torch.device | None = None
+
+    def _require_initialized(
+        self,
+    ) -> tuple[TokenizerModel, _TokenizerFeatureExtractor, torch.device]:
+        if self.model is None:
+            raise RuntimeError("Tokenizer model is not initialized.")
+        if self.feature_extractor is None:
+            raise RuntimeError("Tokenizer feature_extractor is not initialized.")
+        if self.device is None:
+            raise RuntimeError("Tokenizer device is not initialized.")
+        return self.model, self.feature_extractor, self.device
 
     @classmethod
     def from_pretrained(
@@ -65,7 +92,7 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
         Args:
             pretrained_model_name_or_path (str):
                 HuggingFace repo id or local directory.
-            **kwargs (Any):
+            **kwargs (object):
                 Forwarded to `AutoModel.from_pretrained(...)` directly.
                 Typical examples: device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="eager".
 
@@ -84,14 +111,20 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
         inst.feature_extractor = AutoFeatureExtractor.from_pretrained(
             pretrained_model_name_or_path
         )
-        inst.model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        inst.config = inst.model.config
+        model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        if not isinstance(model, (Qwen3TTSTokenizerV1Model, Qwen3TTSTokenizerV2Model)):
+            raise TypeError(
+                "AutoModel returned unexpected tokenizer model type: "
+                f"{type(model).__name__}"
+            )
+        inst.model = model
+        inst.config = model.config
 
-        inst.device = getattr(inst.model, "device", None)
+        inst.device = getattr(model, "device", None)
         if inst.device is None:
             # fallback: infer from first parameter device
             try:
-                inst.device = next(inst.model.parameters()).device
+                inst.device = next(model.parameters()).device
             except StopIteration:
                 inst.device = torch.device("cpu")
 
@@ -130,18 +163,19 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
 
             If return_dict=False, returns the raw tuple from model.encode.
         """
+        model, feature_extractor, device = self._require_initialized()
         wavs = self._normalize_audio_inputs(audios, sr=sr)
 
-        inputs = self.feature_extractor(
+        inputs = feature_extractor(
             raw_audio=wavs,
-            sampling_rate=int(self.feature_extractor.sampling_rate),
+            sampling_rate=int(feature_extractor.sampling_rate),
             return_tensors="pt",
         )
-        inputs = inputs.to(self.device).to(self.model.dtype)
+        inputs = inputs.to(device).to(model.dtype)
 
         with torch.inference_mode():
             # model.encode expects (B, T) and (B, T)
-            enc = self.model.encode(
+            enc = model.encode(
                 inputs["input_values"].squeeze(1),
                 inputs["padding_mask"].squeeze(1),
                 return_dict=return_dict,

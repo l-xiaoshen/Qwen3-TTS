@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, List, Tuple, Union
+from typing import TypeVar, List, Tuple, Union
 
 import librosa
 import numpy as np
@@ -28,10 +28,11 @@ AudioLike = Union[
     Tuple[np.ndarray, int],  # (waveform, sr)
 ]
 
-MaybeList = Union[Any, List[Any]]
+T = TypeVar("T")
+MaybeList = Union[T, List[T]]
 
 
-class TTSDataset(Dataset):
+class TTSDataset(Dataset[dict[str, torch.Tensor]]):
     def __init__(self, data_list, processor, config: Qwen3TTSConfig, lag_num=-1):
         self.data_list = data_list
         self.processor = processor
@@ -93,14 +94,13 @@ class TTSDataset(Dataset):
     def _build_assistant_text(self, text: str) -> str:
         return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
 
-    def _ensure_list(self, x: MaybeList) -> List[Any]:
+    def _ensure_list(self, x: MaybeList[T]) -> List[T]:
         return x if isinstance(x, list) else [x]
 
-    def _tokenize_texts(self, text) -> List[torch.Tensor]:
+    def _tokenize_texts(self, text: str) -> torch.Tensor:
         input = self.processor(text=text, return_tensors="pt", padding=True)
         input_id = input["input_ids"]
-        input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
-        return input_id
+        return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
 
     @torch.inference_mode()
     def extract_mels(self, audio, sr):
@@ -117,8 +117,8 @@ class TTSDataset(Dataset):
         ).transpose(1, 2)
         return mels
 
-    def __getitem__(self, idx):
-        item = self.data_list[idx]
+    def __getitem__(self, index) -> dict[str, torch.Tensor]:
+        item = self.data_list[index]
 
         text = item["text"]
         audio_codes = item["audio_codes"]

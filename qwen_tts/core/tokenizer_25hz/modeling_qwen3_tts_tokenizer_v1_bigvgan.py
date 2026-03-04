@@ -149,11 +149,13 @@ class UpSample1d(nn.Module):
 
     def forward(self, hidden_states):
         channels = hidden_states.shape[1]
-
+        filter_tensor = self.filter
+        if not isinstance(filter_tensor, torch.Tensor):
+            raise RuntimeError("Upsample filter buffer is not initialized as a tensor.")
         hidden_states = F.pad(hidden_states, (self.pad, self.pad), mode="replicate")
         hidden_states = self.ratio * F.conv_transpose1d(
             hidden_states,
-            self.filter.expand(channels, -1, -1),
+            filter_tensor.expand(channels, -1, -1),
             stride=self.stride,
             groups=channels,
         )
@@ -167,27 +169,35 @@ class DownSample1d(nn.Module):
         super().__init__()
         cutoff = 0.5 / ratio
         half_width = 0.6 / ratio
+        self.kernel_size = (
+            int(6 * ratio // 2) * 2 if kernel_size is None else kernel_size
+        )
 
         if cutoff < 0.0:
             raise ValueError("Minimum cutoff must be larger than zero.")
         if cutoff > 0.5:
             raise ValueError("A cutoff above 0.5 does not make sense.")
 
-        self.even = kernel_size % 2 == 0
-        self.pad_left = kernel_size // 2 - int(self.even)
-        self.pad_right = kernel_size // 2
+        self.even = self.kernel_size % 2 == 0
+        self.pad_left = self.kernel_size // 2 - int(self.even)
+        self.pad_right = self.kernel_size // 2
         self.stride = ratio
-        filter = kaiser_sinc_filter1d(cutoff, half_width, kernel_size)
+        filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
         self.register_buffer("filter", filter, persistent=False)
 
     def forward(self, hidden_states):
         channels = hidden_states.shape[1]
+        filter_tensor = self.filter
+        if not isinstance(filter_tensor, torch.Tensor):
+            raise RuntimeError(
+                "Downsample filter buffer is not initialized as a tensor."
+            )
         hidden_states = F.pad(
             hidden_states, (self.pad_left, self.pad_right), mode="replicate"
         )
         out = F.conv1d(
             hidden_states,
-            self.filter.expand(channels, -1, -1),
+            filter_tensor.expand(channels, -1, -1),
             stride=self.stride,
             groups=channels,
         )
@@ -223,9 +233,9 @@ class CausalConv1d(nn.Conv1d):
         super().__init__(*args, **kwargs)
         self.causal_padding = self.dilation[0] * (self.kernel_size[0] - 1)
 
-    def forward(self, x):
+    def forward(self, input):
         return self._conv_forward(
-            F.pad(x, [self.causal_padding, 0]), self.weight, self.bias
+            F.pad(input, [self.causal_padding, 0]), self.weight, self.bias
         )
 
 
@@ -351,7 +361,8 @@ class AMPBlock(torch.nn.Module):
     def forward(self, x):
         hidden_states = self.pre_conv(x)
         hidden_states = self.pre_act(hidden_states)
-        acts1, acts2 = self.activations[::2], self.activations[1::2]
+        activations = list(self.activations)
+        acts1, acts2 = activations[::2], activations[1::2]
         for conv1, conv2, act1, act2 in zip(self.convs1, self.convs2, acts1, acts2):
             hidden_states = act1(hidden_states)
             hidden_states = conv1(hidden_states)
@@ -449,7 +460,12 @@ class Qwen3TTSTokenizerV1DecoderBigVGANModel(Qwen3TTSTokenizerV1DecoderPreTraine
         hidden_representation = self.conv_pre(processed_spectrogram)
 
         for layer_index in range(self.num_upsample_layers):
-            hidden_representation = self.ups[layer_index][0](hidden_representation)
+            upsample_layer = self.ups[layer_index]
+            if isinstance(upsample_layer, nn.ModuleList):
+                upsample = upsample_layer[0]
+            else:
+                upsample = upsample_layer
+            hidden_representation = upsample(hidden_representation)
             residual_output = sum(
                 self.resblocks[layer_index * self.num_residual_blocks + block_index](
                     hidden_representation

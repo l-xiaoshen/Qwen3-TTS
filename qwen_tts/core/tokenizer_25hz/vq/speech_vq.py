@@ -15,6 +15,7 @@
 # limitations under the License.
 import sox
 import copy
+import numpy as np
 import torch
 import operator
 import onnxruntime
@@ -25,7 +26,7 @@ import torchaudio.compliance.kaldi as kaldi
 
 from librosa.filters import mel as librosa_mel_fn
 from itertools import accumulate
-from typing import List
+from typing import List, Optional
 from torch import Tensor
 
 from .core_vq import DistributedGroupResidualVectorQuantization
@@ -185,14 +186,15 @@ class XVectorExtractor(nn.Module):
                 norm_audio, num_mel_bins=80, dither=0, sample_frequency=16000
             )
             feat = feat - feat.mean(dim=0, keepdim=True)
-            norm_embedding = self.ort_session.run(
+            ort_output = self.ort_session.run(
                 None,
                 {
                     self.ort_session.get_inputs()[0].name: feat.unsqueeze(dim=0)
                     .cpu()
                     .numpy()
                 },
-            )[0].flatten()
+            )[0]
+            norm_embedding = np.asarray(ort_output).flatten()
             norm_embedding = F.normalize(torch.from_numpy(norm_embedding), dim=0)
 
             ref_mel = self.mel_ext.extract(audio=norm_audio)
@@ -226,8 +228,8 @@ class WhisperEncoderVQ(WhisperEncoder):
         audio_vq_no_quantize: bool = False,
         audio_vq_ff_layer: int = 0,
         audio_vq_threshold_ema_dead_code: float = 0.1,
-        audio_vq_codebook_dim: int = None,
-        audio_vq_ds_rate: int = None,
+        audio_vq_codebook_dim: Optional[int] = None,
+        audio_vq_ds_rate: Optional[int] = None,
     ):
         super().__init__(
             n_mels,
@@ -257,6 +259,8 @@ class WhisperEncoderVQ(WhisperEncoder):
         else:
             raise NotImplementedError(f"Unsupported audio_vq_layers: {audio_vq_layers}")
 
+        if audio_vq_ds_rate is None:
+            raise ValueError("`audio_vq_ds_rate` must be provided.")
         if self.audio_vq_ds_rate == audio_vq_ds_rate:
             self.audio_vq_downsample = nn.Identity()
             self.audio_vq_upsample = nn.Identity()
@@ -306,7 +310,7 @@ class WhisperEncoderVQ(WhisperEncoder):
             "vq_num_tokens": vq_num_tokens,
         }
 
-    def _do_quantize(self, x, pe=None, y=None):
+    def _do_quantize(self, x: torch.Tensor, pe: Optional[torch.Tensor] = None, y=None):
         """
         x: torch.Tensor, shape = (T, D)
         q: torch.Tensor, shape = (T, D)
@@ -333,6 +337,8 @@ class WhisperEncoderVQ(WhisperEncoder):
 
         x, indices = x.squeeze(0), indices.squeeze(0)
         if self.audio_vq_pe:
+            if pe is None:
+                raise ValueError("`pe` must be provided when `audio_vq_pe` is enabled.")
             x = x + pe
             x = self.project_after_vq_pe(x)
 
@@ -361,6 +367,12 @@ class WhisperEncoderVQ(WhisperEncoder):
             the mel spectrogram of the audio
         """
 
+        positional_embedding = self.positional_embedding
+        if not isinstance(positional_embedding, torch.Tensor):
+            raise RuntimeError("`positional_embedding` is not initialized as a tensor.")
+        audio_vq_ds_rate = self.audio_vq_ds_rate
+        if not isinstance(audio_vq_ds_rate, int):
+            raise RuntimeError("`audio_vq_ds_rate` must be an integer.")
         aftercnn_x_list = []
         pe_for_vq_list = []
         for each_x in x_list:
@@ -370,7 +382,7 @@ class WhisperEncoderVQ(WhisperEncoder):
                 each_x_split = F.gelu(self.conv2(each_x_split))
                 each_x_split = each_x_split.permute(1, 0)  # L,D
 
-                each_positional_embedding_split = self.positional_embedding[
+                each_positional_embedding_split = positional_embedding[
                     : each_x_split.shape[0]
                 ]
                 aftercnn_x_list.append(
@@ -378,8 +390,8 @@ class WhisperEncoderVQ(WhisperEncoder):
                     + each_positional_embedding_split.to(each_x_split.dtype)
                 )
 
-                pe_for_vq_split = self.positional_embedding[
-                    : each_x_split.shape[0] // self.audio_vq_ds_rate
+                pe_for_vq_split = positional_embedding[
+                    : each_x_split.shape[0] // audio_vq_ds_rate
                 ]
                 pe_for_vq_list.append(pe_for_vq_split.to(each_x_split.dtype))
 

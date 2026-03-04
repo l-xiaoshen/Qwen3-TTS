@@ -19,7 +19,7 @@ from typing import Optional
 
 import torch
 from torch import nn
-from transformers.cache_utils import DynamicCache
+from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
 from transformers.masking_utils import (
     create_causal_mask,
@@ -29,7 +29,6 @@ from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_layers import GradientCheckpointingLayer
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
-    CausalLMOutputWithPast,
     ModelOutput,
 )
 from transformers.processing_utils import Unpack
@@ -52,6 +51,11 @@ from .modeling_qwen3_tts_talker_predictor import (
 
 logger = logging.get_logger(__name__)
 
+
+class TalkerForwardKwargs(FlashAttentionKwargs, total=False):
+    num_items_in_batch: int | torch.Tensor
+
+
 # Extracted from modeling_qwen3_tts_talker.py for better navigation.
 
 
@@ -70,15 +74,17 @@ class Qwen3TTSTalkerOutputWithPast(ModelOutput):
         `past_key_values` input) to speed up sequential decoding.
     """
 
-    loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
-    past_key_values: Optional[list[torch.FloatTensor]] = None
-    hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    attentions: Optional[tuple[torch.FloatTensor]] = None
-    past_hidden: Optional[torch.FloatTensor] = None
+    loss: Optional[torch.Tensor] = None
+    logits: Optional[torch.Tensor] = None
+    past_key_values: Optional[Cache] = None
+    hidden_states: Optional[
+        tuple[tuple[torch.Tensor, ...] | None, torch.Tensor | None]
+    ] = None
+    attentions: Optional[tuple[torch.Tensor, ...]] = None
+    past_hidden: Optional[torch.Tensor] = None
     generation_step: Optional[int] = None
-    trailing_text_hidden: Optional[torch.FloatTensor] = None
-    tts_pad_embed: Optional[torch.FloatTensor] = None
+    trailing_text_hidden: Optional[torch.Tensor] = None
+    tts_pad_embed: Optional[torch.Tensor] = None
 
 
 class Qwen3TTSTalkerDecoderLayer(GradientCheckpointingLayer):
@@ -111,9 +117,7 @@ class Qwen3TTSTalkerDecoderLayer(GradientCheckpointingLayer):
             tuple[torch.Tensor, torch.Tensor]
         ] = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[
-        torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]
-    ]:
+    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -178,15 +182,15 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        self.layers = nn.ModuleList(
-            [
-                Qwen3TTSTalkerDecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
-        )
+        decoder_layers = [
+            Qwen3TTSTalkerDecoderLayer(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
+        ]
+        self.layers: nn.ModuleList = nn.ModuleList(decoder_layers)
+        self.decoder_layers: list[Qwen3TTSTalkerDecoderLayer] = decoder_layers
         self.norm = Qwen3TTSRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3TTSTalkerRotaryEmbedding(config)
-        self.gradient_checkpointing = False
+        self.gradient_checkpointing: bool = False
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.text_embedding = nn.Embedding(
             config.text_vocab_size, config.text_hidden_size
@@ -210,12 +214,12 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[list[torch.FloatTensor]] = None,
+        past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        cache_position: Optional[torch.Tensor] = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         output_attentions = (
@@ -237,16 +241,25 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
 
         if self.gradient_checkpointing and self.training:
             if use_cache:
-                logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
+                if callable(getattr(logger, "warning_once", None)):
+                    getattr(logger, "warning_once")(
+                        "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                    )
+                else:
+                    logger.warning(
+                        "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                    )
                 use_cache = False
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+            if input_ids is None:
+                raise ValueError(
+                    "`input_ids` cannot be None when `inputs_embeds` is None."
+                )
+            inputs_embeds = self.get_input_embeddings()(input_ids)
 
         if cache_position is None:
             past_seen_tokens = (
@@ -260,17 +273,22 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
 
         # the hard coded `3` is for temporal, height and width.
         if position_ids is None:
-            position_ids = cache_position.view(1, 1, -1).expand(
+            position_ids_tensor = cache_position.view(1, 1, -1).expand(
                 3, inputs_embeds.shape[0], -1
             )
         elif position_ids.ndim == 2:
-            position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
-
-        if position_ids.ndim == 3 and position_ids.shape[0] == 4:
-            text_position_ids = position_ids[0]
-            position_ids = position_ids[1:]
+            position_ids_tensor = position_ids[None, ...].expand(
+                3, position_ids.shape[0], -1
+            )
         else:
-            text_position_ids = position_ids[0]
+            position_ids_tensor = position_ids
+
+        if position_ids_tensor.ndim == 3 and position_ids_tensor.shape[0] == 4:
+            text_position_ids = position_ids_tensor[0]
+            rotary_position_ids = position_ids_tensor[1:]
+        else:
+            text_position_ids = position_ids_tensor[0]
+            rotary_position_ids = position_ids_tensor
 
         mask_function = (
             create_causal_mask
@@ -289,15 +307,15 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        position_embeddings = self.rotary_emb(hidden_states, rotary_position_ids)
 
         # decoder layers
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
+        all_hidden_states: list[torch.FloatTensor] = []
+        all_self_attns: list[torch.FloatTensor] = []
 
-        for decoder_layer in self.layers:
+        for decoder_layer in self.decoder_layers:
             if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+                all_hidden_states.append(hidden_states)
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -314,19 +332,21 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
             hidden_states = layer_outputs[0]
 
             if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+                self_attn = layer_outputs[1] if len(layer_outputs) > 1 else None
+                if self_attn is not None:
+                    all_self_attns.append(self_attn)
 
         hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            all_hidden_states.append(hidden_states)
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=past_key_values,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
+            past_key_values=past_key_values if use_cache else None,
+            hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+            attentions=tuple(all_self_attns) if output_attentions else None,
         )
 
 
@@ -355,7 +375,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
         self.code_predictor = Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
             config=config.code_predictor_config, talker_config=config
         )
-        self.rope_deltas = None
+        self.rope_deltas: torch.Tensor | None = None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -383,7 +403,9 @@ class Qwen3TTSTalkerForConditionalGeneration(
     def get_decoder(self):
         return self.model
 
-    def forward_sub_talker_finetune(self, codec_ids, talker_hidden_states):
+    def forward_sub_talker_finetune(
+        self, codec_ids: torch.Tensor, talker_hidden_states: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         assert len(codec_ids.shape) == 2
         assert len(talker_hidden_states.shape) == 2
         assert codec_ids.shape[0] == talker_hidden_states.shape[0]
@@ -410,44 +432,52 @@ class Qwen3TTSTalkerForConditionalGeneration(
         )
 
         sub_talker_logits = sub_talker_outputs.logits
+        if sub_talker_logits is None:
+            raise RuntimeError("Sub-talker did not return logits during finetune.")
         sub_talker_loss = sub_talker_outputs.loss
         return sub_talker_logits, sub_talker_loss
 
     @can_return_tuple
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        cache_position=None,
-        past_hidden=None,
-        trailing_text_hidden=None,
-        tts_pad_embed=None,
-        generation_step=None,
-        subtalker_dosample=None,
-        subtalker_top_p=None,
-        subtalker_top_k=None,
-        subtalker_temperature=None,
-        **kwargs,
-    ) -> CausalLMOutputWithPast:
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        past_key_values: Optional[Cache] = None,
+        inputs_embeds: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        cache_position: Optional[torch.Tensor] = None,
+        past_hidden: Optional[torch.Tensor] = None,
+        trailing_text_hidden: Optional[torch.Tensor] = None,
+        tts_pad_embed: Optional[torch.Tensor] = None,
+        generation_step: Optional[int] = None,
+        subtalker_dosample: Optional[bool] = None,
+        subtalker_top_p: Optional[float] = None,
+        subtalker_top_k: Optional[int] = None,
+        subtalker_temperature: Optional[float] = None,
+        **kwargs: Unpack[TalkerForwardKwargs],
+    ) -> Qwen3TTSTalkerOutputWithPast:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
             Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
             config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
             (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
         ```"""
+        generation_step_value: int
+        codec_ids: torch.Tensor | None
         # Prefill
         if inputs_embeds is not None and inputs_embeds.shape[1] > 1:
-            generation_step = -1
+            generation_step_value = -1
             codec_ids = None
         # Generate
         else:
+            if input_ids is None:
+                raise ValueError("`input_ids` is required for generation stage.")
+            if past_hidden is None:
+                raise ValueError("`past_hidden` is required for generation stage.")
             last_id_hidden = self.get_input_embeddings()(input_ids)
             predictor_result = self.code_predictor.generate(
                 inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
@@ -459,12 +489,22 @@ class Qwen3TTSTalkerForConditionalGeneration(
                 output_hidden_states=True,
                 return_dict_in_generate=True,
             )
-            codec_ids = torch.cat((input_ids, predictor_result.sequences), dim=-1)
+
+            if isinstance(predictor_result, torch.Tensor):
+                predictor_sequences = predictor_result
+            else:
+                predictor_sequences = getattr(predictor_result, "sequences", None)
+                if not isinstance(predictor_sequences, torch.Tensor):
+                    raise RuntimeError(
+                        "Code predictor generation output does not contain `sequences`."
+                    )
+
+            codec_ids = torch.cat((input_ids, predictor_sequences), dim=-1)
             codec_hiddens = torch.cat(
                 [last_id_hidden]
                 + [
                     self.code_predictor.get_input_embeddings()[i](
-                        predictor_result.sequences[..., i : i + 1]
+                        predictor_sequences[..., i : i + 1]
                     )
                     for i in range(self.config.num_code_groups - 1)
                 ],
@@ -472,9 +512,17 @@ class Qwen3TTSTalkerForConditionalGeneration(
             )
             inputs_embeds = codec_hiddens.sum(1, keepdim=True)
 
-            if generation_step < trailing_text_hidden.shape[1]:
+            if generation_step is None:
+                raise ValueError("`generation_step` is required for generation stage.")
+            generation_step_value = generation_step
+            if trailing_text_hidden is None:
+                raise ValueError("`trailing_text_hidden` is required for generation.")
+            if tts_pad_embed is None:
+                raise ValueError("`tts_pad_embed` is required for generation.")
+
+            if generation_step_value < trailing_text_hidden.shape[1]:
                 inputs_embeds = inputs_embeds + trailing_text_hidden[
-                    :, generation_step
+                    :, generation_step_value
                 ].unsqueeze(1)
             else:
                 inputs_embeds = inputs_embeds + tts_pad_embed
@@ -491,16 +539,27 @@ class Qwen3TTSTalkerForConditionalGeneration(
                 rope_deltas = rope_deltas - delta0
                 self.rope_deltas = rope_deltas
             else:
-                batch_size, seq_length = input_ids.shape
-                delta = (
-                    cache_position[0] + self.rope_deltas
-                    if cache_position is not None
-                    else 0
-                )
-                position_ids = torch.arange(seq_length, device=input_ids.device)
+                batch_size = inputs_embeds.shape[0]
+                seq_length = inputs_embeds.shape[1]
+                delta = cache_position[0] + self.rope_deltas
+                position_ids = torch.arange(seq_length, device=inputs_embeds.device)
                 position_ids = position_ids.view(1, -1).expand(batch_size, -1)
                 position_ids = position_ids.add(delta)
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
+
+        flash_attn_kwargs: FlashAttentionKwargs = {}
+        cu_seq_lens_q = kwargs.get("cu_seq_lens_q")
+        if cu_seq_lens_q is None or isinstance(cu_seq_lens_q, torch.Tensor):
+            flash_attn_kwargs["cu_seq_lens_q"] = cu_seq_lens_q
+        cu_seq_lens_k = kwargs.get("cu_seq_lens_k")
+        if cu_seq_lens_k is None or isinstance(cu_seq_lens_k, torch.Tensor):
+            flash_attn_kwargs["cu_seq_lens_k"] = cu_seq_lens_k
+        max_length_q = kwargs.get("max_length_q")
+        if max_length_q is None or isinstance(max_length_q, int):
+            flash_attn_kwargs["max_length_q"] = max_length_q
+        max_length_k = kwargs.get("max_length_k")
+        if max_length_k is None or isinstance(max_length_k, int):
+            flash_attn_kwargs["max_length_k"] = max_length_k
 
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=None,
@@ -512,7 +571,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
-            **kwargs,
+            **flash_attn_kwargs,
         )
 
         hidden_states = outputs.last_hidden_state
@@ -520,11 +579,15 @@ class Qwen3TTSTalkerForConditionalGeneration(
 
         loss = None
         if labels is not None:
+            loss_kwargs: dict[str, int | torch.Tensor] = {}
+            num_items_in_batch = kwargs.get("num_items_in_batch")
+            if isinstance(num_items_in_batch, (int, torch.Tensor)):
+                loss_kwargs["num_items_in_batch"] = num_items_in_batch
             loss = self.loss_function(
                 logits=logits,
                 labels=labels,
                 vocab_size=self.config.vocab_size,
-                **kwargs,
+                **loss_kwargs,
             )
 
         return Qwen3TTSTalkerOutputWithPast(
@@ -534,14 +597,14 @@ class Qwen3TTSTalkerForConditionalGeneration(
             hidden_states=(outputs.hidden_states, codec_ids),
             attentions=outputs.attentions,
             past_hidden=hidden_states[:, -1:, :],
-            generation_step=generation_step + 1,
+            generation_step=generation_step_value + 1,
             trailing_text_hidden=trailing_text_hidden,
             tts_pad_embed=tts_pad_embed,
         )
 
     def get_rope_index(
         self,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Calculate the 3D rope index based on image and video's temporal, height and width in LLM.
@@ -585,8 +648,6 @@ class Qwen3TTSTalkerForConditionalGeneration(
             position_ids (`torch.LongTensor` of shape `(3, batch_size, sequence_length)`)
             mrope_position_deltas (`torch.Tensor` of shape `(batch_size)`)
         """
-        mrope_position_deltas = []
-
         position_ids = attention_mask.float().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
         position_ids = (

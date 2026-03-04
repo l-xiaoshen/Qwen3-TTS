@@ -41,20 +41,26 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+T = tp.TypeVar("T")
+D = tp.TypeVar("D")
+CodebookBuffers = tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 
-def round_up_multiple(num, mult):
+
+def round_up_multiple(num: int, mult: int) -> int:
     return ceil(num / mult) * mult
 
 
-def default(val: tp.Any, d: tp.Any) -> tp.Any:
+def default(val: T | None, d: D) -> T | D:
     return val if val is not None else d
 
 
-def ema_inplace(moving_avg, new, decay: float):
+def ema_inplace(moving_avg: torch.Tensor, new: torch.Tensor, decay: float) -> None:
     moving_avg.data.mul_(decay).add_(new, alpha=(1 - decay))
 
 
-def laplace_smoothing(x, n_categories: int, epsilon: float = 1e-5):
+def laplace_smoothing(
+    x: torch.Tensor, n_categories: int, epsilon: float = 1e-5
+) -> torch.Tensor:
     return (x + epsilon) / (x.sum() + n_categories * epsilon)
 
 
@@ -64,7 +70,7 @@ def uniform_init(*shape: int):
     return t
 
 
-def sample_vectors(samples, num: int):
+def sample_vectors(samples: torch.Tensor, num: int) -> torch.Tensor:
     num_samples, device = samples.shape[0], samples.device
 
     if num_samples >= num:
@@ -76,7 +82,9 @@ def sample_vectors(samples, num: int):
 
 
 @torch.no_grad()
-def kmeans(samples, num_clusters: int, num_iters: int = 10):
+def kmeans(
+    samples: torch.Tensor, num_clusters: int, num_iters: int = 10
+) -> tuple[torch.Tensor, torch.Tensor]:
     dim, dtype = samples.shape[-1], samples.dtype
 
     means = sample_vectors(samples, num_clusters)
@@ -102,12 +110,12 @@ def kmeans(samples, num_clusters: int, num_iters: int = 10):
     return means, bins
 
 
-def preprocess(x):
+def preprocess(x: torch.Tensor) -> torch.Tensor:
     x = rearrange(x, "... d -> (...) d")
     return x
 
 
-def postprocess_emb(embed_ind, shape):
+def postprocess_emb(embed_ind: torch.Tensor, shape: torch.Size) -> torch.Tensor:
     return embed_ind.view(*shape[:-1])
 
 
@@ -131,7 +139,7 @@ class EuclideanCodebook(nn.Module):
         self,
         dim: int,
         codebook_size: int,
-        kmeans_init: int = False,
+        kmeans_init: bool = False,
         kmeans_iters: int = 10,
         decay: float = 0.99,
         epsilon: float = 1e-5,
@@ -144,13 +152,18 @@ class EuclideanCodebook(nn.Module):
         self.epsilon = epsilon
         self.threshold_ema_dead_code = threshold_ema_dead_code
 
-        self.inited = None
-        self.cluster_size = None
-        self.embed = None
-        self.embed_avg = None
-        self.training = True
+        if kmeans_init:
+            embed = torch.zeros(codebook_size, dim)
+            inited = False
+        else:
+            embed = uniform_init(codebook_size, dim)
+            inited = True
+        self.register_buffer("inited", torch.tensor(inited))
+        self.register_buffer("cluster_size", torch.zeros(codebook_size))
+        self.register_buffer("embed", embed)
+        self.register_buffer("embed_avg", embed.clone())
 
-    def init_embed_(self, data):
+    def init_embed_(self, data: torch.Tensor) -> None:
         if self.inited:
             return
 
@@ -158,27 +171,30 @@ class EuclideanCodebook(nn.Module):
         self.embed.data.copy_(embed)
         self.embed_avg.data.copy_(embed.clone())
         self.cluster_size.data.copy_(cluster_size)
-        self.inited.data.copy_(torch.Tensor([True]))
+        self.inited.data.copy_(torch.tensor(True, device=self.inited.device))
         # Make sure all buffers across workers are in sync after initialization
         # distrib.broadcast_tensors([self.embed, self.embed_avg, self.cluster_size, self.inited])
 
-    def replace_(self, samples, mask):
+    def replace_(self, samples: torch.Tensor, mask: torch.Tensor) -> None:
         modified_codebook = torch.where(
             mask[..., None], sample_vectors(samples, self.codebook_size), self.embed
         )
         self.embed.data.copy_(modified_codebook)
 
-    def expire_codes_(self, batch_samples):
+    def expire_codes_(self, batch_samples: torch.Tensor) -> None:
         if self.threshold_ema_dead_code == 0:
             return
 
-        cluster_size = self.cluster_size / sum(self.cluster_size) * self.codebook_size
+        cluster_size = (
+            self.cluster_size / torch.sum(self.cluster_size) * self.codebook_size
+        )
         expired_codes = cluster_size < self.threshold_ema_dead_code
         if not torch.any(expired_codes):
             return
         else:
+            num_expire = int(torch.sum(expired_codes).item())
             print(
-                f"VQ expire infos: num_expire={sum(expired_codes)}, cluster_size[:5]={cluster_size[:5]}"
+                f"VQ expire infos: num_expire={num_expire}, cluster_size[:5]={cluster_size[:5]}"
             )
 
         batch_samples = rearrange(batch_samples, "... d -> (...) d")
@@ -186,7 +202,7 @@ class EuclideanCodebook(nn.Module):
         # sync buffers outside for efficiency
         # distrib.broadcast_tensors(self.buffers())
 
-    def quantize(self, x):
+    def quantize(self, x: torch.Tensor) -> torch.Tensor:
         embed = self.embed.t()
         dist = -(
             x.pow(2).sum(1, keepdim=True)
@@ -196,11 +212,11 @@ class EuclideanCodebook(nn.Module):
         embed_ind = dist.max(dim=-1).indices
         return embed_ind
 
-    def dequantize(self, embed_ind):
+    def dequantize(self, embed_ind: torch.Tensor) -> torch.Tensor:
         quantize = F.embedding(embed_ind, self.embed)
         return quantize
 
-    def encode(self, x, buffers):
+    def encode(self, x: torch.Tensor, buffers: CodebookBuffers) -> torch.Tensor:
         self.inited, self.cluster_size, self.embed, self.embed_avg = buffers
 
         shape = x.shape
@@ -212,13 +228,15 @@ class EuclideanCodebook(nn.Module):
         embed_ind = postprocess_emb(embed_ind, shape)
         return embed_ind
 
-    def decode(self, embed_ind, buffers):
+    def decode(self, embed_ind: torch.Tensor, buffers: CodebookBuffers) -> torch.Tensor:
         self.inited, self.cluster_size, self.embed, self.embed_avg = buffers
 
         quantize = self.dequantize(embed_ind)
         return quantize
 
-    def forward(self, x, buffers):
+    def forward(
+        self, x: torch.Tensor, buffers: CodebookBuffers
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         self.inited, self.cluster_size, self.embed, self.embed_avg = buffers
 
         shape, dtype = x.shape, x.dtype
@@ -307,22 +325,24 @@ class VectorQuantization(nn.Module):
         self.training = True
 
     @property
-    def codebook(self):
+    def codebook(self) -> torch.Tensor:
         return self._codebook.embed
 
-    def encode(self, x, buffers):
+    def encode(self, x: torch.Tensor, buffers: CodebookBuffers) -> torch.Tensor:
         # x = rearrange(x, "b d n -> b n d")
         x = self.project_in(x)
         embed_in = self._codebook.encode(x, buffers)
         return embed_in
 
-    def decode(self, embed_ind, buffers):
+    def decode(self, embed_ind: torch.Tensor, buffers: CodebookBuffers) -> torch.Tensor:
         quantize = self._codebook.decode(embed_ind, buffers)
         quantize = self.project_out(quantize)
         # quantize = rearrange(quantize, "b n d -> b d n")
         return quantize
 
-    def forward(self, x, buffers):
+    def forward(
+        self, x: torch.Tensor, buffers: CodebookBuffers
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         device = x.device
         # x = rearrange(x, "b d n -> b n d")
         x = self.project_in(x)
@@ -352,9 +372,9 @@ class DistributedResidualVectorQuantization(nn.Module):
     def __init__(
         self,
         *,
-        num_quantizers,
+        num_quantizers: int,
         quantize_dropout: bool = False,
-        rand_num_quant: tp.Optional[tp.List] = None,
+        rand_num_quant: tp.Optional[list[int]] = None,
         **kwargs,
     ):
         super().__init__()
@@ -400,7 +420,7 @@ class DistributedResidualVectorQuantization(nn.Module):
         if "q0_ds_ratio" in kwargs:
             self.q0_ds_ratio = kwargs.pop("q0_ds_ratio")
 
-        self.layers = nn.ModuleList()
+        self.layers: nn.ModuleList = nn.ModuleList()
         for i in range(num_quantizers):
             vq_args = dict(**kwargs)
             vq = VectorQuantization(**vq_args)
@@ -408,6 +428,21 @@ class DistributedResidualVectorQuantization(nn.Module):
 
         self.quantize_dropout = quantize_dropout
         self.rand_num_quant = rand_num_quant
+
+    def _buffer_tensors(self) -> CodebookBuffers:
+        inited = self.inited
+        cluster_size = self.cluster_size
+        embed = self.embed
+        embed_avg = self.embed_avg
+        if not isinstance(inited, torch.Tensor):
+            raise RuntimeError("`inited` buffer is not a tensor.")
+        if not isinstance(cluster_size, torch.Tensor):
+            raise RuntimeError("`cluster_size` buffer is not a tensor.")
+        if not isinstance(embed, torch.Tensor):
+            raise RuntimeError("`embed` buffer is not a tensor.")
+        if not isinstance(embed_avg, torch.Tensor):
+            raise RuntimeError("`embed_avg` buffer is not a tensor.")
+        return inited, cluster_size, embed, embed_avg
 
     def forward(self, x, n_q: tp.Optional[int] = None):
         quantized_out = torch.zeros_like(x)
@@ -418,12 +453,18 @@ class DistributedResidualVectorQuantization(nn.Module):
         all_losses = []
         all_indices = []
         all_sub_quants = []
-        n_q = n_q or len(self.layers)
+        if n_q is None:
+            n_q = len(self.layers)
+        inited, cluster_size, embed, embed_avg = self._buffer_tensors()
 
         should_quantize_dropout = (
             self.training and self.quantize_dropout and self.rand_num_quant is not None
         )
         if should_quantize_dropout:
+            if self.rand_num_quant is None:
+                raise RuntimeError(
+                    "`rand_num_quant` is required when dropout is active."
+                )
             rand_quantize_dropout_index = random.choice(self.rand_num_quant)
 
             null_indices_shape = (x.shape[0], x.shape[2])
@@ -433,7 +474,10 @@ class DistributedResidualVectorQuantization(nn.Module):
             null_loss = torch.full((1,), 0.0, device=device, dtype=x.dtype)
             null_sub_quant = torch.full(x.shape, -1, device=device, dtype=x.dtype)
 
-        for quantizer_index, layer in enumerate(self.layers[:n_q]):
+        for quantizer_index, layer_module in enumerate(list(self.layers)[:n_q]):
+            if not isinstance(layer_module, VectorQuantization):
+                raise TypeError("Unexpected quantizer module type.")
+            layer = layer_module
             # dropout except the first quantizer
             if (
                 should_quantize_dropout
@@ -449,12 +493,12 @@ class DistributedResidualVectorQuantization(nn.Module):
                 quant_in = F.interpolate(quant_in, size=[tt // 2])
             quantized, indices, loss = layer(
                 quant_in,
-                [
-                    self.inited[quantizer_index],
-                    self.cluster_size[quantizer_index],
-                    self.embed[quantizer_index],
-                    self.embed_avg[quantizer_index],
-                ],
+                (
+                    inited[quantizer_index],
+                    cluster_size[quantizer_index],
+                    embed[quantizer_index],
+                    embed_avg[quantizer_index],
+                ),
             )
             if self.q0_ds_ratio > 1 and quantizer_index == 0:
                 quantized = F.interpolate(quantized, size=[tt])
@@ -481,25 +525,30 @@ class DistributedResidualVectorQuantization(nn.Module):
     def encode(self, x: torch.Tensor, n_q: tp.Optional[int] = None) -> torch.Tensor:
         residual = x
         all_indices = []
-        n_q = n_q or len(self.layers)
-        for i, layer in enumerate(self.layers[:n_q]):
+        if n_q is None:
+            n_q = len(self.layers)
+        inited, cluster_size, embed, embed_avg = self._buffer_tensors()
+        for i, layer_module in enumerate(list(self.layers)[:n_q]):
+            if not isinstance(layer_module, VectorQuantization):
+                raise TypeError("Unexpected quantizer module type.")
+            layer = layer_module
             indices = layer.encode(
                 residual,
-                [
-                    self.inited[i],
-                    self.cluster_size[i],
-                    self.embed[i],
-                    self.embed_avg[i],
-                ],
+                (
+                    inited[i],
+                    cluster_size[i],
+                    embed[i],
+                    embed_avg[i],
+                ),
             )
             quantized = layer.decode(
                 indices,
-                [
-                    self.inited[i],
-                    self.cluster_size[i],
-                    self.embed[i],
-                    self.embed_avg[i],
-                ],
+                (
+                    inited[i],
+                    cluster_size[i],
+                    embed[i],
+                    embed_avg[i],
+                ),
             )
             residual = residual - quantized
             all_indices.append(indices)
@@ -508,16 +557,20 @@ class DistributedResidualVectorQuantization(nn.Module):
 
     def decode(self, q_indices: torch.Tensor) -> torch.Tensor:
         quantized_out = torch.tensor(0.0, device=q_indices.device)
+        inited, cluster_size, embed, embed_avg = self._buffer_tensors()
         for i, indices in enumerate(q_indices):
-            layer = self.layers[i]
+            layer_module = self.layers[i]
+            if not isinstance(layer_module, VectorQuantization):
+                raise TypeError("Unexpected quantizer module type.")
+            layer = layer_module
             quantized = layer.decode(
                 indices,
-                [
-                    self.inited[i],
-                    self.cluster_size[i],
-                    self.embed[i],
-                    self.embed_avg[i],
-                ],
+                (
+                    inited[i],
+                    cluster_size[i],
+                    embed[i],
+                    embed_avg[i],
+                ),
             )
             quantized_out = quantized_out + quantized
         return quantized_out
@@ -532,10 +585,10 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
     def __init__(
         self,
         *,
-        num_groups,
-        num_quantizers,
+        num_groups: int,
+        num_quantizers: int,
         quantize_dropout: bool = False,
-        rand_num_quant: tp.Optional[tp.List] = None,
+        rand_num_quant: tp.Optional[list[int]] = None,
         **kwargs,
     ):
         super().__init__()
