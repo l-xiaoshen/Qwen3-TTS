@@ -15,7 +15,7 @@
 # limitations under the License.
 from dataclasses import dataclass
 from collections.abc import Sequence
-from typing import Mapping, Optional, TypedDict, Union
+from typing import Mapping, Optional, TypedDict
 
 import librosa
 import numpy as np
@@ -56,9 +56,9 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
-        ref_audio: Union[AudioLike, list[AudioLike]],
-        ref_text: Optional[Union[str, list[Optional[str]]]] = None,
-        x_vector_only_mode: Union[bool, list[bool]] = False,
+        ref_audio: list[AudioLike],
+        ref_text: Optional[list[Optional[str]]] = None,
+        x_vector_only_mode: Optional[list[bool]] = None,
     ) -> list[VoiceClonePromptItem]:
         """
         Build voice-clone prompt items from reference audio (and optionally reference text) using Base model.
@@ -66,17 +66,33 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         self._ensure_model_type("base", "create_voice_clone_prompt")
 
         speech_tokenizer = self._require_speech_tokenizer()
-        ref_audio_list = self._ensure_list(ref_audio)
-        ref_text_list = (
-            self._ensure_list(ref_text)
-            if isinstance(ref_text, list)
-            else ([ref_text] * len(ref_audio_list))
-        )
-        xvec_list = (
-            self._ensure_list(x_vector_only_mode)
-            if isinstance(x_vector_only_mode, list)
-            else ([x_vector_only_mode] * len(ref_audio_list))
-        )
+        if not isinstance(ref_audio, list):
+            raise TypeError("`ref_audio` must be a list of audio inputs.")
+        ref_audio_list: list[AudioLike] = []
+        for item in ref_audio:
+            ref_audio_list.append(item)
+
+        if ref_text is None:
+            ref_text_list: list[str | None] = [None] * len(ref_audio_list)
+        else:
+            if not isinstance(ref_text, list):
+                raise TypeError("`ref_text` must be a list[str | None].")
+            ref_text_list = []
+            for item in ref_text:
+                if item is not None and not isinstance(item, str):
+                    raise TypeError("`ref_text` list items must be str or None.")
+                ref_text_list.append(item)
+
+        if x_vector_only_mode is None:
+            xvec_list: list[bool] = [False] * len(ref_audio_list)
+        else:
+            if not isinstance(x_vector_only_mode, list):
+                raise TypeError("`x_vector_only_mode` must be a list of booleans.")
+            xvec_list = []
+            for item in x_vector_only_mode:
+                if not isinstance(item, bool):
+                    raise TypeError("`x_vector_only_mode` list items must be booleans.")
+                xvec_list.append(item)
 
         if len(ref_text_list) != len(ref_audio_list) or len(xvec_list) != len(
             ref_audio_list
@@ -213,13 +229,13 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     @torch.no_grad()
     def generate_voice_clone(
         self,
-        text: Union[str, list[str]],
-        language: Optional[Union[str, list[str]]] = None,
-        ref_audio: Optional[Union[AudioLike, list[AudioLike]]] = None,
-        ref_text: Optional[Union[str, list[Optional[str]]]] = None,
-        x_vector_only_mode: Union[bool, list[bool]] = False,
+        text: list[str],
+        language: Optional[list[str]] = None,
+        ref_audio: Optional[list[AudioLike]] = None,
+        ref_text: Optional[list[Optional[str]]] = None,
+        x_vector_only_mode: Optional[list[bool]] = None,
         voice_clone_prompt: Optional[
-            Union[VoiceClonePromptInput, list[VoiceClonePromptItem]]
+            VoiceClonePromptInput | list[VoiceClonePromptItem]
         ] = None,
         non_streaming_mode: bool = False,
         do_sample: Optional[bool] = None,
@@ -239,15 +255,24 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("base", "generate_voice_clone")
 
-        texts = self._ensure_list(text)
-        if isinstance(language, list):
-            languages = list(language)
-        elif language is None:
+        if not isinstance(text, list):
+            raise TypeError("`text` must be a list of strings.")
+        texts: list[str] = []
+        for item in text:
+            if not isinstance(item, str):
+                raise TypeError("`text` list items must be strings.")
+            texts.append(item)
+
+        if language is None:
             languages = ["Auto"] * len(texts)
         else:
-            languages = [language] * len(texts)
-        if len(languages) == 1 and len(texts) > 1:
-            languages = languages * len(texts)
+            if not isinstance(language, list):
+                raise TypeError("`language` must be a list of strings.")
+            languages: list[str] = []
+            for item in language:
+                if not isinstance(item, str):
+                    raise TypeError("`language` list items must be strings.")
+                languages.append(item)
         if len(texts) != len(languages):
             raise ValueError(
                 f"Batch size mismatch: text={len(texts)}, language={len(languages)}"
@@ -265,8 +290,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 ref_text=ref_text,
                 x_vector_only_mode=x_vector_only_mode,
             )
-            if len(prompt_items) == 1 and len(texts) > 1:
-                prompt_items = prompt_items * len(texts)
             if len(prompt_items) != len(texts):
                 raise ValueError(
                     f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
@@ -285,8 +308,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                             "`voice_clone_prompt` list items must be VoiceClonePromptItem."
                         )
                     prompt_items.append(item)
-                if len(prompt_items) == 1 and len(texts) > 1:
-                    prompt_items = prompt_items * len(texts)
                 if len(prompt_items) != len(texts):
                     raise ValueError(
                         f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"

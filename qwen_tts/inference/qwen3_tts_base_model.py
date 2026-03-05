@@ -17,7 +17,7 @@ import base64
 import io
 import urllib.request
 from collections.abc import Mapping
-from typing import Optional, TypeVar, TypedDict, Union
+from typing import Optional, TypedDict, Union
 from typing_extensions import Self
 from urllib.parse import urlparse
 
@@ -43,7 +43,6 @@ AudioLike = Union[
     tuple[np.ndarray, int],  # (waveform, sr)
 ]
 
-T = TypeVar("T")
 GenerateDefaultValue = bool | int | float
 GenerateDefaults = dict[str, GenerateDefaultValue]
 GenerateDefaultsInputValue = bool | int | float | str | None
@@ -262,15 +261,14 @@ class Qwen3TTSBaseModel:
         return audio.astype(np.float32), int(sr)
 
     def _normalize_audio_inputs(
-        self, audios: Union[AudioLike, list[AudioLike]]
+        self, audios: list[AudioLike]
     ) -> list[tuple[np.ndarray, int]]:
         """
         Normalize audio inputs into a list of (waveform, sr).
         """
-        if isinstance(audios, list):
-            items = audios
-        else:
-            items = [audios]
+        if not isinstance(audios, list):
+            raise TypeError("`audios` must be a list of audio inputs.")
+        items = audios
 
         out: list[tuple[np.ndarray, int]] = []
         for a in items:
@@ -287,9 +285,6 @@ class Qwen3TTSBaseModel:
                 mono = np.mean(a[0], axis=-1).astype(np.float32)
                 out[i] = (mono, a[1])
         return out
-
-    def _ensure_list(self, x: T | list[T]) -> list[T]:
-        return x if isinstance(x, list) else [x]
 
     def _build_assistant_text(self, text: str) -> str:
         return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"

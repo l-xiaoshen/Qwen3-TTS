@@ -437,12 +437,13 @@ def build_demo(
                         return None, "Speaker is required (必须选择说话人)."
                     language = lang_map.get(lang_disp, "Auto")
                     speaker = spk_map.get(spk_disp, spk_disp)
+                    instruct_value = (instruct or "").strip()
                     kwargs = _gen_common_kwargs()
                     wavs, sr = tts.generate_custom_voice_batch(
-                        text=text.strip(),
-                        language=language,
-                        speaker=speaker,
-                        instruct=(instruct or "").strip() or None,
+                        text=[text.strip()],
+                        language=[language],
+                        speaker=[speaker],
+                        instruct=[instruct_value] if instruct_value else None,
                         **kwargs,
                     )
                     return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
@@ -496,9 +497,9 @@ def build_demo(
                     language = lang_map.get(lang_disp, "Auto")
                     kwargs = _gen_common_kwargs()
                     wavs, sr = tts.generate_voice_design_batch(
-                        text=text.strip(),
-                        language=language,
-                        instruct=design.strip(),
+                        text=[text.strip()],
+                        language=[language],
+                        instruct=[design.strip()],
                         **kwargs,
                     )
                     return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
@@ -576,11 +577,11 @@ def build_demo(
                             language = lang_map.get(lang_disp, "Auto")
                             kwargs = _gen_common_kwargs()
                             wavs, sr = tts.generate_voice_clone(
-                                text=text.strip(),
-                                language=language,
-                                ref_audio=at,
-                                ref_text=(ref_txt.strip() if ref_txt else None),
-                                x_vector_only_mode=bool(use_xvec),
+                                text=[text.strip()],
+                                language=[language],
+                                ref_audio=[at],
+                                ref_text=[ref_txt.strip() if ref_txt else None],
+                                x_vector_only_mode=[bool(use_xvec)],
                                 **kwargs,
                             )
                             return _wav_to_gradio_audio(
@@ -666,9 +667,9 @@ Upload a previously saved voice file, then synthesize new text.
                                     "(未勾选 use x-vector only 时，必须提供参考音频文本；否则请勾选 use x-vector only，但效果会变差.)"
                                 )
                             items = tts.create_voice_clone_prompt(
-                                ref_audio=at,
-                                ref_text=(ref_txt.strip() if ref_txt else None),
-                                x_vector_only_mode=bool(use_xvec),
+                                ref_audio=[at],
+                                ref_text=[ref_txt.strip() if ref_txt else None],
+                                x_vector_only_mode=[bool(use_xvec)],
                             )
                             payload = {
                                 "items": [asdict(it) for it in items],
@@ -753,8 +754,8 @@ Upload a previously saved voice file, then synthesize new text.
                             language = lang_map.get(lang_disp, "Auto")
                             kwargs = _gen_common_kwargs()
                             wavs, sr = tts.generate_voice_clone(
-                                text=text.strip(),
-                                language=language,
+                                text=[text.strip()],
+                                language=[language],
                                 voice_clone_prompt=items,
                                 **kwargs,
                             )

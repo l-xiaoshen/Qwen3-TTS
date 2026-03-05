@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 import torch
@@ -28,10 +28,10 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     @torch.no_grad()
     def generate_custom_voice_batch(
         self,
-        text: Union[str, list[str]],
-        speaker: Union[str, list[str]],
-        language: Optional[Union[str, list[str]]] = None,
-        instruct: Optional[Union[str, list[str]]] = None,
+        text: list[str],
+        speaker: list[str],
+        language: Optional[list[str]] = None,
+        instruct: Optional[list[str]] = None,
         non_streaming_mode: bool = True,
         do_sample: Optional[bool] = None,
         top_k: Optional[int] = None,
@@ -50,48 +50,47 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
 
-        texts = self._ensure_list(text)
-        if isinstance(language, list):
+        if not isinstance(text, list):
+            raise TypeError("`text` must be a list of strings.")
+        texts: list[str] = []
+        for item in text:
+            if not isinstance(item, str):
+                raise TypeError("`text` list items must be strings.")
+            texts.append(item)
+
+        if language is None:
+            languages = ["Auto"] * len(texts)
+        else:
+            if not isinstance(language, list):
+                raise TypeError("`language` must be a list of strings.")
             languages: list[str] = []
             for item in language:
                 if not isinstance(item, str):
                     raise TypeError("`language` list items must be strings.")
                 languages.append(item)
-        elif language is None:
-            languages = ["Auto"] * len(texts)
-        else:
-            languages = [language] * len(texts)
 
-        if isinstance(speaker, list):
-            speakers: list[str | None] = []
-            for item in speaker:
-                if not isinstance(item, str):
-                    raise TypeError("`speaker` list items must be strings.")
-                speakers.append(item)
-        else:
-            speakers = [speaker]
+        if not isinstance(speaker, list):
+            raise TypeError("`speaker` must be a list of strings.")
+        speakers: list[str | None] = []
+        for item in speaker:
+            if not isinstance(item, str):
+                raise TypeError("`speaker` list items must be strings.")
+            speakers.append(item)
 
         model_size = self.model.tts_model_size
         if isinstance(model_size, str) and model_size in "0b6":
             # for 0b6 model, instruct is not supported
             instructs: list[str | None] = [None] * len(texts)
-        elif isinstance(instruct, list):
+        elif instruct is None:
+            instructs = [None] * len(texts)
+        else:
+            if not isinstance(instruct, list):
+                raise TypeError("`instruct` must be a list of strings.")
             instructs = []
             for item in instruct:
                 if not isinstance(item, str):
                     raise TypeError("`instruct` list items must be strings.")
                 instructs.append(item)
-        elif instruct is None:
-            instructs = [None] * len(texts)
-        else:
-            instructs = [instruct] * len(texts)
-
-        if len(languages) == 1 and len(texts) > 1:
-            languages = languages * len(texts)
-        if len(speakers) == 1 and len(texts) > 1:
-            speakers = speakers * len(texts)
-        if len(instructs) == 1 and len(texts) > 1:
-            instructs = instructs * len(texts)
 
         if not (len(texts) == len(languages) == len(speakers) == len(instructs)):
             raise ValueError(

@@ -118,11 +118,11 @@ def main():
             OUT_DIR,
             f"case1_promptSingle_synSingle_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
-                text=syn_text_single,
-                language=syn_lang_single,
-                ref_audio=ref_audio_single,
-                ref_text=ref_text_single,
-                x_vector_only_mode=xvec_only,
+                text=[syn_text_single],
+                language=[syn_lang_single],
+                ref_audio=[ref_audio_single],
+                ref_text=[ref_text_single],
+                x_vector_only_mode=[xvec_only],
                 **common_gen_kwargs,
             ),
         )
@@ -130,13 +130,13 @@ def main():
         # Case 1b: prompt single + synth single, via create_voice_clone_prompt
         def _case1b():
             prompt_items = tts.create_voice_clone_prompt(
-                ref_audio=ref_audio_single,
-                ref_text=ref_text_single,
-                x_vector_only_mode=xvec_only,
+                ref_audio=[ref_audio_single],
+                ref_text=[ref_text_single],
+                x_vector_only_mode=[xvec_only],
             )
             return tts.generate_voice_clone(
-                text=syn_text_single,
-                language=syn_lang_single,
+                text=[syn_text_single],
+                language=[syn_lang_single],
                 voice_clone_prompt=prompt_items,
                 **common_gen_kwargs,
             )
@@ -156,9 +156,9 @@ def main():
             lambda: tts.generate_voice_clone(
                 text=syn_text_batch,
                 language=syn_lang_batch,
-                ref_audio=ref_audio_single,
-                ref_text=ref_text_single,
-                x_vector_only_mode=xvec_only,
+                ref_audio=[ref_audio_single, ref_audio_single],
+                ref_text=[ref_text_single, ref_text_single],
+                x_vector_only_mode=[xvec_only, xvec_only],
                 **common_gen_kwargs,
             ),
         )
@@ -166,10 +166,11 @@ def main():
         # Case 2b: prompt single + synth batch, via create_voice_clone_prompt
         def _case2b():
             prompt_items = tts.create_voice_clone_prompt(
-                ref_audio=ref_audio_single,
-                ref_text=ref_text_single,
-                x_vector_only_mode=xvec_only,
+                ref_audio=[ref_audio_single],
+                ref_text=[ref_text_single],
+                x_vector_only_mode=[xvec_only],
             )
+            prompt_items = prompt_items * len(syn_text_batch)
             return tts.generate_voice_clone(
                 text=syn_text_batch,
                 language=syn_lang_batch,

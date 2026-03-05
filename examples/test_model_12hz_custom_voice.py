@@ -36,10 +36,10 @@ def main():
     t0 = time.time()
 
     wavs, sr = tts.generate_custom_voice_batch(
-        text="其实我真的有发现，我是一个特别善于观察别人情绪的人。",
-        language="Chinese",
-        speaker="Vivian",
-        instruct="用特别愤怒的语气说",
+        text=["其实我真的有发现，我是一个特别善于观察别人情绪的人。"],
+        language=["Chinese"],
+        speaker=["Vivian"],
+        instruct=["用特别愤怒的语气说"],
     )
 
     torch.cuda.synchronize()
