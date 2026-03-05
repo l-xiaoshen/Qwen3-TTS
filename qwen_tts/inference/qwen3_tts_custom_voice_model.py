@@ -18,10 +18,13 @@ from typing import Optional, Union
 import numpy as np
 import torch
 
+from ..core.models import Qwen3TTSCustomVoiceForConditionalGeneration
 from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
 
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
+    model: Qwen3TTSCustomVoiceForConditionalGeneration
+
     @torch.no_grad()
     def generate_custom_voice_batch(
         self,
@@ -98,7 +101,9 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self._validate_languages(languages)
         self._validate_speakers(speakers)
 
-        input_ids = self._tokenize_texts_batch([self._build_assistant_text(t) for t in texts])
+        input_ids = self._tokenize_texts_batch(
+            [self._build_assistant_text(t) for t in texts]
+        )
 
         instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
@@ -123,7 +128,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes_list, _ = self.model.generate_batch(
+        talker_codes_list, _ = self.model.generate_custom_voice_batch(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             languages=languages,

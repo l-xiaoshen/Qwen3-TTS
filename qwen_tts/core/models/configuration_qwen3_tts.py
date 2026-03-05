@@ -458,7 +458,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
 
 class Qwen3TTSConfig(PretrainedConfig):
     """
-    This is the configuration class to store the configuration of a [`Qwen3TTSForConditionalGeneration`].
+    Configuration class for Qwen3 TTS conditional generation models.
     """
 
     model_type = "qwen3_tts"

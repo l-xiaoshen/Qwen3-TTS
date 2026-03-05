@@ -154,9 +154,9 @@ class MelSpectrogramFeatures(nn.Module):
 class XVectorExtractor(nn.Module):
     def __init__(self, audio_codec_with_xvector):
         super().__init__()
-        option = onnxruntime.SessionOptions()
+        option = onnxruntime.SessionOptions()  # type: ignore[possibly-missing-attribute]
         option.graph_optimization_level = (
-            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL  # type: ignore[possibly-missing-attribute]
         )
         option.intra_op_num_threads = 1
         providers = ["CPUExecutionProvider"]

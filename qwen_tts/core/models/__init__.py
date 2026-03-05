@@ -14,11 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .configuration_qwen3_tts import Qwen3TTSConfig
-from .modeling_qwen3_tts import Qwen3TTSForConditionalGeneration
+from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
+from .modeling_qwen3_tts_core import mel_spectrogram
+from .modeling_qwen3_tts_custom_voice import Qwen3TTSCustomVoiceForConditionalGeneration
+from .modeling_qwen3_tts_voice_clone import Qwen3TTSVoiceCloneForConditionalGeneration
+from .modeling_qwen3_tts_voice_design import Qwen3TTSVoiceDesignForConditionalGeneration
 from .processing_qwen3_tts import Qwen3TTSProcessor
 
 __all__ = [
     "Qwen3TTSConfig",
-    "Qwen3TTSForConditionalGeneration",
+    "Qwen3TTSConditionalGenerationBase",
+    "Qwen3TTSVoiceDesignForConditionalGeneration",
+    "Qwen3TTSCustomVoiceForConditionalGeneration",
+    "Qwen3TTSVoiceCloneForConditionalGeneration",
     "Qwen3TTSProcessor",
+    "mel_spectrogram",
 ]

@@ -25,12 +25,15 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from transformers import AutoConfig, AutoModel, AutoProcessor
+from transformers import AutoConfig, AutoProcessor
 
 from ..core.models import (
     Qwen3TTSConfig,
-    Qwen3TTSForConditionalGeneration,
+    Qwen3TTSConditionalGenerationBase,
+    Qwen3TTSCustomVoiceForConditionalGeneration,
     Qwen3TTSProcessor,
+    Qwen3TTSVoiceCloneForConditionalGeneration,
+    Qwen3TTSVoiceDesignForConditionalGeneration,
 )
 from .qwen3_tts_tokenizer import Qwen3TTSTokenizer
 
@@ -78,7 +81,7 @@ class Qwen3TTSBaseModel:
 
     def __init__(
         self,
-        model: Qwen3TTSForConditionalGeneration,
+        model: Qwen3TTSConditionalGenerationBase,
         processor: Qwen3TTSProcessor,
         generate_defaults: Optional[GenerateDefaultsInput] = None,
     ):
@@ -112,13 +115,27 @@ class Qwen3TTSBaseModel:
         Load a Qwen3 TTS model and its processor in HuggingFace `from_pretrained` style.
         """
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
-        AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
         AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
 
-        model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if not isinstance(model, Qwen3TTSForConditionalGeneration):
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        if not isinstance(config, Qwen3TTSConfig):
             raise TypeError(
-                f"AutoModel returned {type(model)}, expected Qwen3TTSForConditionalGeneration. "
+                f"AutoConfig returned {type(config)}, expected Qwen3TTSConfig."
+            )
+
+        if config.tts_model_type == "voice_design":
+            model_cls = Qwen3TTSVoiceDesignForConditionalGeneration
+        elif config.tts_model_type == "custom_voice":
+            model_cls = Qwen3TTSCustomVoiceForConditionalGeneration
+        elif config.tts_model_type == "base":
+            model_cls = Qwen3TTSVoiceCloneForConditionalGeneration
+        else:
+            raise ValueError(f"Unsupported tts_model_type: {config.tts_model_type}")
+
+        model = model_cls.from_pretrained(pretrained_model_name_or_path, **kwargs)
+        if not isinstance(model, Qwen3TTSConditionalGenerationBase):
+            raise TypeError(
+                f"Model loader returned {type(model)}, expected Qwen3TTSConditionalGenerationBase subclass."
             )
 
         processor = AutoProcessor.from_pretrained(

@@ -21,6 +21,7 @@ import librosa
 import numpy as np
 import torch
 
+from ..core.models import Qwen3TTSVoiceCloneForConditionalGeneration
 from .qwen3_tts_base_model import AudioLike, GenerateExtraArg, Qwen3TTSBaseModel
 
 
@@ -29,7 +30,7 @@ class VoiceClonePromptItem:
     """
     Container for one sample's voice-clone prompt information that can be fed to the model.
 
-    Fields are aligned with `Qwen3TTSForConditionalGeneration.generate(..., voice_clone_prompt=...)`.
+    Fields are aligned with `Qwen3TTSVoiceCloneForConditionalGeneration.generate_voice_clone_batch(...)`.
     """
 
     ref_code: Optional[torch.Tensor]  # (T, Q) or (T,) depending on tokenizer 25Hz/12Hz
@@ -50,6 +51,8 @@ VoiceClonePromptInput = Mapping[str, Sequence[torch.Tensor | bool | None]]
 
 
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
+    model: Qwen3TTSVoiceCloneForConditionalGeneration
+
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
@@ -325,7 +328,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes_list, _ = self.model.generate_batch(
+        talker_codes_list, _ = self.model.generate_voice_clone_batch(
             input_ids=input_ids,
             ref_ids=ref_ids,
             voice_clone_prompt=voice_clone_prompt_dict,
