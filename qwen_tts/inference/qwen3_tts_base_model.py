@@ -283,7 +283,7 @@ class Qwen3TTSBaseModel:
     def _build_instruct_text(self, instruct: str) -> str:
         return f"<|im_start|>user\n{instruct}<|im_end|>\n"
 
-    def _tokenize_texts(self, texts: list[str]) -> list[torch.Tensor]:
+    def _tokenize_texts_batch(self, texts: list[str]) -> list[torch.Tensor]:
         input_ids: list[torch.Tensor] = []
         for text in texts:
             input = self.processor(text=text, return_tensors="pt", padding=True)

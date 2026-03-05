@@ -23,7 +23,7 @@ from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     @torch.no_grad()
-    def generate_custom_voice(
+    def generate_custom_voice_batch(
         self,
         text: Union[str, list[str]],
         speaker: Union[str, list[str]],
@@ -45,7 +45,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         """
         Generate speech with the CustomVoice model using a predefined speaker id.
         """
-        self._ensure_model_type("custom_voice", "generate_custom_voice")
+        self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
 
         texts = self._ensure_list(text)
         if isinstance(language, list):
@@ -98,7 +98,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self._validate_languages(languages)
         self._validate_speakers(speakers)
 
-        input_ids = self._tokenize_texts([self._build_assistant_text(t) for t in texts])
+        input_ids = self._tokenize_texts_batch([self._build_assistant_text(t) for t in texts])
 
         instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
@@ -106,7 +106,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 instruct_ids.append(None)
             else:
                 instruct_ids.append(
-                    self._tokenize_texts([self._build_instruct_text(ins)])[0]
+                    self._tokenize_texts_batch([self._build_instruct_text(ins)])[0]
                 )
 
         gen_kwargs = self._merge_generate_kwargs(
@@ -123,7 +123,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes_list, _ = self.model.generate(
+        talker_codes_list, _ = self.model.generate_batch(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             languages=languages,

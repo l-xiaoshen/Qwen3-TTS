@@ -299,7 +299,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 ref_texts_for_ids = None
 
         input_texts = [self._build_assistant_text(t) for t in texts]
-        input_ids = self._tokenize_texts(input_texts)
+        input_ids = self._tokenize_texts_batch(input_texts)
 
         ref_ids = None
         if ref_texts_for_ids is not None:
@@ -308,7 +308,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 if rt is None or rt == "":
                     ref_ids.append(None)
                 else:
-                    ref_tok = self._tokenize_texts([self._build_ref_text(rt)])[0]
+                    ref_tok = self._tokenize_texts_batch([self._build_ref_text(rt)])[0]
                     ref_ids.append(ref_tok)
 
         gen_kwargs = self._merge_generate_kwargs(
@@ -325,7 +325,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes_list, _ = self.model.generate(
+        talker_codes_list, _ = self.model.generate_batch(
             input_ids=input_ids,
             ref_ids=ref_ids,
             voice_clone_prompt=voice_clone_prompt_dict,

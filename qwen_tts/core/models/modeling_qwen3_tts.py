@@ -353,7 +353,7 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel):
                 return text_embed + codec_embed, tts_pad_embed
 
     @torch.no_grad()
-    def generate(
+    def generate_batch(
         self,
         input_ids: Optional[list[torch.Tensor]] = None,
         instruct_ids: Optional[list[torch.Tensor | None]] = None,

@@ -35,7 +35,7 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_custom_voice(
+    wavs, sr = tts.generate_custom_voice_batch(
         text="其实我真的有发现，我是一个特别善于观察别人情绪的人。",
         language="Chinese",
         speaker="Vivian",
@@ -60,7 +60,7 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_custom_voice(
+    wavs, sr = tts.generate_custom_voice_batch(
         text=texts,
         language=languages,
         speaker=speakers,

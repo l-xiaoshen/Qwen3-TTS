@@ -438,7 +438,7 @@ def build_demo(
                     language = lang_map.get(lang_disp, "Auto")
                     speaker = spk_map.get(spk_disp, spk_disp)
                     kwargs = _gen_common_kwargs()
-                    wavs, sr = tts.generate_custom_voice(
+                    wavs, sr = tts.generate_custom_voice_batch(
                         text=text.strip(),
                         language=language,
                         speaker=speaker,
@@ -495,7 +495,7 @@ def build_demo(
                         )
                     language = lang_map.get(lang_disp, "Auto")
                     kwargs = _gen_common_kwargs()
-                    wavs, sr = tts.generate_voice_design(
+                    wavs, sr = tts.generate_voice_design_batch(
                         text=text.strip(),
                         language=language,
                         instruct=design.strip(),
