@@ -257,7 +257,7 @@ class WhisperEncoderVQ(WhisperEncoder):
             self.vq_feature_dim = self.n_state
             self.audio_vq_ds_rate = 1
         else:
-            raise NotImplementedError(f"Unsupported audio_vq_layers: {audio_vq_layers}")
+            raise ValueError(f"Unsupported audio_vq_layers: {audio_vq_layers}")
 
         if audio_vq_ds_rate is None:
             raise ValueError("`audio_vq_ds_rate` must be provided.")
@@ -294,7 +294,7 @@ class WhisperEncoderVQ(WhisperEncoder):
                 threshold_ema_dead_code=audio_vq_threshold_ema_dead_code,
             )
         else:
-            raise NotImplementedError(f"Unsupported audio_vq_type: {audio_vq_type}")
+            raise ValueError(f"Unsupported audio_vq_type: {audio_vq_type}")
 
         if self.audio_vq_pe:
             self.project_after_vq_pe = nn.Linear(self.n_state, self.n_state)
@@ -327,7 +327,10 @@ class WhisperEncoderVQ(WhisperEncoder):
 
         if self.audio_vq_type == "GRVQ":
             if self.training:
-                raise NotImplementedError
+                raise RuntimeError(
+                    "Training mode quantization is not supported for this VQ path. "
+                    "Use eval mode for inference."
+                )
             else:
                 indices = self.audio_quantizer.encode(x)
                 x = self.audio_quantizer.decode(indices)

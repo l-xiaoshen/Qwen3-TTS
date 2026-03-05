@@ -35,19 +35,17 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_voice_design_batch(
-        text=["哥哥，你回来啦，人家等了你好久好久了，要抱抱！"],
-        language=["Chinese"],
-        instruct=[
-            "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。"
-        ],
+    wav, sr = tts.generate_voice_design(
+        text="哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+        language="Chinese",
+        instruct="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
     )
 
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[VoiceDesign Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_voice_design_single.wav", wavs[0], sr)
+    sf.write("qwen3_tts_test_voice_design_single.wav", wav, sr)
 
     # -------- Batch --------
     texts = [

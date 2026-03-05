@@ -21,11 +21,60 @@ import torch
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
-    _BatchFeatureItem,
+    GenerationFeatureItem,
 )
 
 
 class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationBase):
+    @torch.no_grad()
+    def generate_voice_design(
+        self,
+        input_id: Optional[torch.Tensor] = None,
+        instruct_id: Optional[torch.Tensor] = None,
+        language: Optional[str] = None,
+        non_streaming_mode: bool = False,
+        max_new_tokens: int = 4096,
+        do_sample: bool = True,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        temperature: float = 0.9,
+        subtalker_dosample: bool = True,
+        subtalker_top_k: int = 50,
+        subtalker_top_p: float = 1.0,
+        subtalker_temperature: float = 0.9,
+        eos_token_id: Optional[int] = None,
+        repetition_penalty: float = 1.05,
+        output_hidden_states: bool = True,
+        return_dict_in_generate: bool = True,
+        **kwargs: GenerateConfigPrimitive,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        input_id = self._validate_input_id(input_id)
+        instruct_id = self._normalize_instruct_id(instruct_id)
+        language = self._normalize_language(language)
+        _ = kwargs
+
+        feature_item = GenerationFeatureItem(speaker=None, speaker_embed=None)
+        return self._generate_from_feature_item(
+            input_id=input_id,
+            instruct_id=instruct_id,
+            language=language,
+            feature_item=feature_item,
+            non_streaming_mode=non_streaming_mode,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+            eos_token_id=eos_token_id,
+            repetition_penalty=repetition_penalty,
+            output_hidden_states=output_hidden_states,
+            return_dict_in_generate=return_dict_in_generate,
+        )
+
     @torch.no_grad()
     def generate_voice_design_batch(
         self,
@@ -55,7 +104,7 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         _ = kwargs
 
         feature_items = [
-            _BatchFeatureItem(speaker=None, speaker_embed=None)
+            GenerationFeatureItem(speaker=None, speaker_embed=None)
             for _ in range(batch_size)
         ]
         return self._generate_from_feature_items_batch(

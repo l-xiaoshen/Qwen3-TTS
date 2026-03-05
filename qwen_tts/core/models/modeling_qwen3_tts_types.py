@@ -27,8 +27,15 @@ class VoiceClonePrompt(TypedDict):
     icl_mode: list[bool]
 
 
+class VoiceClonePromptSingle(TypedDict):
+    ref_code: torch.Tensor | None
+    ref_spk_embedding: torch.Tensor
+    x_vector_only_mode: bool
+    icl_mode: bool
+
+
 @dataclass
-class _BatchFeatureItem:
+class GenerationFeatureItem:
     speaker: str | None
     speaker_embed: torch.Tensor | None
     ref_code: torch.Tensor | None = None
@@ -46,7 +53,8 @@ GenerateConfigValue = (
 
 __all__ = [
     "VoiceClonePrompt",
-    "_BatchFeatureItem",
+    "VoiceClonePromptSingle",
+    "GenerationFeatureItem",
     "GenerateConfigPrimitive",
     "GenerateConfigValue",
 ]

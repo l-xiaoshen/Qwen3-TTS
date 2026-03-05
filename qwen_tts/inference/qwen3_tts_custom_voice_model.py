@@ -26,6 +26,89 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     model: Qwen3TTSCustomVoiceForConditionalGeneration
 
     @torch.no_grad()
+    def generate_custom_voice(
+        self,
+        text: str,
+        speaker: str,
+        language: Optional[str] = None,
+        instruct: Optional[str] = None,
+        non_streaming_mode: bool = True,
+        do_sample: Optional[bool] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        temperature: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        subtalker_dosample: Optional[bool] = None,
+        subtalker_top_k: Optional[int] = None,
+        subtalker_top_p: Optional[float] = None,
+        subtalker_temperature: Optional[float] = None,
+        max_new_tokens: Optional[int] = None,
+        **kwargs: GenerateExtraArg,
+    ) -> tuple[np.ndarray, int]:
+        """
+        Generate one utterance with the CustomVoice model.
+        """
+        self._ensure_model_type("custom_voice", "generate_custom_voice")
+
+        if not isinstance(text, str):
+            raise TypeError("`text` must be a string.")
+        if not isinstance(speaker, str):
+            raise TypeError("`speaker` must be a string.")
+        if language is not None and not isinstance(language, str):
+            raise TypeError("`language` must be a string.")
+        if instruct is not None and not isinstance(instruct, str):
+            raise TypeError("`instruct` must be a string.")
+
+        language_value = "Auto" if language is None else language
+        speaker_value: str | None = speaker
+
+        model_size = self.model.tts_model_size
+        if isinstance(model_size, str) and model_size in "0b6":
+            # for 0b6 model, instruct is not supported
+            instruct_value: str | None = None
+        elif instruct is None:
+            instruct_value = None
+        else:
+            instruct_value = instruct
+
+        self._validate_languages([language_value])
+        self._validate_speakers([speaker_value])
+
+        input_id = self._tokenize_text(self._build_assistant_text(text))
+        instruct_id: torch.Tensor | None
+        if instruct_value is None or instruct_value == "":
+            instruct_id = None
+        else:
+            instruct_id = self._tokenize_text(self._build_instruct_text(instruct_value))
+
+        gen_kwargs = self._merge_generate_kwargs(
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+            max_new_tokens=max_new_tokens,
+            **kwargs,
+        )
+
+        talker_codes, _ = self.model.generate_custom_voice(
+            input_id=input_id,
+            instruct_id=instruct_id,
+            language=language_value,
+            speaker=speaker_value,
+            non_streaming_mode=non_streaming_mode,
+            **gen_kwargs,
+        )
+
+        speech_tokenizer = self._require_speech_tokenizer()
+        wavs, fs = speech_tokenizer.decode([{"audio_codes": talker_codes}])
+        return wavs[0], fs
+
+    @torch.no_grad()
     def generate_custom_voice_batch(
         self,
         text: list[str],

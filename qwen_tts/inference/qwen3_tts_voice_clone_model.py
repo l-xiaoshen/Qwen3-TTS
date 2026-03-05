@@ -30,7 +30,7 @@ class VoiceClonePromptItem:
     """
     Container for one sample's voice-clone prompt information that can be fed to the model.
 
-    Fields are aligned with `Qwen3TTSVoiceCloneForConditionalGeneration.generate_voice_clone_batch(...)`.
+    Fields are aligned with `Qwen3TTSVoiceCloneForConditionalGeneration.generate_voice_clone(...)`.
     """
 
     ref_code: Optional[torch.Tensor]  # (T, Q) or (T,) depending on tokenizer 25Hz/12Hz
@@ -47,7 +47,15 @@ class VoiceClonePromptDict(TypedDict):
     icl_mode: list[bool]
 
 
+class VoiceClonePromptSingleDict(TypedDict):
+    ref_code: torch.Tensor | None
+    ref_spk_embedding: torch.Tensor
+    x_vector_only_mode: bool
+    icl_mode: bool
+
+
 VoiceClonePromptInput = Mapping[str, Sequence[torch.Tensor | bool | None]]
+VoiceClonePromptSingleInput = Mapping[str, torch.Tensor | bool | None]
 
 
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
@@ -160,6 +168,16 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             icl_mode=[it.icl_mode for it in items],
         )
 
+    def _prompt_item_to_voice_clone_prompt_single(
+        self, item: VoiceClonePromptItem
+    ) -> VoiceClonePromptSingleDict:
+        return VoiceClonePromptSingleDict(
+            ref_code=item.ref_code,
+            ref_spk_embedding=item.ref_spk_embedding,
+            x_vector_only_mode=item.x_vector_only_mode,
+            icl_mode=item.icl_mode,
+        )
+
     def _coerce_voice_clone_prompt_dict(
         self, prompt: VoiceClonePromptInput
     ) -> VoiceClonePromptDict:
@@ -226,8 +244,163 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             icl_mode=icl_mode,
         )
 
+    def _coerce_voice_clone_prompt_single(
+        self, prompt: VoiceClonePromptSingleInput
+    ) -> VoiceClonePromptSingleDict:
+        required_keys = (
+            "ref_code",
+            "ref_spk_embedding",
+            "x_vector_only_mode",
+            "icl_mode",
+        )
+        for key in required_keys:
+            if key not in prompt:
+                raise KeyError(f"Missing key `{key}` in `voice_clone_prompt`.")
+
+        ref_code_raw = prompt["ref_code"]
+        if ref_code_raw is None:
+            ref_code: torch.Tensor | None = None
+        elif isinstance(ref_code_raw, torch.Tensor):
+            ref_code = ref_code_raw
+        else:
+            raise TypeError("`voice_clone_prompt.ref_code` must be Tensor or None.")
+
+        ref_spk_raw = prompt["ref_spk_embedding"]
+        if not isinstance(ref_spk_raw, torch.Tensor):
+            raise TypeError("`voice_clone_prompt.ref_spk_embedding` must be Tensor.")
+
+        return VoiceClonePromptSingleDict(
+            ref_code=ref_code,
+            ref_spk_embedding=ref_spk_raw,
+            x_vector_only_mode=bool(prompt["x_vector_only_mode"]),
+            icl_mode=bool(prompt["icl_mode"]),
+        )
+
     @torch.no_grad()
     def generate_voice_clone(
+        self,
+        text: str,
+        language: Optional[str] = None,
+        ref_audio: Optional[AudioLike] = None,
+        ref_text: Optional[str] = None,
+        x_vector_only_mode: bool = False,
+        voice_clone_prompt: Optional[
+            VoiceClonePromptSingleInput | VoiceClonePromptItem
+        ] = None,
+        non_streaming_mode: bool = False,
+        do_sample: Optional[bool] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        temperature: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        subtalker_dosample: Optional[bool] = None,
+        subtalker_top_k: Optional[int] = None,
+        subtalker_top_p: Optional[float] = None,
+        subtalker_temperature: Optional[float] = None,
+        max_new_tokens: Optional[int] = None,
+        **kwargs: GenerateExtraArg,
+    ) -> tuple[np.ndarray, int]:
+        """
+        Voice clone one utterance using the Base model.
+        """
+        self._ensure_model_type("base", "generate_voice_clone")
+
+        if not isinstance(text, str):
+            raise TypeError("`text` must be a string.")
+        if language is not None and not isinstance(language, str):
+            raise TypeError("`language` must be a string.")
+        if ref_text is not None and not isinstance(ref_text, str):
+            raise TypeError("`ref_text` must be a string or None.")
+        if not isinstance(x_vector_only_mode, bool):
+            raise TypeError("`x_vector_only_mode` must be a boolean.")
+
+        language_value = "Auto" if language is None else language
+        self._validate_languages([language_value])
+
+        voice_clone_prompt_single: VoiceClonePromptSingleDict
+        ref_text_for_id: str | None
+        if voice_clone_prompt is None:
+            if ref_audio is None:
+                raise ValueError(
+                    "Either `voice_clone_prompt` or `ref_audio` must be provided."
+                )
+            prompt_items = self.create_voice_clone_prompt(
+                ref_audio=[ref_audio],
+                ref_text=[ref_text],
+                x_vector_only_mode=[x_vector_only_mode],
+            )
+            if len(prompt_items) != 1:
+                raise ValueError(
+                    "Single generation requires exactly one voice clone prompt item."
+                )
+            prompt_item = prompt_items[0]
+            voice_clone_prompt_single = self._prompt_item_to_voice_clone_prompt_single(
+                prompt_item
+            )
+            ref_text_for_id = prompt_item.ref_text
+        else:
+            if isinstance(voice_clone_prompt, VoiceClonePromptItem):
+                prompt_item = voice_clone_prompt
+                voice_clone_prompt_single = (
+                    self._prompt_item_to_voice_clone_prompt_single(prompt_item)
+                )
+                ref_text_for_id = prompt_item.ref_text
+            else:
+                voice_clone_prompt_single = self._coerce_voice_clone_prompt_single(
+                    voice_clone_prompt
+                )
+                ref_text_for_id = None
+
+        input_id = self._tokenize_text(self._build_assistant_text(text))
+
+        ref_id: torch.Tensor | None = None
+        if ref_text_for_id is not None and ref_text_for_id != "":
+            ref_id = self._tokenize_text(self._build_ref_text(ref_text_for_id))
+
+        gen_kwargs = self._merge_generate_kwargs(
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_dosample=subtalker_dosample,
+            subtalker_top_k=subtalker_top_k,
+            subtalker_top_p=subtalker_top_p,
+            subtalker_temperature=subtalker_temperature,
+            max_new_tokens=max_new_tokens,
+            **kwargs,
+        )
+
+        talker_codes, _ = self.model.generate_voice_clone(
+            input_id=input_id,
+            ref_id=ref_id,
+            voice_clone_prompt=voice_clone_prompt_single,
+            language=language_value,
+            non_streaming_mode=non_streaming_mode,
+            **gen_kwargs,
+        )
+
+        ref_code_item = voice_clone_prompt_single["ref_code"]
+        codes_for_decode = talker_codes
+        if ref_code_item is not None:
+            codes_for_decode = torch.cat(
+                [ref_code_item.to(talker_codes.device), talker_codes], dim=0
+            )
+
+        speech_tokenizer = self._require_speech_tokenizer()
+        wavs, fs = speech_tokenizer.decode([{"audio_codes": codes_for_decode}])
+        wav = wavs[0]
+
+        if ref_code_item is not None:
+            ref_len = int(ref_code_item.shape[0])
+            total_len = int(codes_for_decode.shape[0])
+            cut = int(ref_len / max(total_len, 1) * wav.shape[0])
+            wav = wav[cut:]
+
+        return wav, fs
+
+    @torch.no_grad()
+    def generate_voice_clone_batch(
         self,
         text: list[str],
         language: Optional[list[str]] = None,
@@ -251,9 +424,9 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         **kwargs: GenerateExtraArg,
     ) -> tuple[list[np.ndarray], int]:
         """
-        Voice clone speech using the Base model.
+        Voice clone speech in batch using the Base model.
         """
-        self._ensure_model_type("base", "generate_voice_clone")
+        self._ensure_model_type("base", "generate_voice_clone_batch")
 
         if not isinstance(text, list):
             raise TypeError("`text` must be a list of strings.")
@@ -332,7 +505,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 if rt is None or rt == "":
                     ref_ids.append(None)
                 else:
-                    ref_tok = self._tokenize_texts_batch([self._build_ref_text(rt)])[0]
+                    ref_tok = self._tokenize_text(self._build_ref_text(rt))
                     ref_ids.append(ref_tok)
 
         gen_kwargs = self._merge_generate_kwargs(

@@ -44,7 +44,11 @@ def run_case(tts: Qwen3TTSVoiceCloneModel, out_dir: str, case_name: str, call_fn
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = call_fn()
+    wav_or_wavs, sr = call_fn()
+    if isinstance(wav_or_wavs, list):
+        wavs = wav_or_wavs
+    else:
+        wavs = [wav_or_wavs]
 
     torch.cuda.synchronize()
     t1 = time.time()
@@ -118,11 +122,11 @@ def main():
             OUT_DIR,
             f"case1_promptSingle_synSingle_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
-                text=[syn_text_single],
-                language=[syn_lang_single],
-                ref_audio=[ref_audio_single],
-                ref_text=[ref_text_single],
-                x_vector_only_mode=[xvec_only],
+                text=syn_text_single,
+                language=syn_lang_single,
+                ref_audio=ref_audio_single,
+                ref_text=ref_text_single,
+                x_vector_only_mode=xvec_only,
                 **common_gen_kwargs,
             ),
         )
@@ -135,9 +139,9 @@ def main():
                 x_vector_only_mode=[xvec_only],
             )
             return tts.generate_voice_clone(
-                text=[syn_text_single],
-                language=[syn_lang_single],
-                voice_clone_prompt=prompt_items,
+                text=syn_text_single,
+                language=syn_lang_single,
+                voice_clone_prompt=prompt_items[0],
                 **common_gen_kwargs,
             )
 
@@ -153,7 +157,7 @@ def main():
             tts,
             OUT_DIR,
             f"case2_promptSingle_synBatch_direct_{mode_tag}",
-            lambda: tts.generate_voice_clone(
+            lambda: tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 ref_audio=[ref_audio_single, ref_audio_single],
@@ -171,7 +175,7 @@ def main():
                 x_vector_only_mode=[xvec_only],
             )
             prompt_items = prompt_items * len(syn_text_batch)
-            return tts.generate_voice_clone(
+            return tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,
@@ -190,7 +194,7 @@ def main():
             tts,
             OUT_DIR,
             f"case3_promptBatch_synBatch_direct_{mode_tag}",
-            lambda: tts.generate_voice_clone(
+            lambda: tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 ref_audio=ref_audio_batch,
@@ -207,7 +211,7 @@ def main():
                 ref_text=ref_text_batch,
                 x_vector_only_mode=[xvec_only, xvec_only],
             )
-            return tts.generate_voice_clone(
+            return tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,

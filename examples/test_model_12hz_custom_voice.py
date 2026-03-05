@@ -35,18 +35,18 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_custom_voice_batch(
-        text=["其实我真的有发现，我是一个特别善于观察别人情绪的人。"],
-        language=["Chinese"],
-        speaker=["Vivian"],
-        instruct=["用特别愤怒的语气说"],
+    wav, sr = tts.generate_custom_voice(
+        text="其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+        language="Chinese",
+        speaker="Vivian",
+        instruct="用特别愤怒的语气说",
     )
 
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[CustomVoice Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_custom_single.wav", wavs[0], sr)
+    sf.write("qwen3_tts_test_custom_single.wav", wav, sr)
 
     # -------- Batch (some empty instruct) --------
     texts = [

@@ -1,5 +1,6 @@
 # coding=utf-8
-# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
+# All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +13,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Embedding assembly helpers for Qwen3 TTS generation."""
+"""Core generation helpers independent from batch orchestration."""
 
 import torch
 
-from .configuration_qwen3_tts import Qwen3TTSConfig
-from .modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
+from ..configuration_qwen3_tts import Qwen3TTSConfig
+from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 
 
-class Qwen3TTSGenerationEmbeddingsMixin:
+class Qwen3TTSGenerationCoreMixin:
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
 
@@ -33,7 +34,61 @@ class Qwen3TTSGenerationEmbeddingsMixin:
         tts_eos_embed: torch.Tensor,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
+        # text embed (ref id + text id + eos) 1 T1 D
+        text_embed = self.talker.text_projection(
+            self.talker.get_text_embeddings()(torch.cat([ref_id, text_id], dim=-1))
+        )
+        text_embed = torch.cat([text_embed, tts_eos_embed], dim=1)
+
+        # codec embed (codec bos + codec) 1 T2 D
+        codec_embed = []
+        for i in range(self.talker.config.num_code_groups):
+            if i == 0:
+                codec_embed.append(self.talker.get_input_embeddings()(ref_code[:, :1]))
+            else:
+                codec_embed.append(
+                    self.talker.code_predictor.get_input_embeddings()[i - 1](
+                        ref_code[:, i : i + 1]
+                    )
+                )
+        codec_embed = torch.cat(codec_embed, dim=1).sum(1).unsqueeze(0)
+        codec_embed = torch.cat(
+            [
+                self.talker.get_input_embeddings()(
+                    torch.tensor(
+                        [[self.config.talker_config.codec_bos_id]],
+                        device=self.talker.device,
+                        dtype=text_id.dtype,
+                    )
+                ),
+                codec_embed,
+            ],
+            dim=1,
+        )
+
+        # compute lengths
+        text_lens = text_embed.shape[1]
+        codec_lens = codec_embed.shape[1]
+        if non_streaming_mode:
+            icl_input_embed = text_embed + self.talker.get_input_embeddings()(
+                torch.tensor(
+                    [[self.config.talker_config.codec_pad_id] * text_lens],
+                    device=self.talker.device,
+                    dtype=text_id.dtype,
+                )
+            )
+            icl_input_embed = torch.cat(
+                [icl_input_embed, codec_embed + tts_pad_embed], dim=1
+            )
+            return icl_input_embed, tts_pad_embed
+
+        if text_lens > codec_lens:
+            return text_embed[:, :codec_lens] + codec_embed, text_embed[:, codec_lens:]
+
+        text_embed = torch.cat(
+            [text_embed] + [tts_pad_embed] * (codec_lens - text_lens), dim=1
+        )
+        return text_embed + codec_embed, tts_pad_embed
 
     def _build_talker_prefix_embeddings(
         self,
@@ -212,7 +267,60 @@ class Qwen3TTSGenerationEmbeddingsMixin:
             )
         return talker_input_embed, trailing_text_hidden
 
+    def _resolve_custom_voice_speaker_embed(
+        self, speaker: str | None, input_dtype: torch.dtype
+    ) -> torch.Tensor | None:
+        if speaker == "" or speaker is None:
+            return None
+        speaker_lower = speaker.lower()
+        spk_id_map = self.config.talker_config.spk_id
+        if spk_id_map is None or speaker_lower not in spk_id_map:
+            supported = sorted(list(spk_id_map.keys())) if spk_id_map else []
+            raise ValueError(
+                f"Unsupported speaker: {speaker}. Supported speakers: {supported}"
+            )
+        spk_id = spk_id_map[speaker_lower]
+        return self.talker.get_input_embeddings()(
+            torch.tensor(
+                spk_id,
+                device=self.talker.device,
+                dtype=input_dtype,
+            )
+        )
+
+    def _resolve_language_id(self, language: str, speaker: str | None) -> int | None:
+        language_lower = language.lower()
+        language_map = self.config.talker_config.codec_language_id
+        if language_map is None:
+            raise ValueError("Language map is not available in config")
+        if language_lower == "auto":
+            language_id = None
+        else:
+            if language_lower not in language_map:
+                supported = sorted(list(language_map.keys()))
+                raise ValueError(
+                    f"Unsupported language: {language}. Supported languages: {supported}"
+                )
+            language_id = language_map[language_lower]
+
+        dialect_map = self.config.talker_config.spk_is_dialect or {}
+        dialect_value = (
+            dialect_map.get(speaker.lower(), False)
+            if speaker is not None and speaker != ""
+            else False
+        )
+        if (
+            language_lower in ["chinese", "auto"]
+            and speaker != ""
+            and speaker is not None
+            and dialect_value is not False
+            and isinstance(dialect_value, str)
+            and dialect_value in language_map
+        ):
+            language_id = language_map[dialect_value]
+        return language_id
+
 
 __all__ = [
-    "Qwen3TTSGenerationEmbeddingsMixin",
+    "Qwen3TTSGenerationCoreMixin",
 ]

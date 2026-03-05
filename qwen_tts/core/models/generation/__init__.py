@@ -1,5 +1,6 @@
 # coding=utf-8
-# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
+# All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Composed generation mixin for Qwen3 TTS."""
+"""Generation helpers split into core and batch concerns."""
 
-from .generation import (
-    Qwen3TTSGenerationBatchMixin,
-    Qwen3TTSGenerationSingleMixin,
-)
-
-
-class Qwen3TTSGenerationMixin(
-    Qwen3TTSGenerationSingleMixin,
-    Qwen3TTSGenerationBatchMixin,
-):
-    """Aggregate all Qwen3 TTS generation helpers."""
-
+from .batch import Qwen3TTSGenerationBatchMixin
+from .core import Qwen3TTSGenerationCoreMixin
+from .single import Qwen3TTSGenerationSingleMixin
 
 __all__ = [
-    "Qwen3TTSGenerationMixin",
+    "Qwen3TTSGenerationCoreMixin",
+    "Qwen3TTSGenerationBatchMixin",
+    "Qwen3TTSGenerationSingleMixin",
 ]

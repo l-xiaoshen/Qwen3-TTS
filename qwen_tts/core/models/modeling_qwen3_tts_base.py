@@ -253,19 +253,17 @@ class Qwen3TTSConditionalGenerationBase(
         return speaker_embedding
 
     @torch.inference_mode()
+    def generate_speaker_prompt(self, ref_spk_embedding: torch.Tensor) -> torch.Tensor:
+        return ref_spk_embedding.to(self.talker.device).to(self.talker.dtype)
+
+    @torch.inference_mode()
     def generate_speaker_prompt_batch(
         self, voice_clone_prompt: VoiceClonePrompt
     ) -> list[torch.Tensor]:
-        voice_clone_spk_embeds: list[torch.Tensor] = []
-        for index in range(len(voice_clone_prompt["ref_spk_embedding"])):
-            ref_spk_embedding = (
-                voice_clone_prompt["ref_spk_embedding"][index]
-                .to(self.talker.device)
-                .to(self.talker.dtype)
-            )
-            voice_clone_spk_embeds.append(ref_spk_embedding)
-
-        return voice_clone_spk_embeds
+        return [
+            self.generate_speaker_prompt(ref_spk_embedding)
+            for ref_spk_embedding in voice_clone_prompt["ref_spk_embedding"]
+        ]
 
     def generate_icl_prompt(
         self,

@@ -1,5 +1,6 @@
 # coding=utf-8
-# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
+# Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
+# All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,46 +13,102 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Sequence collation and generation runner helpers."""
+"""Batch-oriented generation orchestration helpers."""
 
 from collections.abc import Sequence
 from typing import Optional
 
 import torch
 
-from .configuration_qwen3_tts import Qwen3TTSConfig
-from .modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
-from .modeling_qwen3_tts_types import _BatchFeatureItem
+from ..configuration_qwen3_tts import Qwen3TTSConfig
+from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
+from ..modeling_qwen3_tts_types import GenerationFeatureItem, VoiceClonePrompt
+from .core import Qwen3TTSGenerationCoreMixin
 
 
-class Qwen3TTSGenerationRunnerMixin:
+class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
 
-    def _resolve_language_id(self, language: str, speaker: str | None) -> int | None:
-        raise NotImplementedError
+    def _validate_input_ids_batch(
+        self, input_ids: Optional[list[torch.Tensor]]
+    ) -> list[torch.Tensor]:
+        if input_ids is None or len(input_ids) == 0:
+            raise ValueError("`input_ids` must be a non-empty list of tensors.")
+        return input_ids
 
-    def _build_talker_prefix_embeddings(
-        self,
-        input_id: torch.Tensor,
-        language_id: int | None,
-        speaker_embed: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
+    def _normalize_languages_batch(
+        self, languages: Optional[list[str]], batch_size: int
+    ) -> list[str]:
+        if languages is None:
+            return ["auto"] * batch_size
+        if len(languages) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, languages={len(languages)}"
+            )
+        return languages
 
-    def _append_talker_body_embeddings(
+    def _normalize_speakers_batch(
+        self, speakers: Optional[list[str | None]], batch_size: int
+    ) -> list[str | None]:
+        if speakers is None:
+            return [None] * batch_size
+        if len(speakers) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, speakers={len(speakers)}"
+            )
+        return speakers
+
+    def _normalize_instruct_ids_batch(
         self,
-        input_id: torch.Tensor,
-        talker_input_embed: torch.Tensor,
-        codec_input_embedding: torch.Tensor,
-        tts_eos_embed: torch.Tensor,
-        tts_pad_embed: torch.Tensor,
-        non_streaming_mode: bool,
-        ref_code: torch.Tensor | None,
-        ref_id: torch.Tensor | None,
-        use_icl_prompt: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
+        instruct_ids: Optional[list[torch.Tensor | None]],
+        batch_size: int,
+    ) -> list[torch.Tensor | None]:
+        if instruct_ids is None:
+            return [None] * batch_size
+        if len(instruct_ids) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, instruct_ids={len(instruct_ids)}"
+            )
+        return instruct_ids
+
+    def _normalize_ref_ids_batch(
+        self, ref_ids: Optional[list[torch.Tensor | None]], batch_size: int
+    ) -> list[torch.Tensor | None]:
+        if ref_ids is None:
+            return [None] * batch_size
+        if len(ref_ids) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, ref_ids={len(ref_ids)}"
+            )
+        return ref_ids
+
+    def _validate_voice_clone_prompt_batch(
+        self, voice_clone_prompt: VoiceClonePrompt, batch_size: int
+    ) -> None:
+        if not (
+            len(voice_clone_prompt["ref_code"])
+            == len(voice_clone_prompt["ref_spk_embedding"])
+            == len(voice_clone_prompt["x_vector_only_mode"])
+            == len(voice_clone_prompt["icl_mode"])
+            == batch_size
+        ):
+            raise ValueError(
+                "Batch size mismatch in `voice_clone_prompt` fields and `input_ids`."
+            )
+
+    def _resolve_voice_clone_speaker_embed_batch(
+        self,
+        index: int,
+        voice_clone_prompt: VoiceClonePrompt,
+        voice_clone_spk_embeds: list[torch.Tensor],
+    ) -> torch.Tensor | None:
+        if (
+            voice_clone_prompt["x_vector_only_mode"][index]
+            or voice_clone_prompt["icl_mode"][index]
+        ):
+            return voice_clone_spk_embeds[index]
+        return None
 
     def _run_talker_generation_batch(
         self,
@@ -201,7 +258,7 @@ class Qwen3TTSGenerationRunnerMixin:
         input_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         languages: list[str],
-        feature_items: list[_BatchFeatureItem],
+        feature_items: list[GenerationFeatureItem],
         non_streaming_mode: bool,
         max_new_tokens: int,
         do_sample: bool,
@@ -301,5 +358,5 @@ class Qwen3TTSGenerationRunnerMixin:
 
 
 __all__ = [
-    "Qwen3TTSGenerationRunnerMixin",
+    "Qwen3TTSGenerationBatchMixin",
 ]

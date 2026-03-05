@@ -439,14 +439,14 @@ def build_demo(
                     speaker = spk_map.get(spk_disp, spk_disp)
                     instruct_value = (instruct or "").strip()
                     kwargs = _gen_common_kwargs()
-                    wavs, sr = tts.generate_custom_voice_batch(
-                        text=[text.strip()],
-                        language=[language],
-                        speaker=[speaker],
-                        instruct=[instruct_value] if instruct_value else None,
+                    wav, sr = tts.generate_custom_voice(
+                        text=text.strip(),
+                        language=language,
+                        speaker=speaker,
+                        instruct=instruct_value if instruct_value else None,
                         **kwargs,
                     )
-                    return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
+                    return _wav_to_gradio_audio(wav, sr), "Finished. (生成完成)"
                 except Exception as e:
                     return None, f"{type(e).__name__}: {e}"
 
@@ -496,13 +496,13 @@ def build_demo(
                         )
                     language = lang_map.get(lang_disp, "Auto")
                     kwargs = _gen_common_kwargs()
-                    wavs, sr = tts.generate_voice_design_batch(
-                        text=[text.strip()],
-                        language=[language],
-                        instruct=[design.strip()],
+                    wav, sr = tts.generate_voice_design(
+                        text=text.strip(),
+                        language=language,
+                        instruct=design.strip(),
                         **kwargs,
                     )
-                    return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
+                    return _wav_to_gradio_audio(wav, sr), "Finished. (生成完成)"
                 except Exception as e:
                     return None, f"{type(e).__name__}: {e}"
 
@@ -576,17 +576,15 @@ def build_demo(
                                 )
                             language = lang_map.get(lang_disp, "Auto")
                             kwargs = _gen_common_kwargs()
-                            wavs, sr = tts.generate_voice_clone(
-                                text=[text.strip()],
-                                language=[language],
-                                ref_audio=[at],
-                                ref_text=[ref_txt.strip() if ref_txt else None],
-                                x_vector_only_mode=[bool(use_xvec)],
+                            wav, sr = tts.generate_voice_clone(
+                                text=text.strip(),
+                                language=language,
+                                ref_audio=at,
+                                ref_text=ref_txt.strip() if ref_txt else None,
+                                x_vector_only_mode=bool(use_xvec),
                                 **kwargs,
                             )
-                            return _wav_to_gradio_audio(
-                                wavs[0], sr
-                            ), "Finished. (生成完成)"
+                            return _wav_to_gradio_audio(wav, sr), "Finished. (生成完成)"
                         except Exception as e:
                             return None, f"{type(e).__name__}: {e}"
 
@@ -751,17 +749,21 @@ Upload a previously saved voice file, then synthesize new text.
                                     )
                                 )
 
+                            if len(items) != 1:
+                                return None, (
+                                    "Voice file must contain exactly one item for this UI.\n"
+                                    "(当前界面仅支持单条音色，请上传包含单个条目的音色文件。)"
+                                )
+
                             language = lang_map.get(lang_disp, "Auto")
                             kwargs = _gen_common_kwargs()
-                            wavs, sr = tts.generate_voice_clone(
-                                text=[text.strip()],
-                                language=[language],
-                                voice_clone_prompt=items,
+                            wav, sr = tts.generate_voice_clone(
+                                text=text.strip(),
+                                language=language,
+                                voice_clone_prompt=items[0],
                                 **kwargs,
                             )
-                            return _wav_to_gradio_audio(
-                                wavs[0], sr
-                            ), "Finished. (生成完成)"
+                            return _wav_to_gradio_audio(wav, sr), "Finished. (生成完成)"
                         except Exception as e:
                             return None, (
                                 f"Failed to read or use voice file. Check file format/content.\n"

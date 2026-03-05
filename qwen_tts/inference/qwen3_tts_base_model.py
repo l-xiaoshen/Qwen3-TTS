@@ -295,13 +295,15 @@ class Qwen3TTSBaseModel:
     def _build_instruct_text(self, instruct: str) -> str:
         return f"<|im_start|>user\n{instruct}<|im_end|>\n"
 
+    def _tokenize_text(self, text: str) -> torch.Tensor:
+        input_data = self.processor(text=text, return_tensors="pt", padding=True)
+        input_id = input_data["input_ids"].to(self.device)
+        return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
     def _tokenize_texts_batch(self, texts: list[str]) -> list[torch.Tensor]:
         input_ids: list[torch.Tensor] = []
         for text in texts:
-            input = self.processor(text=text, return_tensors="pt", padding=True)
-            input_id = input["input_ids"].to(self.device)
-            input_id = input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
-            input_ids.append(input_id)
+            input_ids.append(self._tokenize_text(text))
         return input_ids
 
     def _merge_generate_kwargs(
