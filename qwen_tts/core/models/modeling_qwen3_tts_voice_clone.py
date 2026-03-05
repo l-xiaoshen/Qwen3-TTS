@@ -21,7 +21,6 @@ import torch
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
-    GenerationFeatureItem,
     VoiceClonePrompt,
     VoiceClonePromptSingle,
 )
@@ -69,21 +68,19 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         voice_clone_spk_embed = self.generate_speaker_prompt(
             voice_clone_prompt["ref_spk_embedding"]
         )
-        feature_item = GenerationFeatureItem(
-            speaker=speaker,
-            speaker_embed=self._resolve_voice_clone_speaker_embed(
-                voice_clone_prompt, voice_clone_spk_embed
-            ),
-            ref_code=voice_clone_prompt["ref_code"],
-            ref_id=ref_id,
-            use_icl_prompt=bool(voice_clone_prompt["icl_mode"]),
+        speaker_embed = self._resolve_voice_clone_speaker_embed(
+            voice_clone_prompt, voice_clone_spk_embed
         )
-        return self._generate_from_feature_item(
+        return self._generate_voice_clone_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language=language,
-            feature_item=feature_item,
+            speaker=speaker,
+            speaker_embed=speaker_embed,
             non_streaming_mode=non_streaming_mode,
+            ref_code=voice_clone_prompt["ref_code"],
+            ref_id=ref_id,
+            use_icl_prompt=bool(voice_clone_prompt["icl_mode"]),
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             top_k=top_k,
@@ -138,25 +135,25 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         _ = kwargs
 
         voice_clone_spk_embeds = self.generate_speaker_prompt_batch(voice_clone_prompt)
-        feature_items: list[GenerationFeatureItem] = []
-        for index, (speaker, ref_id) in enumerate(zip(speakers, ref_ids)):
-            feature_items.append(
-                GenerationFeatureItem(
-                    speaker=speaker,
-                    speaker_embed=self._resolve_voice_clone_speaker_embed_batch(
-                        index, voice_clone_prompt, voice_clone_spk_embeds
-                    ),
-                    ref_code=voice_clone_prompt["ref_code"][index],
-                    ref_id=ref_id,
-                    use_icl_prompt=bool(voice_clone_prompt["icl_mode"][index]),
+        speaker_embeds: list[torch.Tensor | None] = []
+        for index in range(batch_size):
+            speaker_embeds.append(
+                self._resolve_voice_clone_speaker_embed_batch(
+                    index, voice_clone_prompt, voice_clone_spk_embeds
                 )
             )
 
-        return self._generate_from_feature_items_batch(
+        return self._generate_voice_clone_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             languages=languages,
-            feature_items=feature_items,
+            speakers=speakers,
+            speaker_embeds=speaker_embeds,
+            ref_codes=voice_clone_prompt["ref_code"],
+            ref_ids=ref_ids,
+            use_icl_prompts=[
+                bool(icl_mode) for icl_mode in voice_clone_prompt["icl_mode"]
+            ],
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

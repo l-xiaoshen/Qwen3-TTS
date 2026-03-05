@@ -21,7 +21,6 @@ import torch
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
-    GenerationFeatureItem,
 )
 
 
@@ -55,18 +54,15 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         speaker = self._normalize_speaker(speaker)
         _ = kwargs
 
-        feature_item = GenerationFeatureItem(
-            speaker=speaker,
-            speaker_embed=self._resolve_custom_voice_speaker_embed(
-                speaker, input_id.dtype
-            ),
+        speaker_embed = self._resolve_custom_voice_speaker_embed(
+            speaker, input_id.dtype
         )
-
-        return self._generate_from_feature_item(
+        return self._generate_custom_voice_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language=language,
-            feature_item=feature_item,
+            speaker=speaker,
+            speaker_embed=speaker_embed,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
@@ -113,22 +109,18 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         speakers = self._normalize_speakers_batch(speakers, batch_size)
         _ = kwargs
 
-        feature_items: list[GenerationFeatureItem] = []
+        speaker_embeds: list[torch.Tensor | None] = []
         for input_id, speaker in zip(input_ids, speakers):
-            feature_items.append(
-                GenerationFeatureItem(
-                    speaker=speaker,
-                    speaker_embed=self._resolve_custom_voice_speaker_embed(
-                        speaker, input_id.dtype
-                    ),
-                )
+            speaker_embeds.append(
+                self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
             )
 
-        return self._generate_from_feature_items_batch(
+        return self._generate_custom_voice_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             languages=languages,
-            feature_items=feature_items,
+            speakers=speakers,
+            speaker_embeds=speaker_embeds,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

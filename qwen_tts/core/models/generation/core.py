@@ -181,7 +181,32 @@ class Qwen3TTSGenerationCoreMixin:
         )
         return talker_input_embed, codec_input_embedding, tts_eos_embed, tts_pad_embed
 
-    def _append_talker_body_embeddings(
+    def _append_icl_talker_body_embeddings(
+        self,
+        input_id: torch.Tensor,
+        talker_input_embed: torch.Tensor,
+        tts_eos_embed: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+        non_streaming_mode: bool,
+        ref_code: torch.Tensor,
+        ref_id: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if ref_id is None:
+            raise ValueError(
+                "`ref_id` is required for ICL mode voice clone generation."
+            )
+        icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
+            text_id=input_id[:, 3:-5],
+            ref_id=ref_id[:, 3:-2],
+            ref_code=ref_code.to(self.talker.device),
+            tts_pad_embed=tts_pad_embed,
+            tts_eos_embed=tts_eos_embed,
+            non_streaming_mode=non_streaming_mode,
+        )
+        talker_input_embed = torch.cat([talker_input_embed, icl_input_embed], dim=1)
+        return talker_input_embed, trailing_text_hidden
+
+    def _append_standard_talker_body_embeddings(
         self,
         input_id: torch.Tensor,
         talker_input_embed: torch.Tensor,
@@ -189,25 +214,7 @@ class Qwen3TTSGenerationCoreMixin:
         tts_eos_embed: torch.Tensor,
         tts_pad_embed: torch.Tensor,
         non_streaming_mode: bool,
-        ref_code: torch.Tensor | None,
-        ref_id: torch.Tensor | None,
-        use_icl_prompt: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if use_icl_prompt and ref_code is not None:
-            if ref_id is None:
-                raise ValueError(
-                    "`ref_ids` is required for ICL mode voice clone generation."
-                )
-            icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
-                text_id=input_id[:, 3:-5],
-                ref_id=ref_id[:, 3:-2],
-                ref_code=ref_code.to(self.talker.device),
-                tts_pad_embed=tts_pad_embed,
-                tts_eos_embed=tts_eos_embed,
-                non_streaming_mode=non_streaming_mode,
-            )
-            talker_input_embed = torch.cat([talker_input_embed, icl_input_embed], dim=1)
-            return talker_input_embed, trailing_text_hidden
 
         talker_input_embed = torch.cat(
             [
@@ -266,6 +273,41 @@ class Qwen3TTSGenerationCoreMixin:
                 dim=1,
             )
         return talker_input_embed, trailing_text_hidden
+
+    def _append_voice_clone_talker_body_embeddings(
+        self,
+        input_id: torch.Tensor,
+        talker_input_embed: torch.Tensor,
+        codec_input_embedding: torch.Tensor,
+        tts_eos_embed: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+        non_streaming_mode: bool,
+        ref_code: torch.Tensor | None,
+        ref_id: torch.Tensor | None,
+        use_icl_prompt: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if use_icl_prompt:
+            if ref_code is None:
+                raise ValueError(
+                    "`ref_code` is required for ICL mode voice clone generation."
+                )
+            return self._append_icl_talker_body_embeddings(
+                input_id=input_id,
+                talker_input_embed=talker_input_embed,
+                tts_eos_embed=tts_eos_embed,
+                tts_pad_embed=tts_pad_embed,
+                non_streaming_mode=non_streaming_mode,
+                ref_code=ref_code,
+                ref_id=ref_id,
+            )
+        return self._append_standard_talker_body_embeddings(
+            input_id=input_id,
+            talker_input_embed=talker_input_embed,
+            codec_input_embedding=codec_input_embedding,
+            tts_eos_embed=tts_eos_embed,
+            tts_pad_embed=tts_pad_embed,
+            non_streaming_mode=non_streaming_mode,
+        )
 
     def _resolve_custom_voice_speaker_embed(
         self, speaker: str | None, input_dtype: torch.dtype

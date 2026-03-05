@@ -14,7 +14,6 @@
 # limitations under the License.
 """Shared types for Qwen3 TTS conditional generation modules."""
 
-from dataclasses import dataclass
 from typing import TypedDict
 
 import torch
@@ -34,15 +33,6 @@ class VoiceClonePromptSingle(TypedDict):
     icl_mode: bool
 
 
-@dataclass
-class GenerationFeatureItem:
-    speaker: str | None
-    speaker_embed: torch.Tensor | None
-    ref_code: torch.Tensor | None = None
-    ref_id: torch.Tensor | None = None
-    use_icl_prompt: bool = False
-
-
 GenerateConfigPrimitive = str | int | float | bool | None
 GenerateConfigValue = (
     GenerateConfigPrimitive
@@ -54,7 +44,6 @@ GenerateConfigValue = (
 __all__ = [
     "VoiceClonePrompt",
     "VoiceClonePromptSingle",
-    "GenerationFeatureItem",
     "GenerateConfigPrimitive",
     "GenerateConfigValue",
 ]

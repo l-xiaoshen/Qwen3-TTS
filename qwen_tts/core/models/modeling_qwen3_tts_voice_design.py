@@ -21,7 +21,6 @@ import torch
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
-    GenerationFeatureItem,
 )
 
 
@@ -53,12 +52,10 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language = self._normalize_language(language)
         _ = kwargs
 
-        feature_item = GenerationFeatureItem(speaker=None, speaker_embed=None)
-        return self._generate_from_feature_item(
+        return self._generate_voice_design_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language=language,
-            feature_item=feature_item,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
@@ -103,15 +100,10 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         languages = self._normalize_languages_batch(languages, batch_size)
         _ = kwargs
 
-        feature_items = [
-            GenerationFeatureItem(speaker=None, speaker_embed=None)
-            for _ in range(batch_size)
-        ]
-        return self._generate_from_feature_items_batch(
+        return self._generate_voice_design_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             languages=languages,
-            feature_items=feature_items,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
