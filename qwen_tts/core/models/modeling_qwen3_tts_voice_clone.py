@@ -60,6 +60,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         self._validate_voice_clone_prompt(voice_clone_prompt)
         _ = kwargs
 
+        language_id = self._resolve_language_id(language, speaker)
         voice_clone_spk_embed = self.generate_speaker_prompt(
             voice_clone_prompt["ref_spk_embedding"]
         )
@@ -69,8 +70,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         return self._generate_voice_clone_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
-            language=language,
-            speaker=speaker,
+            language_id=language_id,
             speaker_embed=speaker_embed,
             non_streaming_mode=non_streaming_mode,
             ref_code=voice_clone_prompt["ref_code"],
@@ -125,6 +125,10 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         self._validate_voice_clone_prompt_batch(voice_clone_prompt, batch_size)
         _ = kwargs
 
+        language_ids = [
+            self._resolve_language_id(language, speaker)
+            for language, speaker in zip(languages, speakers)
+        ]
         voice_clone_spk_embeds = self.generate_speaker_prompt_batch(voice_clone_prompt)
         speaker_embeds: list[torch.Tensor | None] = []
         for index in range(batch_size):
@@ -137,8 +141,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         return self._generate_voice_clone_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
-            languages=languages,
-            speakers=speakers,
+            language_ids=language_ids,
             speaker_embeds=speaker_embeds,
             ref_codes=voice_clone_prompt["ref_code"],
             ref_ids=ref_ids,

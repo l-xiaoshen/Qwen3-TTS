@@ -19,7 +19,6 @@ from collections.abc import Sequence
 
 import torch
 
-from ...config import SpeakerConfiguration
 from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 from ..modeling_qwen3_tts_types import VoiceClonePromptSingle
@@ -202,17 +201,10 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     def _prepare_standard_single_generation(
         self,
         input_id: torch.Tensor,
-        language: str,
-        speaker: str | SpeakerConfiguration,
+        language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if isinstance(speaker, dict):
-            language_id = self._resolve_language_id_for_speaker_config(
-                language, speaker
-            )
-        else:
-            language_id = self._resolve_language_id(language, speaker)
         (
             talker_input_embed,
             codec_input_embedding,
@@ -238,15 +230,13 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     def _prepare_voice_clone_single_generation(
         self,
         input_id: torch.Tensor,
-        language: str,
-        speaker: str,
+        language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         ref_code: torch.Tensor | None,
         ref_id: torch.Tensor | None,
         use_icl_prompt: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        language_id = self._resolve_language_id(language, speaker)
         (
             talker_input_embed,
             codec_input_embedding,
@@ -320,7 +310,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
-        language: str,
+        language_id: int | None,
         non_streaming_mode: bool,
         max_new_tokens: int,
         do_sample: bool,
@@ -339,8 +329,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_standard_single_generation(
                 input_id=input_id,
-                language=language,
-                speaker="",
+                language_id=language_id,
                 speaker_embed=None,
                 non_streaming_mode=non_streaming_mode,
             )
@@ -369,8 +358,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
-        language: str,
-        speaker: SpeakerConfiguration,
+        language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         max_new_tokens: int,
@@ -390,8 +378,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_standard_single_generation(
                 input_id=input_id,
-                language=language,
-                speaker=speaker,
+                language_id=language_id,
                 speaker_embed=speaker_embed,
                 non_streaming_mode=non_streaming_mode,
             )
@@ -420,8 +407,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
-        language: str,
-        speaker: str,
+        language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         ref_code: torch.Tensor | None,
@@ -444,8 +430,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_voice_clone_single_generation(
                 input_id=input_id,
-                language=language,
-                speaker=speaker,
+                language_id=language_id,
                 speaker_embed=speaker_embed,
                 non_streaming_mode=non_streaming_mode,
                 ref_code=ref_code,

@@ -401,7 +401,9 @@ class Qwen3TTSGenerationCoreMixin:
         if language_map is None:
             raise ValueError("Language map is not available in config")
         active_speakers = [
-            speaker_name for speaker_name, weight in speaker.items() if float(weight) != 0.0
+            speaker_name
+            for speaker_name, weight in speaker.items()
+            if float(weight) != 0.0
         ]
         if len(active_speakers) == 0:
             return language_id

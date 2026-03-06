@@ -55,14 +55,14 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language = self._normalize_language(language)
         _ = kwargs
 
+        language_id = self._resolve_language_id_for_speaker_config(language, speaker)
         speaker_embed = self._resolve_custom_voice_speaker_embed(
             speaker, input_id.dtype
         )
         return self._generate_custom_voice_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
-            language=language,
-            speaker=speaker,
+            language_id=language_id,
             speaker_embed=speaker_embed,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
@@ -117,8 +117,12 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
             speakers = list(speakers)
         _ = kwargs
 
+        language_ids: list[int | None] = []
         speaker_embeds: list[torch.Tensor | None] = []
-        for input_id, speaker in zip(input_ids, speakers):
+        for input_id, language, speaker in zip(input_ids, languages, speakers):
+            language_ids.append(
+                self._resolve_language_id_for_speaker_config(language, speaker)
+            )
             speaker_embeds.append(
                 self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
             )
@@ -126,8 +130,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         return self._generate_custom_voice_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
-            languages=languages,
-            speakers=speakers,
+            language_ids=language_ids,
             speaker_embeds=speaker_embeds,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,

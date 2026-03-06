@@ -52,10 +52,11 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language = self._normalize_language(language)
         _ = kwargs
 
+        language_id = self._resolve_language_id(language, "")
         return self._generate_voice_design_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
-            language=language,
+            language_id=language_id,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
@@ -100,10 +101,13 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         languages = self._normalize_languages_batch(languages, batch_size)
         _ = kwargs
 
+        language_ids = [
+            self._resolve_language_id(language, "") for language in languages
+        ]
         return self._generate_voice_design_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
-            languages=languages,
+            language_ids=language_ids,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
