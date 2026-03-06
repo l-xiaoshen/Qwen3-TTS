@@ -263,16 +263,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         ]
         return talker_codes_list, talker_hidden_states_list
 
-    def _build_talker_suppress_tokens_batch(self) -> list[int]:
-        return [
-            token_id
-            for token_id in range(
-                self.config.talker_config.vocab_size - 1024,
-                self.config.talker_config.vocab_size,
-            )
-            if token_id not in (self.config.talker_config.codec_eos_token_id,)
-        ]
-
     def _append_instruct_embed_blocks_batch(
         self,
         talker_input_embeds: list[list[torch.Tensor]],
@@ -285,70 +275,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
                         self.talker.get_text_embeddings()(instruct_id)
                     )
                 )
-
-    def _prepare_standard_batch_sample(
-        self,
-        input_id: torch.Tensor,
-        language_id: int | None,
-        speaker_embed: torch.Tensor | None,
-        non_streaming_mode: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        (
-            talker_input_embed,
-            codec_input_embedding,
-            tts_eos_embed,
-            tts_pad_embed,
-        ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
-            language_id=language_id,
-            speaker_embed=speaker_embed,
-        )
-        talker_input_embed, trailing_text_hidden = (
-            self._append_standard_talker_body_embeddings(
-                input_id=input_id,
-                talker_input_embed=talker_input_embed,
-                codec_input_embedding=codec_input_embedding,
-                tts_eos_embed=tts_eos_embed,
-                tts_pad_embed=tts_pad_embed,
-                non_streaming_mode=non_streaming_mode,
-            )
-        )
-        return talker_input_embed, trailing_text_hidden, tts_pad_embed
-
-    def _prepare_voice_clone_batch_sample(
-        self,
-        input_id: torch.Tensor,
-        language_id: int | None,
-        speaker_embed: torch.Tensor | None,
-        non_streaming_mode: bool,
-        ref_code: torch.Tensor | None,
-        ref_id: torch.Tensor | None,
-        use_icl_prompt: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        (
-            talker_input_embed,
-            codec_input_embedding,
-            tts_eos_embed,
-            tts_pad_embed,
-        ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
-            language_id=language_id,
-            speaker_embed=speaker_embed,
-        )
-        talker_input_embed, trailing_text_hidden = (
-            self._append_voice_clone_talker_body_embeddings(
-                input_id=input_id,
-                talker_input_embed=talker_input_embed,
-                codec_input_embedding=codec_input_embedding,
-                tts_eos_embed=tts_eos_embed,
-                tts_pad_embed=tts_pad_embed,
-                non_streaming_mode=non_streaming_mode,
-                ref_code=ref_code,
-                ref_id=ref_id,
-                use_icl_prompt=use_icl_prompt,
-            )
-        )
-        return talker_input_embed, trailing_text_hidden, tts_pad_embed
 
     def _generate_batch_with_prepared_prompts(
         self,
@@ -390,7 +316,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             talker_input_embeds=talker_input_embeds,
             trailing_text_hiddens=trailing_text_hiddens,
             tts_pad_embed_last=tts_pad_embed_last,
-            suppress_tokens=self._build_talker_suppress_tokens_batch(),
+            suppress_tokens=self._build_talker_suppress_tokens(),
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             top_k=top_k,
@@ -406,71 +332,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             return_dict_in_generate=return_dict_in_generate,
         )
 
-    def _generate_voice_design_batch_from_ids(
-        self,
-        input_ids: list[torch.Tensor],
-        instruct_ids: list[torch.Tensor | None],
-        language_ids: list[int | None],
-        non_streaming_mode: bool,
-        max_new_tokens: int,
-        do_sample: bool,
-        top_k: int,
-        top_p: float,
-        temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
-        eos_token_id: int | None,
-        repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
-    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        if not (len(input_ids) == len(instruct_ids) == len(language_ids)):
-            raise ValueError(
-                f"Batch size mismatch: input_ids={len(input_ids)}, instruct_ids={len(instruct_ids)}, language_ids={len(language_ids)}"
-            )
-
-        prepared_talker_input_embeds: list[torch.Tensor] = []
-        trailing_text_hiddens: list[torch.Tensor] = []
-        tts_pad_embed_last: torch.Tensor | None = None
-        for input_id, language_id in zip(input_ids, language_ids):
-            talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-                self._prepare_standard_batch_sample(
-                    input_id=input_id,
-                    language_id=language_id,
-                    speaker_embed=None,
-                    non_streaming_mode=non_streaming_mode,
-                )
-            )
-            prepared_talker_input_embeds.append(talker_input_embed)
-            trailing_text_hiddens.append(trailing_text_hidden)
-            tts_pad_embed_last = tts_pad_embed
-
-        if tts_pad_embed_last is None:
-            raise RuntimeError("`tts_pad_embed` was not created during generation.")
-
-        return self._generate_batch_with_prepared_prompts(
-            instruct_ids=instruct_ids,
-            prepared_talker_input_embeds=prepared_talker_input_embeds,
-            trailing_text_hiddens=trailing_text_hiddens,
-            tts_pad_embed_last=tts_pad_embed_last,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
-            eos_token_id=eos_token_id,
-            repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
-        )
-
-    def _generate_custom_voice_batch_from_ids(
+    def _generate_standard_batch_from_ids(
         self,
         input_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
@@ -497,7 +359,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             == len(language_ids)
             == len(speaker_embeds)
         ):
-            raise ValueError("Batch size mismatch in custom-voice generation inputs.")
+            raise ValueError("Batch size mismatch in standard generation inputs.")
 
         prepared_talker_input_embeds: list[torch.Tensor] = []
         trailing_text_hiddens: list[torch.Tensor] = []
@@ -506,7 +368,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             input_ids, language_ids, speaker_embeds
         ):
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-                self._prepare_standard_batch_sample(
+                self._prepare_standard_generation(
                     input_id=input_id,
                     language_id=language_id,
                     speaker_embed=speaker_embed,
@@ -594,7 +456,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             use_icl_prompts,
         ):
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-                self._prepare_voice_clone_batch_sample(
+                self._prepare_voice_clone_generation(
                     input_id=input_id,
                     language_id=language_id,
                     speaker_embed=speaker_embed,

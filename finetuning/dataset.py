@@ -15,9 +15,9 @@
 # limitations under the License.
 from typing import TypeVar, List, Tuple, Union
 
-import librosa
 import numpy as np
 import torch
+from qwen_tts.audio_utils import load_audio_to_np_and_sr
 from qwen_tts.core.models import Qwen3TTSConfig, mel_spectrogram
 from torch.utils.data import Dataset
 
@@ -40,15 +40,6 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
 
     def __len__(self):
         return len(self.data_list)
-
-    def _load_audio_to_np(self, x: str) -> Tuple[np.ndarray, int]:
-
-        audio, sr = librosa.load(x, sr=None, mono=True)
-
-        if audio.ndim > 1:
-            audio = np.mean(audio, axis=-1)
-
-        return audio.astype(np.float32), int(sr)
 
     def _normalize_audio_inputs(
         self, audios: Union[AudioLike, List[AudioLike]]
@@ -81,13 +72,16 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         out: List[Tuple[np.ndarray, int]] = []
         for a in items:
             if isinstance(a, str):
-                out.append(self._load_audio_to_np(a))
+                out.append(load_audio_to_np_and_sr(a))
             elif isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], np.ndarray):
                 out.append((a[0].astype(np.float32), int(a[1])))
             elif isinstance(a, np.ndarray):
                 raise ValueError("For numpy waveform input, pass a tuple (audio, sr).")
             else:
                 raise TypeError(f"Unsupported audio input type: {type(a)}")
+        for i, (audio, sr) in enumerate(out):
+            if audio.ndim > 1:
+                out[i] = (np.mean(audio, axis=-1).astype(np.float32), sr)
         return out
 
     def _build_assistant_text(self, text: str) -> str:

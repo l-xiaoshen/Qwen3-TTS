@@ -15,6 +15,7 @@
 """Voice-design conditional-generation model for Qwen3 TTS."""
 
 from collections.abc import Sequence
+from typing import cast
 
 import torch
 
@@ -53,10 +54,11 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         _ = kwargs
 
         language_id = self._resolve_language_id(language, "")
-        return self._generate_voice_design_from_ids(
+        return self._generate_standard_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language_id=language_id,
+            speaker_embed=None,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
@@ -104,10 +106,13 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language_ids = [
             self._resolve_language_id(language, "") for language in languages
         ]
-        return self._generate_voice_design_batch_from_ids(
+        return self._generate_standard_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             language_ids=language_ids,
+            speaker_embeds=[
+                cast(torch.Tensor | None, None) for _ in range(len(input_ids))
+            ],
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

@@ -13,22 +13,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import base64
-import io
-import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TypedDict, Union
 from typing_extensions import Self
-from urllib.parse import urlparse
 
-import librosa
 import numpy as np
-import soundfile as sf
 import torch
 from transformers import AutoConfig, AutoProcessor
 
 from qwen_tts.core import SpeakerConfiguration
 
+from ..audio_utils import load_audio_to_np_and_sr
 from ..core.models import (
     Qwen3TTSConfig,
     Qwen3TTSConditionalGenerationBase,
@@ -298,43 +293,6 @@ class Qwen3TTSBaseModel:
                 f"Unsupported speakers: {bad}. Supported: {sorted(supported)}"
             )
 
-    def _is_probably_base64(self, s: str) -> bool:
-        if s.startswith("data:audio"):
-            return True
-        if ("/" not in s and "\\" not in s) and len(s) > 256:
-            return True
-        return False
-
-    def _is_url(self, s: str) -> bool:
-        try:
-            u = urlparse(s)
-            return u.scheme in ("http", "https") and bool(u.netloc)
-        except Exception:
-            return False
-
-    def _decode_base64_to_wav_bytes(self, b64: str) -> bytes:
-        if "," in b64 and b64.strip().startswith("data:"):
-            b64 = b64.split(",", 1)[1]
-        return base64.b64decode(b64)
-
-    def _load_audio_to_np(self, x: str) -> tuple[np.ndarray, int]:
-        if self._is_url(x):
-            with urllib.request.urlopen(x) as resp:
-                audio_bytes = resp.read()
-            with io.BytesIO(audio_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
-        elif self._is_probably_base64(x):
-            wav_bytes = self._decode_base64_to_wav_bytes(x)
-            with io.BytesIO(wav_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
-        else:
-            audio, sr = librosa.load(x, sr=None, mono=True)
-
-        if audio.ndim > 1:
-            audio = np.mean(audio, axis=-1)
-
-        return audio.astype(np.float32), int(sr)
-
     def _normalize_audio_inputs(
         self, audios: list[AudioLike]
     ) -> list[tuple[np.ndarray, int]]:
@@ -348,7 +306,7 @@ class Qwen3TTSBaseModel:
         out: list[tuple[np.ndarray, int]] = []
         for a in items:
             if isinstance(a, str):
-                out.append(self._load_audio_to_np(a))
+                out.append(load_audio_to_np_and_sr(a))
             elif isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], np.ndarray):
                 out.append((a[0].astype(np.float32), int(a[1])))
             elif isinstance(a, np.ndarray):
@@ -375,11 +333,74 @@ class Qwen3TTSBaseModel:
         input_id = input_data["input_ids"].to(self.device)
         return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
 
+    def _normalize_language_value(self, language: str) -> str:
+        if not isinstance(language, str):
+            raise TypeError("`language` must be a string.")
+        return "Auto" if language == "" else language
+
+    def _normalize_language_values(
+        self, languages: Sequence[str], batch_size: int
+    ) -> list[str]:
+        if not isinstance(languages, Sequence) or isinstance(languages, (str, bytes)):
+            raise TypeError("`language` must be a sequence of strings.")
+        if len(languages) == 0:
+            return ["Auto"] * batch_size
+
+        normalized_languages: list[str] = []
+        for item in languages:
+            if not isinstance(item, str):
+                raise TypeError("`language` list items must be strings.")
+            normalized_languages.append(item)
+        return normalized_languages
+
+    def _tokenize_optional_text(
+        self, text: str, builder: Callable[[str], str]
+    ) -> torch.Tensor | None:
+        if text == "":
+            return None
+        return self._tokenize_text(builder(text))
+
+    def _tokenize_optional_texts(
+        self, texts: Sequence[str], builder: Callable[[str], str]
+    ) -> list[torch.Tensor | None]:
+        return [self._tokenize_optional_text(text, builder) for text in texts]
+
+    def _tokenize_assistant_input(self, text: str) -> torch.Tensor:
+        return self._tokenize_text(self._build_assistant_text(text))
+
+    def _tokenize_assistant_inputs(self, texts: Sequence[str]) -> list[torch.Tensor]:
+        return [self._tokenize_text(self._build_assistant_text(text)) for text in texts]
+
+    def _tokenize_instruct(self, instruct: str) -> torch.Tensor | None:
+        return self._tokenize_optional_text(instruct, self._build_instruct_text)
+
+    def _tokenize_instructs(
+        self, instructs: Sequence[str]
+    ) -> list[torch.Tensor | None]:
+        return self._tokenize_optional_texts(instructs, self._build_instruct_text)
+
+    def _tokenize_ref_text(self, ref_text: str) -> torch.Tensor | None:
+        return self._tokenize_optional_text(ref_text, self._build_ref_text)
+
+    def _tokenize_ref_texts(
+        self, ref_texts: Sequence[str]
+    ) -> list[torch.Tensor | None]:
+        return self._tokenize_optional_texts(ref_texts, self._build_ref_text)
+
     def _tokenize_texts_batch(self, texts: list[str]) -> list[torch.Tensor]:
         input_ids: list[torch.Tensor] = []
         for text in texts:
             input_ids.append(self._tokenize_text(text))
         return input_ids
+
+    def _decode_talker_codes_batch(
+        self, talker_codes_list: Sequence[torch.Tensor]
+    ) -> tuple[list[np.ndarray], int]:
+        speech_tokenizer = self._require_speech_tokenizer()
+        wavs, fs = speech_tokenizer.decode(
+            [{"audio_codes": codes} for codes in talker_codes_list]
+        )
+        return wavs, fs
 
     def _merge_generate_kwargs(
         self,

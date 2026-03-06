@@ -59,7 +59,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         speaker_embed = self._resolve_custom_voice_speaker_embed(
             speaker, input_id.dtype
         )
-        return self._generate_custom_voice_from_ids(
+        return self._generate_standard_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language_id=language_id,
@@ -127,7 +127,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
                 self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
             )
 
-        return self._generate_custom_voice_batch_from_ids(
+        return self._generate_standard_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             language_ids=language_ids,

@@ -2,16 +2,12 @@
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 
-import base64
-import io
-import urllib.request
 from collections.abc import Sequence
 from typing import Optional, Protocol, Union, runtime_checkable
-from urllib.parse import urlparse
 
-import librosa
 import numpy as np
-import soundfile as sf
+
+from ..audio_utils import load_audio_to_np_and_sr, resample_audio
 
 AudioInput = Union[
     str,
@@ -27,27 +23,6 @@ class _FeatureExtractorWithSamplingRate(Protocol):
 
 
 class Qwen3TTSTokenizerAudioMixin:
-    def _is_probably_base64(self, s: str) -> bool:
-        if s.startswith("data:audio"):
-            return True
-        # Heuristic: no filesystem path separators and long enough.
-        if ("/" not in s and "\\" not in s) and len(s) > 256:
-            return True
-        return False
-
-    def _is_url(self, s: str) -> bool:
-        try:
-            u = urlparse(s)
-            return u.scheme in ("http", "https") and bool(u.netloc)
-        except Exception:
-            return False
-
-    def _decode_base64_to_wav_bytes(self, b64: str) -> bytes:
-        # Accept both "data:audio/wav;base64,...." and raw base64
-        if "," in b64 and b64.strip().startswith("data:"):
-            b64 = b64.split(",", 1)[1]
-        return base64.b64decode(b64)
-
     def load_audio(
         self,
         x: str,
@@ -66,25 +41,8 @@ class Qwen3TTSTokenizerAudioMixin:
             np.ndarray:
                 1-D float32 waveform at target_sr.
         """
-        if self._is_url(x):
-            with urllib.request.urlopen(x) as resp:
-                audio_bytes = resp.read()
-            with io.BytesIO(audio_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
-        elif self._is_probably_base64(x):
-            wav_bytes = self._decode_base64_to_wav_bytes(x)
-            with io.BytesIO(wav_bytes) as f:
-                audio, sr = sf.read(f, dtype="float32", always_2d=False)
-        else:
-            audio, sr = librosa.load(x, sr=None, mono=True)
-
-        if audio.ndim > 1:
-            audio = np.mean(audio, axis=-1)
-
-        if sr != target_sr:
-            audio = librosa.resample(y=audio, orig_sr=sr, target_sr=target_sr)
-
-        return audio.astype(np.float32)
+        audio, source_sr = load_audio_to_np_and_sr(x)
+        return resample_audio(audio, source_sr=source_sr, target_sr=target_sr)
 
     def _normalize_audio_inputs(
         self,
@@ -146,14 +104,7 @@ class Qwen3TTSTokenizerAudioMixin:
         out: list[np.ndarray] = []
         source_sr = int(sr)
         for waveform in waveform_items:
-            if waveform.ndim > 1:
-                waveform = waveform.mean(axis=-1)
-            wave_fp32 = np.asarray(waveform, dtype=np.float32)
-            if source_sr != target_sr:
-                wave_fp32 = librosa.resample(
-                    y=wave_fp32,
-                    orig_sr=source_sr,
-                    target_sr=target_sr,
-                )
-            out.append(np.asarray(wave_fp32, dtype=np.float32))
+            out.append(
+                resample_audio(waveform, source_sr=source_sr, target_sr=target_sr)
+            )
         return out

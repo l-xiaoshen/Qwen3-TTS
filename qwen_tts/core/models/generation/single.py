@@ -179,16 +179,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             talker_hidden_states[0, :effective_length, :],
         )
 
-    def _build_talker_suppress_tokens(self) -> list[int]:
-        return [
-            token_id
-            for token_id in range(
-                self.config.talker_config.vocab_size - 1024,
-                self.config.talker_config.vocab_size,
-            )
-            if token_id not in (self.config.talker_config.codec_eos_token_id,)
-        ]
-
     def _append_instruct_embed_block(
         self, talker_input_embeds: list[torch.Tensor], instruct_id: torch.Tensor | None
     ) -> None:
@@ -197,70 +187,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_input_embeds.append(
             self.talker.text_projection(self.talker.get_text_embeddings()(instruct_id))
         )
-
-    def _prepare_standard_single_generation(
-        self,
-        input_id: torch.Tensor,
-        language_id: int | None,
-        speaker_embed: torch.Tensor | None,
-        non_streaming_mode: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        (
-            talker_input_embed,
-            codec_input_embedding,
-            tts_eos_embed,
-            tts_pad_embed,
-        ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
-            language_id=language_id,
-            speaker_embed=speaker_embed,
-        )
-        talker_input_embed, trailing_text_hidden = (
-            self._append_standard_talker_body_embeddings(
-                input_id=input_id,
-                talker_input_embed=talker_input_embed,
-                codec_input_embedding=codec_input_embedding,
-                tts_eos_embed=tts_eos_embed,
-                tts_pad_embed=tts_pad_embed,
-                non_streaming_mode=non_streaming_mode,
-            )
-        )
-        return talker_input_embed, trailing_text_hidden, tts_pad_embed
-
-    def _prepare_voice_clone_single_generation(
-        self,
-        input_id: torch.Tensor,
-        language_id: int | None,
-        speaker_embed: torch.Tensor | None,
-        non_streaming_mode: bool,
-        ref_code: torch.Tensor | None,
-        ref_id: torch.Tensor | None,
-        use_icl_prompt: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        (
-            talker_input_embed,
-            codec_input_embedding,
-            tts_eos_embed,
-            tts_pad_embed,
-        ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
-            language_id=language_id,
-            speaker_embed=speaker_embed,
-        )
-        talker_input_embed, trailing_text_hidden = (
-            self._append_voice_clone_talker_body_embeddings(
-                input_id=input_id,
-                talker_input_embed=talker_input_embed,
-                codec_input_embedding=codec_input_embedding,
-                tts_eos_embed=tts_eos_embed,
-                tts_pad_embed=tts_pad_embed,
-                non_streaming_mode=non_streaming_mode,
-                ref_code=ref_code,
-                ref_id=ref_id,
-                use_icl_prompt=use_icl_prompt,
-            )
-        )
-        return talker_input_embed, trailing_text_hidden, tts_pad_embed
 
     def _generate_single_with_prepared_prompt(
         self,
@@ -306,55 +232,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             return_dict_in_generate=return_dict_in_generate,
         )
 
-    def _generate_voice_design_from_ids(
-        self,
-        input_id: torch.Tensor,
-        instruct_id: torch.Tensor | None,
-        language_id: int | None,
-        non_streaming_mode: bool,
-        max_new_tokens: int,
-        do_sample: bool,
-        top_k: int,
-        top_p: float,
-        temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
-        eos_token_id: int | None,
-        repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-            self._prepare_standard_single_generation(
-                input_id=input_id,
-                language_id=language_id,
-                speaker_embed=None,
-                non_streaming_mode=non_streaming_mode,
-            )
-        )
-        return self._generate_single_with_prepared_prompt(
-            instruct_id=instruct_id,
-            talker_input_embed=talker_input_embed,
-            trailing_text_hidden=trailing_text_hidden,
-            tts_pad_embed=tts_pad_embed,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
-            eos_token_id=eos_token_id,
-            repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
-        )
-
-    def _generate_custom_voice_from_ids(
+    def _generate_standard_from_ids(
         self,
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
@@ -376,7 +254,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-            self._prepare_standard_single_generation(
+            self._prepare_standard_generation(
                 input_id=input_id,
                 language_id=language_id,
                 speaker_embed=speaker_embed,
@@ -428,7 +306,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
-            self._prepare_voice_clone_single_generation(
+            self._prepare_voice_clone_generation(
                 input_id=input_id,
                 language_id=language_id,
                 speaker_embed=speaker_embed,

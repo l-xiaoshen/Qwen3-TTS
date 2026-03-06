@@ -278,6 +278,63 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             icl_mode=bool(prompt["icl_mode"]),
         )
 
+    def _prepend_ref_code_for_decode(
+        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
+    ) -> torch.Tensor:
+        if ref_code is None:
+            return talker_codes
+        return torch.cat([ref_code.to(talker_codes.device), talker_codes], dim=0)
+
+    def _trim_decoded_ref_prefix(
+        self,
+        wav: np.ndarray,
+        ref_code: torch.Tensor | None,
+        total_code_length: int,
+    ) -> np.ndarray:
+        if ref_code is None:
+            return wav
+        ref_len = int(ref_code.shape[0])
+        cut = int(ref_len / max(total_code_length, 1) * wav.shape[0])
+        return wav[cut:]
+
+    def _decode_voice_clone_codes_single(
+        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
+    ) -> tuple[np.ndarray, int]:
+        codes_for_decode = self._prepend_ref_code_for_decode(talker_codes, ref_code)
+        wavs, fs = self._decode_talker_codes_batch([codes_for_decode])
+        wav = wavs[0]
+        return (
+            self._trim_decoded_ref_prefix(
+                wav, ref_code=ref_code, total_code_length=int(codes_for_decode.shape[0])
+            ),
+            fs,
+        )
+
+    def _decode_voice_clone_codes_batch(
+        self,
+        talker_codes_list: Sequence[torch.Tensor],
+        ref_codes: Sequence[torch.Tensor | None],
+    ) -> tuple[list[np.ndarray], int]:
+        if len(talker_codes_list) != len(ref_codes):
+            raise ValueError(
+                "Batch size mismatch between generated codes and reference codes."
+            )
+
+        codes_for_decode = [
+            self._prepend_ref_code_for_decode(talker_codes, ref_code)
+            for talker_codes, ref_code in zip(talker_codes_list, ref_codes)
+        ]
+        wavs, fs = self._decode_talker_codes_batch(codes_for_decode)
+        wavs_out = [
+            self._trim_decoded_ref_prefix(
+                wav,
+                ref_code=ref_code,
+                total_code_length=int(codes.shape[0]),
+            )
+            for wav, ref_code, codes in zip(wavs, ref_codes, codes_for_decode)
+        ]
+        return wavs_out, fs
+
     @torch.no_grad()
     def generate_voice_clone(
         self,
@@ -316,7 +373,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         if not isinstance(x_vector_only_mode, bool):
             raise TypeError("`x_vector_only_mode` must be a boolean.")
 
-        language_value = "Auto" if language == "" else language
+        language_value = self._normalize_language_value(language)
         self._validate_languages([language_value])
 
         voice_clone_prompt_single: VoiceClonePromptSingleDict
@@ -353,11 +410,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 )
                 ref_text_for_id = ""
 
-        input_id = self._tokenize_text(self._build_assistant_text(text))
-
-        ref_id: torch.Tensor | None = None
-        if ref_text_for_id != "":
-            ref_id = self._tokenize_text(self._build_ref_text(ref_text_for_id))
+        input_id = self._tokenize_assistant_input(text)
+        ref_id = self._tokenize_ref_text(ref_text_for_id)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -382,24 +436,9 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             **gen_kwargs,
         )
 
-        ref_code_item = voice_clone_prompt_single["ref_code"]
-        codes_for_decode = talker_codes
-        if ref_code_item is not None:
-            codes_for_decode = torch.cat(
-                [ref_code_item.to(talker_codes.device), talker_codes], dim=0
-            )
-
-        speech_tokenizer = self._require_speech_tokenizer()
-        wavs, fs = speech_tokenizer.decode([{"audio_codes": codes_for_decode}])
-        wav = wavs[0]
-
-        if ref_code_item is not None:
-            ref_len = int(ref_code_item.shape[0])
-            total_len = int(codes_for_decode.shape[0])
-            cut = int(ref_len / max(total_len, 1) * wav.shape[0])
-            wav = wav[cut:]
-
-        return wav, fs
+        return self._decode_voice_clone_codes_single(
+            talker_codes, voice_clone_prompt_single["ref_code"]
+        )
 
     @torch.no_grad()
     def generate_voice_clone_batch(
@@ -438,16 +477,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 raise TypeError("`text` list items must be strings.")
             texts.append(item)
 
-        if not isinstance(language, Sequence) or isinstance(language, (str, bytes)):
-            raise TypeError("`language` must be a sequence of strings.")
-        if len(language) == 0:
-            languages = ["Auto"] * len(texts)
-        else:
-            languages: list[str] = []
-            for item in language:
-                if not isinstance(item, str):
-                    raise TypeError("`language` list items must be strings.")
-                languages.append(item)
+        languages = self._normalize_language_values(language, len(texts))
         if len(texts) != len(languages):
             raise ValueError(
                 f"Batch size mismatch: text={len(texts)}, language={len(languages)}"
@@ -501,17 +531,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 )
                 ref_texts_for_ids = []
 
-        input_texts = [self._build_assistant_text(t) for t in texts]
-        input_ids = self._tokenize_texts_batch(input_texts)
-
-        ref_ids: list[torch.Tensor | None] = []
-        if len(ref_texts_for_ids) != 0:
-            for rt in ref_texts_for_ids:
-                if rt == "":
-                    ref_ids.append(None)
-                else:
-                    ref_tok = self._tokenize_text(self._build_ref_text(rt))
-                    ref_ids.append(ref_tok)
+        input_ids = self._tokenize_assistant_inputs(texts)
+        ref_ids = self._tokenize_ref_texts(ref_texts_for_ids)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -536,31 +557,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             **gen_kwargs,
         )
 
-        codes_for_decode = []
-        ref_code_list = voice_clone_prompt_dict["ref_code"]
-        for i, codes in enumerate(talker_codes_list):
-            ref_code_item = ref_code_list[i]
-            if ref_code_item is not None:
-                codes_for_decode.append(
-                    torch.cat([ref_code_item.to(codes.device), codes], dim=0)
-                )
-            else:
-                codes_for_decode.append(codes)
-
-        speech_tokenizer = self._require_speech_tokenizer()
-        wavs_all, fs = speech_tokenizer.decode(
-            [{"audio_codes": c} for c in codes_for_decode]
+        return self._decode_voice_clone_codes_batch(
+            talker_codes_list, voice_clone_prompt_dict["ref_code"]
         )
-
-        wavs_out: list[np.ndarray] = []
-        for i, wav in enumerate(wavs_all):
-            ref_code_item = ref_code_list[i]
-            if ref_code_item is not None:
-                ref_len = int(ref_code_item.shape[0])
-                total_len = int(codes_for_decode[i].shape[0])
-                cut = int(ref_len / max(total_len, 1) * wav.shape[0])
-                wavs_out.append(wav[cut:])
-            else:
-                wavs_out.append(wav)
-
-        return wavs_out, fs

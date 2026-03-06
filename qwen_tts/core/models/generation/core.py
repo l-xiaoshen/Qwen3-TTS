@@ -310,6 +310,80 @@ class Qwen3TTSGenerationCoreMixin:
             non_streaming_mode=non_streaming_mode,
         )
 
+    def _prepare_standard_generation(
+        self,
+        input_id: torch.Tensor,
+        language_id: int | None,
+        speaker_embed: torch.Tensor | None,
+        non_streaming_mode: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        (
+            talker_input_embed,
+            codec_input_embedding,
+            tts_eos_embed,
+            tts_pad_embed,
+        ) = self._build_talker_prefix_embeddings(
+            input_id=input_id,
+            language_id=language_id,
+            speaker_embed=speaker_embed,
+        )
+        talker_input_embed, trailing_text_hidden = (
+            self._append_standard_talker_body_embeddings(
+                input_id=input_id,
+                talker_input_embed=talker_input_embed,
+                codec_input_embedding=codec_input_embedding,
+                tts_eos_embed=tts_eos_embed,
+                tts_pad_embed=tts_pad_embed,
+                non_streaming_mode=non_streaming_mode,
+            )
+        )
+        return talker_input_embed, trailing_text_hidden, tts_pad_embed
+
+    def _prepare_voice_clone_generation(
+        self,
+        input_id: torch.Tensor,
+        language_id: int | None,
+        speaker_embed: torch.Tensor | None,
+        non_streaming_mode: bool,
+        ref_code: torch.Tensor | None,
+        ref_id: torch.Tensor | None,
+        use_icl_prompt: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        (
+            talker_input_embed,
+            codec_input_embedding,
+            tts_eos_embed,
+            tts_pad_embed,
+        ) = self._build_talker_prefix_embeddings(
+            input_id=input_id,
+            language_id=language_id,
+            speaker_embed=speaker_embed,
+        )
+        talker_input_embed, trailing_text_hidden = (
+            self._append_voice_clone_talker_body_embeddings(
+                input_id=input_id,
+                talker_input_embed=talker_input_embed,
+                codec_input_embedding=codec_input_embedding,
+                tts_eos_embed=tts_eos_embed,
+                tts_pad_embed=tts_pad_embed,
+                non_streaming_mode=non_streaming_mode,
+                ref_code=ref_code,
+                ref_id=ref_id,
+                use_icl_prompt=use_icl_prompt,
+            )
+        )
+        return talker_input_embed, trailing_text_hidden, tts_pad_embed
+
+    def _build_talker_suppress_tokens(self) -> list[int]:
+        return [
+            token_id
+            for token_id in range(
+                self.config.talker_config.vocab_size - 1024,
+                self.config.talker_config.vocab_size,
+            )
+            if token_id not in (self.config.talker_config.codec_eos_token_id,)
+        ]
+
     def _resolve_custom_voice_speaker_embed(
         self, speaker: SpeakerConfiguration, input_dtype: torch.dtype
     ) -> torch.Tensor | None:

@@ -54,12 +54,10 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         if not isinstance(text, str):
             raise TypeError("`text` must be a string.")
-        if not isinstance(language, str):
-            raise TypeError("`language` must be a string.")
         if not isinstance(instruct, str):
             raise TypeError("`instruct` must be a string.")
 
-        language_value = "Auto" if language == "" else language
+        language_value = self._normalize_language_value(language)
         speaker_value = speaker
 
         model_size = self.model.tts_model_size
@@ -72,12 +70,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self._validate_languages([language_value])
         self._validate_speaker_configuration(speaker_value)
 
-        input_id = self._tokenize_text(self._build_assistant_text(text))
-        instruct_id: torch.Tensor | None
-        if instruct_value == "":
-            instruct_id = None
-        else:
-            instruct_id = self._tokenize_text(self._build_instruct_text(instruct_value))
+        input_id = self._tokenize_assistant_input(text)
+        instruct_id = self._tokenize_instruct(instruct_value)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -102,8 +96,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **gen_kwargs,
         )
 
-        speech_tokenizer = self._require_speech_tokenizer()
-        wavs, fs = speech_tokenizer.decode([{"audio_codes": talker_codes}])
+        wavs, fs = self._decode_talker_codes_batch([talker_codes])
         return wavs[0], fs
 
     @torch.no_grad()
@@ -139,16 +132,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 raise TypeError("`text` list items must be strings.")
             texts.append(item)
 
-        if not isinstance(language, Sequence) or isinstance(language, (str, bytes)):
-            raise TypeError("`language` must be a sequence of strings.")
-        if len(language) == 0:
-            languages = ["Auto"] * len(texts)
-        else:
-            languages = []
-            for item in language:
-                if not isinstance(item, str):
-                    raise TypeError("`language` list items must be strings.")
-                languages.append(item)
+        languages = self._normalize_language_values(language, len(texts))
 
         if not isinstance(speaker, Sequence) or isinstance(speaker, (str, bytes)):
             raise TypeError(
@@ -179,18 +163,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self._validate_languages(languages)
         self._validate_speaker_configurations(speakers, len(texts))
 
-        input_ids = self._tokenize_texts_batch(
-            [self._build_assistant_text(t) for t in texts]
-        )
-
-        instruct_ids: list[torch.Tensor | None] = []
-        for ins in instructs:
-            if ins == "":
-                instruct_ids.append(None)
-            else:
-                instruct_ids.append(
-                    self._tokenize_texts_batch([self._build_instruct_text(ins)])[0]
-                )
+        input_ids = self._tokenize_assistant_inputs(texts)
+        instruct_ids = self._tokenize_instructs(instructs)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -215,8 +189,4 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **gen_kwargs,
         )
 
-        speech_tokenizer = self._require_speech_tokenizer()
-        wavs, fs = speech_tokenizer.decode(
-            [{"audio_codes": c} for c in talker_codes_list]
-        )
-        return wavs, fs
+        return self._decode_talker_codes_batch(talker_codes_list)
