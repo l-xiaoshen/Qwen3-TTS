@@ -33,7 +33,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language: str,
-        speaker: SpeakerConfiguration,
+        speaker: SpeakerConfiguration | torch.Tensor,
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -55,10 +55,14 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language = self._normalize_language(language)
         _ = kwargs
 
-        language_id = self._resolve_language_id_for_speaker_config(language, speaker)
-        speaker_embed = self._resolve_custom_voice_speaker_embed(
-            speaker, input_id.dtype
-        )
+        if isinstance(speaker, torch.Tensor):
+            language_id = self._resolve_language_id(language, "")
+            speaker_embed = speaker.to(device=self.talker.device, dtype=self.talker.dtype)
+        else:
+            language_id = self._resolve_language_id_for_speaker_config(language, speaker)
+            speaker_embed = self._resolve_custom_voice_speaker_embed(
+                speaker, input_id.dtype
+            )
         return self._generate_standard_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
@@ -86,7 +90,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_ids: list[torch.Tensor],
         instruct_ids: Sequence[torch.Tensor | None] = (),
         languages: Sequence[str] = (),
-        speakers: Sequence[SpeakerConfiguration] = (),
+        speakers: Sequence[SpeakerConfiguration | torch.Tensor] = (),
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -120,12 +124,18 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language_ids: list[int | None] = []
         speaker_embeds: list[torch.Tensor | None] = []
         for input_id, language, speaker in zip(input_ids, languages, speakers):
-            language_ids.append(
-                self._resolve_language_id_for_speaker_config(language, speaker)
-            )
-            speaker_embeds.append(
-                self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
-            )
+            if isinstance(speaker, torch.Tensor):
+                language_ids.append(self._resolve_language_id(language, ""))
+                speaker_embeds.append(
+                    speaker.to(device=self.talker.device, dtype=self.talker.dtype)
+                )
+            else:
+                language_ids.append(
+                    self._resolve_language_id_for_speaker_config(language, speaker)
+                )
+                speaker_embeds.append(
+                    self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
+                )
 
         return self._generate_standard_batch_from_ids(
             input_ids=input_ids,

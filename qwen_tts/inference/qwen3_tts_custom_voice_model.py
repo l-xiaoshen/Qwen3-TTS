@@ -31,7 +31,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def generate_custom_voice(
         self,
         text: str,
-        speaker: SpeakerConfiguration,
+        speaker: SpeakerConfiguration | torch.Tensor,
         language: str = "Auto",
         instruct: str = "",
         non_streaming_mode: bool = True,
@@ -48,7 +48,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         **kwargs: GenerateExtraArg,
     ) -> tuple[np.ndarray, int]:
         """
-        Generate one utterance with the CustomVoice model.
+        Generate one utterance with the CustomVoice model using a speaker
+        configuration or a direct speaker embedding.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice")
 
@@ -68,7 +69,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             instruct_value = instruct
 
         self._validate_languages([language_value])
-        self._validate_speaker_configuration(speaker_value)
+        if not isinstance(speaker_value, torch.Tensor):
+            if not isinstance(speaker_value, dict):
+                raise TypeError(
+                    "`speaker` must be a speaker configuration dictionary or a tensor embedding."
+                )
+            self._validate_speaker_configuration(speaker_value)
 
         input_id = self._tokenize_assistant_input(text)
         instruct_id = self._tokenize_instruct(instruct_value)
@@ -103,7 +109,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def generate_custom_voice_batch(
         self,
         text: list[str],
-        speaker: Sequence[SpeakerConfiguration],
+        speaker: Sequence[SpeakerConfiguration | torch.Tensor],
         language: Sequence[str] = (),
         instruct: Sequence[str] = (),
         non_streaming_mode: bool = True,
@@ -120,7 +126,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         **kwargs: GenerateExtraArg,
     ) -> tuple[list[np.ndarray], int]:
         """
-        Generate speech with the CustomVoice model using a predefined speaker id.
+        Generate speech with the CustomVoice model using speaker
+        configurations or direct speaker embeddings.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
 
@@ -136,7 +143,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         if not isinstance(speaker, Sequence) or isinstance(speaker, (str, bytes)):
             raise TypeError(
-                "`speaker` must be a sequence of speaker configuration dictionaries."
+                "`speaker` must be a sequence of speaker configuration dictionaries or tensor embeddings."
             )
         speakers = list(speaker)
 
@@ -161,7 +168,14 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             )
 
         self._validate_languages(languages)
-        self._validate_speaker_configurations(speakers, len(texts))
+        for speaker_value in speakers:
+            if isinstance(speaker_value, torch.Tensor):
+                continue
+            if not isinstance(speaker_value, dict):
+                raise TypeError(
+                    "`speaker` items must be speaker configuration dictionaries or tensor embeddings."
+                )
+            self._validate_speaker_configuration(speaker_value)
 
         input_ids = self._tokenize_assistant_inputs(texts)
         instruct_ids = self._tokenize_instructs(instructs)
