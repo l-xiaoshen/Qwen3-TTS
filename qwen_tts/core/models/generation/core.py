@@ -310,11 +310,6 @@ class Qwen3TTSGenerationCoreMixin:
             non_streaming_mode=non_streaming_mode,
         )
 
-    def _speaker_config_to_primary_speaker(self, speaker: SpeakerConfiguration) -> str:
-        if len(speaker) == 0:
-            return ""
-        return next(iter(speaker))
-
     def _resolve_custom_voice_speaker_embed(
         self, speaker: SpeakerConfiguration, input_dtype: torch.dtype
     ) -> torch.Tensor | None:
@@ -376,6 +371,56 @@ class Qwen3TTSGenerationCoreMixin:
         ):
             language_id = language_map[dialect_value]
         return language_id
+
+    def _resolve_speaker_language_bucket(
+        self, speaker: str, language: str
+    ) -> str | None:
+        language_lower = language.lower()
+        if language_lower not in ["chinese", "auto"] or speaker == "":
+            return None
+
+        language_map = self.config.talker_config.codec_language_id
+        if language_map is None:
+            raise ValueError("Language map is not available in config")
+
+        dialect_map = self.config.talker_config.spk_is_dialect or {}
+        dialect_value = dialect_map.get(speaker.lower(), False)
+        if isinstance(dialect_value, str) and dialect_value in language_map:
+            return dialect_value
+        return None
+
+    def _resolve_language_id_for_speaker_config(
+        self, language: str, speaker: SpeakerConfiguration
+    ) -> int | None:
+        language_id = self._resolve_language_id(language, "")
+        language_lower = language.lower()
+        if len(speaker) == 0 or language_lower not in ["chinese", "auto"]:
+            return language_id
+
+        language_map = self.config.talker_config.codec_language_id
+        if language_map is None:
+            raise ValueError("Language map is not available in config")
+        active_speakers = [
+            speaker_name for speaker_name, weight in speaker.items() if float(weight) != 0.0
+        ]
+        if len(active_speakers) == 0:
+            return language_id
+
+        first_speaker_bucket = self._resolve_speaker_language_bucket(
+            active_speakers[0], language
+        )
+        for speaker_name in active_speakers[1:]:
+            speaker_bucket = self._resolve_speaker_language_bucket(
+                speaker_name, language
+            )
+            if speaker_bucket != first_speaker_bucket:
+                raise ValueError(
+                    "All speakers in `speaker` must resolve to the same language bucket."
+                )
+
+        if first_speaker_bucket is None:
+            return language_id
+        return language_map[first_speaker_bucket]
 
 
 __all__ = [

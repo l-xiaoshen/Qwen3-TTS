@@ -291,11 +291,16 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         language: str,
-        speaker: str,
+        speaker: str | SpeakerConfiguration,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        language_id = self._resolve_language_id(language, speaker)
+        if isinstance(speaker, dict):
+            language_id = self._resolve_language_id_for_speaker_config(
+                language, speaker
+            )
+        else:
+            language_id = self._resolve_language_id(language, speaker)
         (
             talker_input_embed,
             codec_input_embedding,
@@ -513,12 +518,11 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         for input_id, language, speaker, speaker_embed in zip(
             input_ids, languages, speakers, speaker_embeds
         ):
-            primary_speaker = self._speaker_config_to_primary_speaker(speaker)
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
                 self._prepare_standard_batch_sample(
                     input_id=input_id,
                     language=language,
-                    speaker=primary_speaker,
+                    speaker=speaker,
                     speaker_embed=speaker_embed,
                     non_streaming_mode=non_streaming_mode,
                 )

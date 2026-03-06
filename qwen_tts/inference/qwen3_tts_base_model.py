@@ -186,6 +186,36 @@ class Qwen3TTSBaseModel:
             return {str(x).lower() for x in v}
         return None
 
+    def _speaker_language_bucket(self, speaker: str) -> str | None:
+        config = getattr(self.model, "config", None)
+        talker_config = getattr(config, "talker_config", None)
+        dialect_map = getattr(talker_config, "spk_is_dialect", None) or {}
+        language_map = getattr(talker_config, "codec_language_id", None)
+        dialect_value = dialect_map.get(speaker.lower(), False)
+        if (
+            isinstance(dialect_value, str)
+            and isinstance(language_map, Mapping)
+            and dialect_value in language_map
+        ):
+            return dialect_value
+        return None
+
+    def _validate_speaker_configuration_language_consistency(
+        self, speaker: SpeakerConfiguration
+    ) -> None:
+        active_speakers = [
+            speaker_id for speaker_id, weight in speaker.items() if float(weight) != 0.0
+        ]
+        if len(active_speakers) <= 1:
+            return
+
+        first_bucket = self._speaker_language_bucket(active_speakers[0])
+        for speaker_id in active_speakers[1:]:
+            if self._speaker_language_bucket(speaker_id) != first_bucket:
+                raise ValueError(
+                    "All speakers in `speaker` must resolve to the same language bucket."
+                )
+
     def _validate_languages(self, languages: list[str]) -> None:
         """
         Validate that requested languages are supported by the model.
@@ -229,6 +259,7 @@ class Qwen3TTSBaseModel:
             raise ValueError(
                 f"Unsupported speakers: {bad}. Supported: {supported_list}"
             )
+        self._validate_speaker_configuration_language_consistency(speaker)
 
     def _validate_speaker_configurations(
         self,
