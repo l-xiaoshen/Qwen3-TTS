@@ -18,6 +18,8 @@ from collections.abc import Sequence
 
 import torch
 
+from qwen_tts.core import SpeakerConfiguration
+
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
@@ -29,9 +31,9 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
     def generate_custom_voice(
         self,
         input_id: torch.Tensor,
-        instruct_id: torch.Tensor | None = None,
-        language: str = "auto",
-        speaker: str = "",
+        instruct_id: torch.Tensor | None,
+        language: str,
+        speaker: SpeakerConfiguration,
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -51,7 +53,6 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_id = self._validate_input_id(input_id)
         instruct_id = self._normalize_instruct_id(instruct_id)
         language = self._normalize_language(language)
-        speaker = self._normalize_speaker(speaker)
         _ = kwargs
 
         speaker_embed = self._resolve_custom_voice_speaker_embed(
@@ -85,7 +86,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_ids: list[torch.Tensor],
         instruct_ids: Sequence[torch.Tensor | None] = (),
         languages: Sequence[str] = (),
-        speakers: Sequence[str] = (),
+        speakers: Sequence[SpeakerConfiguration] = (),
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -106,7 +107,14 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         batch_size = len(input_ids)
         instruct_ids = self._normalize_instruct_ids_batch(instruct_ids, batch_size)
         languages = self._normalize_languages_batch(languages, batch_size)
-        speakers = self._normalize_speakers_batch(speakers, batch_size)
+        if len(speakers) == 0:
+            speakers = [{} for _ in range(batch_size)]
+        elif len(speakers) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, speakers={len(speakers)}"
+            )
+        else:
+            speakers = list(speakers)
         _ = kwargs
 
         speaker_embeds: list[torch.Tensor | None] = []

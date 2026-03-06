@@ -442,7 +442,7 @@ def build_demo(
                     wav, sr = tts.generate_custom_voice(
                         text=text.strip(),
                         language=language,
-                        speaker=speaker,
+                        speaker={speaker: 1.0} if speaker else {},
                         instruct=instruct_value,
                         **kwargs,
                     )

@@ -19,6 +19,7 @@ from collections.abc import Sequence
 
 import torch
 
+from ...config import SpeakerConfiguration
 from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 from ..modeling_qwen3_tts_types import VoiceClonePromptSingle
@@ -364,7 +365,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language: str,
-        speaker: str,
+        speaker: SpeakerConfiguration,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         max_new_tokens: int,
@@ -381,11 +382,12 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         output_hidden_states: bool,
         return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        primary_speaker = self._speaker_config_to_primary_speaker(speaker)
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_standard_single_generation(
                 input_id=input_id,
                 language=language,
-                speaker=speaker,
+                speaker=primary_speaker,
                 speaker_embed=speaker_embed,
                 non_streaming_mode=non_streaming_mode,
             )

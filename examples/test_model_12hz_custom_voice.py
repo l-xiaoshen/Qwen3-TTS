@@ -38,7 +38,7 @@ def main():
     wav, sr = tts.generate_custom_voice(
         text="其实我真的有发现，我是一个特别善于观察别人情绪的人。",
         language="Chinese",
-        speaker="Vivian",
+        speaker={"Vivian": 1.0},
         instruct="用特别愤怒的语气说",
     )
 
@@ -54,7 +54,7 @@ def main():
         "She said she would be here by noon.",
     ]
     languages = ["Chinese", "English"]
-    speakers = ["Vivian", "Ryan"]
+    speakers = [{"Vivian": 1.0}, {"Ryan": 1.0}]
     instructs = ["", "Very happy."]
 
     torch.cuda.synchronize()

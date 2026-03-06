@@ -1,0 +1,1 @@
+SpeakerConfiguration = dict[str, float]

@@ -17,6 +17,7 @@
 
 import torch
 
+from ...config import SpeakerConfiguration
 from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 
@@ -309,26 +310,43 @@ class Qwen3TTSGenerationCoreMixin:
             non_streaming_mode=non_streaming_mode,
         )
 
+    def _speaker_config_to_primary_speaker(self, speaker: SpeakerConfiguration) -> str:
+        if len(speaker) == 0:
+            return ""
+        return next(iter(speaker))
+
     def _resolve_custom_voice_speaker_embed(
-        self, speaker: str, input_dtype: torch.dtype
+        self, speaker: SpeakerConfiguration, input_dtype: torch.dtype
     ) -> torch.Tensor | None:
-        if speaker == "":
+        if len(speaker) == 0:
             return None
-        speaker_lower = speaker.lower()
+
         spk_id_map = self.config.talker_config.spk_id
-        if spk_id_map is None or speaker_lower not in spk_id_map:
-            supported = sorted(list(spk_id_map.keys())) if spk_id_map else []
-            raise ValueError(
-                f"Unsupported speaker: {speaker}. Supported speakers: {supported}"
+        if spk_id_map is None:
+            raise ValueError("Speaker map is not available in config")
+
+        mixed_embed: torch.Tensor | None = None
+        supported = sorted(list(spk_id_map.keys()))
+        for speaker_name, weight in speaker.items():
+            speaker_lower = speaker_name.lower()
+            if speaker_lower not in spk_id_map:
+                raise ValueError(
+                    f"Unsupported speaker: {speaker_name}. Supported speakers: {supported}"
+                )
+
+            speaker_embed = self.talker.get_input_embeddings()(
+                torch.tensor(
+                    spk_id_map[speaker_lower],
+                    device=self.talker.device,
+                    dtype=input_dtype,
+                )
             )
-        spk_id = spk_id_map[speaker_lower]
-        return self.talker.get_input_embeddings()(
-            torch.tensor(
-                spk_id,
-                device=self.talker.device,
-                dtype=input_dtype,
+            weighted_embed = speaker_embed * speaker_embed.new_tensor(float(weight))
+            mixed_embed = (
+                weighted_embed if mixed_embed is None else mixed_embed + weighted_embed
             )
-        )
+
+        return mixed_embed
 
     def _resolve_language_id(self, language: str, speaker: str) -> int | None:
         language_lower = language.lower()

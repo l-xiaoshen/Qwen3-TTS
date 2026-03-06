@@ -64,7 +64,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
-        ref_audio: list[AudioLike],
+        ref_audio: Sequence[AudioLike],
         ref_text: Sequence[str] = (),
         x_vector_only_mode: Sequence[bool] = (),
     ) -> list[VoiceClonePromptItem]:
@@ -74,8 +74,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         self._ensure_model_type("base", "create_voice_clone_prompt")
 
         speech_tokenizer = self._require_speech_tokenizer()
-        if not isinstance(ref_audio, list):
-            raise TypeError("`ref_audio` must be a list of audio inputs.")
+        if not isinstance(ref_audio, Sequence) or isinstance(ref_audio, (str, bytes)):
+            raise TypeError("`ref_audio` must be a sequence of audio inputs.")
         ref_audio_list: list[AudioLike] = []
         for item in ref_audio:
             ref_audio_list.append(item)

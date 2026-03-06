@@ -18,6 +18,8 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
+from qwen_tts.core import SpeakerConfiguration
+
 from ..core.models import Qwen3TTSCustomVoiceForConditionalGeneration
 from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
 
@@ -29,7 +31,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def generate_custom_voice(
         self,
         text: str,
-        speaker: str,
+        speaker: SpeakerConfiguration,
         language: str = "Auto",
         instruct: str = "",
         non_streaming_mode: bool = True,
@@ -52,8 +54,6 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         if not isinstance(text, str):
             raise TypeError("`text` must be a string.")
-        if not isinstance(speaker, str):
-            raise TypeError("`speaker` must be a string.")
         if not isinstance(language, str):
             raise TypeError("`language` must be a string.")
         if not isinstance(instruct, str):
@@ -70,7 +70,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             instruct_value = instruct
 
         self._validate_languages([language_value])
-        self._validate_speakers([speaker_value])
+        self._validate_speaker_configuration(speaker_value)
 
         input_id = self._tokenize_text(self._build_assistant_text(text))
         instruct_id: torch.Tensor | None
@@ -110,7 +110,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def generate_custom_voice_batch(
         self,
         text: list[str],
-        speaker: list[str],
+        speaker: Sequence[SpeakerConfiguration],
         language: Sequence[str] = (),
         instruct: Sequence[str] = (),
         non_streaming_mode: bool = True,
@@ -150,13 +150,11 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     raise TypeError("`language` list items must be strings.")
                 languages.append(item)
 
-        if not isinstance(speaker, list):
-            raise TypeError("`speaker` must be a list of strings.")
-        speakers: list[str] = []
-        for item in speaker:
-            if not isinstance(item, str):
-                raise TypeError("`speaker` list items must be strings.")
-            speakers.append(item)
+        if not isinstance(speaker, Sequence) or isinstance(speaker, (str, bytes)):
+            raise TypeError(
+                "`speaker` must be a sequence of speaker configuration dictionaries."
+            )
+        speakers = list(speaker)
 
         model_size = self.model.tts_model_size
         if isinstance(model_size, str) and model_size in "0b6":
@@ -179,7 +177,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             )
 
         self._validate_languages(languages)
-        self._validate_speakers(speakers)
+        self._validate_speaker_configurations(speakers, len(texts))
 
         input_ids = self._tokenize_texts_batch(
             [self._build_assistant_text(t) for t in texts]

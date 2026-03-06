@@ -16,9 +16,11 @@
 """Batch-oriented generation orchestration helpers."""
 
 from collections.abc import Sequence
+from typing import cast
 
 import torch
 
+from ...config import SpeakerConfiguration
 from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 from ..modeling_qwen3_tts_types import VoiceClonePrompt
@@ -74,7 +76,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         batch_size: int,
     ) -> list[torch.Tensor | None]:
         if len(instruct_ids) == 0:
-            return [None] * batch_size
+            return [cast(torch.Tensor | None, None) for _ in range(batch_size)]
         if len(instruct_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, instruct_ids={len(instruct_ids)}"
@@ -85,7 +87,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self, ref_ids: Sequence[torch.Tensor | None], batch_size: int
     ) -> list[torch.Tensor | None]:
         if len(ref_ids) == 0:
-            return [None] * batch_size
+            return [cast(torch.Tensor | None, None) for _ in range(batch_size)]
         if len(ref_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, ref_ids={len(ref_ids)}"
@@ -479,7 +481,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         input_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         languages: list[str],
-        speakers: list[str],
+        speakers: list[SpeakerConfiguration],
         speaker_embeds: list[torch.Tensor | None],
         non_streaming_mode: bool,
         max_new_tokens: int,
@@ -511,11 +513,12 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         for input_id, language, speaker, speaker_embed in zip(
             input_ids, languages, speakers, speaker_embeds
         ):
+            primary_speaker = self._speaker_config_to_primary_speaker(speaker)
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
                 self._prepare_standard_batch_sample(
                     input_id=input_id,
                     language=language,
-                    speaker=speaker,
+                    speaker=primary_speaker,
                     speaker_embed=speaker_embed,
                     non_streaming_mode=non_streaming_mode,
                 )

@@ -16,7 +16,7 @@
 import base64
 import io
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TypedDict, Union
 from typing_extensions import Self
 from urllib.parse import urlparse
@@ -26,6 +26,8 @@ import numpy as np
 import soundfile as sf
 import torch
 from transformers import AutoConfig, AutoProcessor
+
+from qwen_tts.core import SpeakerConfiguration
 
 from ..core.models import (
     Qwen3TTSConfig,
@@ -200,6 +202,51 @@ class Qwen3TTSBaseModel:
             raise ValueError(
                 f"Unsupported languages: {bad}. Supported: {sorted(supported)}"
             )
+
+    def _validate_speaker_configuration(self, speaker: SpeakerConfiguration) -> None:
+        """
+        Validate that requested speaker configuration is supported by the model.
+        """
+        if not isinstance(speaker, dict):
+            raise TypeError("`speaker` must be a dict mapping speaker ids to weights.")
+
+        supported = self._supported_speakers_set()
+        bad: list[str] = []
+        for speaker_id, weight in speaker.items():
+            if not isinstance(speaker_id, str):
+                raise TypeError("`speaker` keys must be strings.")
+            if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+                raise TypeError("`speaker` values must be numeric weights.")
+            if (
+                supported is not None
+                and speaker_id != ""
+                and speaker_id.lower() not in supported
+            ):
+                bad.append(speaker_id)
+
+        if bad:
+            supported_list = sorted(supported) if supported is not None else []
+            raise ValueError(
+                f"Unsupported speakers: {bad}. Supported: {supported_list}"
+            )
+
+    def _validate_speaker_configurations(
+        self,
+        speaker_configurations: Sequence[SpeakerConfiguration],
+        batch_size: int,
+    ) -> None:
+        if not isinstance(speaker_configurations, Sequence) or isinstance(
+            speaker_configurations, (str, bytes)
+        ):
+            raise TypeError(
+                "`speaker` must be a sequence of speaker configuration dictionaries."
+            )
+        if len(speaker_configurations) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: text={batch_size}, speaker={len(speaker_configurations)}"
+            )
+        for speaker_configuration in speaker_configurations:
+            self._validate_speaker_configuration(speaker_configuration)
 
     def _validate_speakers(self, speakers: list[str]) -> None:
         """

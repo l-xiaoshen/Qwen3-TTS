@@ -107,7 +107,7 @@ class Qwen3TTSTokenizerV2DecoderDecoderBlock(Qwen3TTSTokenizerV2DecoderPreTraine
         out_dim = config.decoder_dim // 2 ** (layer_idx + 1)
         upsample_rate = config.upsample_rates[layer_idx]
 
-        block = [
+        block: list[nn.Module] = [
             SnakeBeta(in_dim),
             Qwen3TTSTokenizerV2CausalTransConvNet(
                 in_dim, out_dim, 2 * upsample_rate, upsample_rate
@@ -325,7 +325,7 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
             )
         self.upsample = nn.ModuleList(upsample)
 
-        decoder = [
+        decoder: list[nn.Module] = [
             Qwen3TTSTokenizerV2CausalConvNet(config.latent_dim, config.decoder_dim, 7)
         ]
         for i in range(len(config.upsample_rates)):
