@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -30,19 +30,19 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self,
         text: str,
         speaker: str,
-        language: Optional[str] = None,
-        instruct: Optional[str] = None,
+        language: str = "Auto",
+        instruct: str = "",
         non_streaming_mode: bool = True,
-        do_sample: Optional[bool] = None,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        temperature: Optional[float] = None,
-        repetition_penalty: Optional[float] = None,
-        subtalker_dosample: Optional[bool] = None,
-        subtalker_top_k: Optional[int] = None,
-        subtalker_top_p: Optional[float] = None,
-        subtalker_temperature: Optional[float] = None,
-        max_new_tokens: Optional[int] = None,
+        do_sample: bool = True,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.05,
+        subtalker_dosample: bool = True,
+        subtalker_top_k: int = 50,
+        subtalker_top_p: float = 1.0,
+        subtalker_temperature: float = 0.9,
+        max_new_tokens: int = 2048,
         **kwargs: GenerateExtraArg,
     ) -> tuple[np.ndarray, int]:
         """
@@ -54,20 +54,18 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             raise TypeError("`text` must be a string.")
         if not isinstance(speaker, str):
             raise TypeError("`speaker` must be a string.")
-        if language is not None and not isinstance(language, str):
+        if not isinstance(language, str):
             raise TypeError("`language` must be a string.")
-        if instruct is not None and not isinstance(instruct, str):
+        if not isinstance(instruct, str):
             raise TypeError("`instruct` must be a string.")
 
-        language_value = "Auto" if language is None else language
-        speaker_value: str | None = speaker
+        language_value = "Auto" if language == "" else language
+        speaker_value = speaker
 
         model_size = self.model.tts_model_size
         if isinstance(model_size, str) and model_size in "0b6":
             # for 0b6 model, instruct is not supported
-            instruct_value: str | None = None
-        elif instruct is None:
-            instruct_value = None
+            instruct_value = ""
         else:
             instruct_value = instruct
 
@@ -76,7 +74,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         input_id = self._tokenize_text(self._build_assistant_text(text))
         instruct_id: torch.Tensor | None
-        if instruct_value is None or instruct_value == "":
+        if instruct_value == "":
             instruct_id = None
         else:
             instruct_id = self._tokenize_text(self._build_instruct_text(instruct_value))
@@ -113,19 +111,19 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self,
         text: list[str],
         speaker: list[str],
-        language: Optional[list[str]] = None,
-        instruct: Optional[list[str]] = None,
+        language: Sequence[str] = (),
+        instruct: Sequence[str] = (),
         non_streaming_mode: bool = True,
-        do_sample: Optional[bool] = None,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        temperature: Optional[float] = None,
-        repetition_penalty: Optional[float] = None,
-        subtalker_dosample: Optional[bool] = None,
-        subtalker_top_k: Optional[int] = None,
-        subtalker_top_p: Optional[float] = None,
-        subtalker_temperature: Optional[float] = None,
-        max_new_tokens: Optional[int] = None,
+        do_sample: bool = True,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.05,
+        subtalker_dosample: bool = True,
+        subtalker_top_k: int = 50,
+        subtalker_top_p: float = 1.0,
+        subtalker_temperature: float = 0.9,
+        max_new_tokens: int = 2048,
         **kwargs: GenerateExtraArg,
     ) -> tuple[list[np.ndarray], int]:
         """
@@ -141,12 +139,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 raise TypeError("`text` list items must be strings.")
             texts.append(item)
 
-        if language is None:
+        if not isinstance(language, Sequence) or isinstance(language, (str, bytes)):
+            raise TypeError("`language` must be a sequence of strings.")
+        if len(language) == 0:
             languages = ["Auto"] * len(texts)
         else:
-            if not isinstance(language, list):
-                raise TypeError("`language` must be a list of strings.")
-            languages: list[str] = []
+            languages = []
             for item in language:
                 if not isinstance(item, str):
                     raise TypeError("`language` list items must be strings.")
@@ -154,7 +152,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         if not isinstance(speaker, list):
             raise TypeError("`speaker` must be a list of strings.")
-        speakers: list[str | None] = []
+        speakers: list[str] = []
         for item in speaker:
             if not isinstance(item, str):
                 raise TypeError("`speaker` list items must be strings.")
@@ -163,12 +161,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         model_size = self.model.tts_model_size
         if isinstance(model_size, str) and model_size in "0b6":
             # for 0b6 model, instruct is not supported
-            instructs: list[str | None] = [None] * len(texts)
-        elif instruct is None:
-            instructs = [None] * len(texts)
+            instructs = [""] * len(texts)
+        elif not isinstance(instruct, Sequence) or isinstance(instruct, (str, bytes)):
+            raise TypeError("`instruct` must be a sequence of strings.")
+        elif len(instruct) == 0:
+            instructs = [""] * len(texts)
         else:
-            if not isinstance(instruct, list):
-                raise TypeError("`instruct` must be a list of strings.")
             instructs = []
             for item in instruct:
                 if not isinstance(item, str):
@@ -189,7 +187,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
-            if ins is None or ins == "":
+            if ins == "":
                 instruct_ids.append(None)
             else:
                 instruct_ids.append(

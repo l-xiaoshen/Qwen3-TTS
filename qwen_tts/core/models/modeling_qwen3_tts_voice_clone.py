@@ -14,7 +14,7 @@
 # limitations under the License.
 """Voice-clone conditional-generation model for Qwen3 TTS."""
 
-from typing import Optional
+from collections.abc import Sequence
 
 import torch
 
@@ -30,12 +30,12 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
     @torch.no_grad()
     def generate_voice_clone(
         self,
-        input_id: Optional[torch.Tensor] = None,
-        instruct_id: Optional[torch.Tensor] = None,
-        ref_id: Optional[torch.Tensor] = None,
-        voice_clone_prompt: Optional[VoiceClonePromptSingle] = None,
-        language: Optional[str] = None,
-        speaker: Optional[str] = None,
+        input_id: torch.Tensor,
+        voice_clone_prompt: VoiceClonePromptSingle,
+        instruct_id: torch.Tensor | None = None,
+        ref_id: torch.Tensor | None = None,
+        language: str = "auto",
+        speaker: str = "",
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -46,18 +46,13 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         subtalker_top_k: int = 50,
         subtalker_top_p: float = 1.0,
         subtalker_temperature: float = 0.9,
-        eos_token_id: Optional[int] = None,
+        eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
         return_dict_in_generate: bool = True,
         **kwargs: GenerateConfigPrimitive,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_id = self._validate_input_id(input_id)
-        if voice_clone_prompt is None:
-            raise ValueError(
-                "`voice_clone_prompt` is required for voice clone generation."
-            )
-
         instruct_id = self._normalize_instruct_id(instruct_id)
         ref_id = self._normalize_ref_id(ref_id)
         language = self._normalize_language(language)
@@ -99,12 +94,12 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
     @torch.no_grad()
     def generate_voice_clone_batch(
         self,
-        input_ids: Optional[list[torch.Tensor]] = None,
-        instruct_ids: Optional[list[torch.Tensor | None]] = None,
-        ref_ids: Optional[list[torch.Tensor | None]] = None,
-        voice_clone_prompt: Optional[VoiceClonePrompt] = None,
-        languages: Optional[list[str]] = None,
-        speakers: Optional[list[str | None]] = None,
+        input_ids: list[torch.Tensor],
+        voice_clone_prompt: VoiceClonePrompt,
+        instruct_ids: Sequence[torch.Tensor | None] = (),
+        ref_ids: Sequence[torch.Tensor | None] = (),
+        languages: Sequence[str] = (),
+        speakers: Sequence[str] = (),
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -115,17 +110,13 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         subtalker_top_k: int = 50,
         subtalker_top_p: float = 1.0,
         subtalker_temperature: float = 0.9,
-        eos_token_id: Optional[int] = None,
+        eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
         return_dict_in_generate: bool = True,
         **kwargs: GenerateConfigPrimitive,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         input_ids = self._validate_input_ids_batch(input_ids)
-        if voice_clone_prompt is None:
-            raise ValueError(
-                "`voice_clone_prompt` is required for voice clone generation."
-            )
         batch_size = len(input_ids)
         instruct_ids = self._normalize_instruct_ids_batch(instruct_ids, batch_size)
         ref_ids = self._normalize_ref_ids_batch(ref_ids, batch_size)

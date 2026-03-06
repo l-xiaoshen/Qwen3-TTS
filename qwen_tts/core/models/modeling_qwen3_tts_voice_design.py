@@ -14,7 +14,7 @@
 # limitations under the License.
 """Voice-design conditional-generation model for Qwen3 TTS."""
 
-from typing import Optional
+from collections.abc import Sequence
 
 import torch
 
@@ -28,9 +28,9 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
     @torch.no_grad()
     def generate_voice_design(
         self,
-        input_id: Optional[torch.Tensor] = None,
-        instruct_id: Optional[torch.Tensor] = None,
-        language: Optional[str] = None,
+        input_id: torch.Tensor,
+        instruct_id: torch.Tensor | None = None,
+        language: str = "auto",
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -41,7 +41,7 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         subtalker_top_k: int = 50,
         subtalker_top_p: float = 1.0,
         subtalker_temperature: float = 0.9,
-        eos_token_id: Optional[int] = None,
+        eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
         return_dict_in_generate: bool = True,
@@ -75,9 +75,9 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
     @torch.no_grad()
     def generate_voice_design_batch(
         self,
-        input_ids: Optional[list[torch.Tensor]] = None,
-        instruct_ids: Optional[list[torch.Tensor | None]] = None,
-        languages: Optional[list[str]] = None,
+        input_ids: list[torch.Tensor],
+        instruct_ids: Sequence[torch.Tensor | None] = (),
+        languages: Sequence[str] = (),
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -88,7 +88,7 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         subtalker_top_k: int = 50,
         subtalker_top_p: float = 1.0,
         subtalker_temperature: float = 0.9,
-        eos_token_id: Optional[int] = None,
+        eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
         return_dict_in_generate: bool = True,

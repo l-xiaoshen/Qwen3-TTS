@@ -443,7 +443,7 @@ def build_demo(
                         text=text.strip(),
                         language=language,
                         speaker=speaker,
-                        instruct=instruct_value if instruct_value else None,
+                        instruct=instruct_value,
                         **kwargs,
                     )
                     return _wav_to_gradio_audio(wav, sr), "Finished. (生成完成)"
@@ -580,7 +580,7 @@ def build_demo(
                                 text=text.strip(),
                                 language=language,
                                 ref_audio=at,
-                                ref_text=ref_txt.strip() if ref_txt else None,
+                                ref_text=ref_txt.strip() if ref_txt else "",
                                 x_vector_only_mode=bool(use_xvec),
                                 **kwargs,
                             )
@@ -666,7 +666,7 @@ Upload a previously saved voice file, then synthesize new text.
                                 )
                             items = tts.create_voice_clone_prompt(
                                 ref_audio=[at],
-                                ref_text=[ref_txt.strip() if ref_txt else None],
+                                ref_text=[ref_txt.strip() if ref_txt else ""],
                                 x_vector_only_mode=[bool(use_xvec)],
                             )
                             payload = {
@@ -745,7 +745,11 @@ Upload a previously saved voice file, then synthesize new text.
                                                 ),
                                             )
                                         ),
-                                        ref_text=d.get("ref_text", None),
+                                        ref_text=(
+                                            str(d.get("ref_text"))
+                                            if d.get("ref_text") is not None
+                                            else ""
+                                        ),
                                     )
                                 )
 

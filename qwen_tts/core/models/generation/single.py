@@ -16,7 +16,6 @@
 """Single-sample generation helpers without batch collation overhead."""
 
 from collections.abc import Sequence
-from typing import Optional
 
 import torch
 
@@ -30,31 +29,27 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
 
-    def _validate_input_id(self, input_id: Optional[torch.Tensor]) -> torch.Tensor:
-        if input_id is None:
-            raise ValueError("`input_id` must be a tensor.")
+    def _validate_input_id(self, input_id: torch.Tensor) -> torch.Tensor:
         if input_id.dim() == 1:
             return input_id.unsqueeze(0)
         if input_id.dim() != 2:
             raise ValueError("`input_id` must be a 1D or 2D tensor.")
         return input_id
 
-    def _normalize_language(self, language: Optional[str]) -> str:
-        if language is None:
-            return "auto"
+    def _normalize_language(self, language: str) -> str:
         return language
 
-    def _normalize_speaker(self, speaker: Optional[str]) -> str | None:
+    def _normalize_speaker(self, speaker: str) -> str:
         return speaker
 
     def _normalize_instruct_id(
-        self, instruct_id: Optional[torch.Tensor]
+        self, instruct_id: torch.Tensor | None
     ) -> torch.Tensor | None:
         if instruct_id is not None and instruct_id.dim() == 1:
             return instruct_id.unsqueeze(0)
         return instruct_id
 
-    def _normalize_ref_id(self, ref_id: Optional[torch.Tensor]) -> torch.Tensor | None:
+    def _normalize_ref_id(self, ref_id: torch.Tensor | None) -> torch.Tensor | None:
         if ref_id is not None and ref_id.dim() == 1:
             return ref_id.unsqueeze(0)
         return ref_id
@@ -96,7 +91,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -207,7 +202,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -238,7 +233,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         ref_code: torch.Tensor | None,
@@ -286,7 +281,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -330,7 +325,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -339,7 +334,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             self._prepare_standard_single_generation(
                 input_id=input_id,
                 language=language,
-                speaker=None,
+                speaker="",
                 speaker_embed=None,
                 non_streaming_mode=non_streaming_mode,
             )
@@ -369,7 +364,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         max_new_tokens: int,
@@ -381,7 +376,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -420,7 +415,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         ref_code: torch.Tensor | None,
@@ -435,7 +430,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,

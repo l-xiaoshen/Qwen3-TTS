@@ -17,7 +17,7 @@ import base64
 import io
 import urllib.request
 from collections.abc import Mapping
-from typing import Optional, TypedDict, Union
+from typing import TypedDict, Union
 from typing_extensions import Self
 from urllib.parse import urlparse
 
@@ -45,9 +45,9 @@ AudioLike = Union[
 
 GenerateDefaultValue = bool | int | float
 GenerateDefaults = dict[str, GenerateDefaultValue]
-GenerateDefaultsInputValue = bool | int | float | str | None
+GenerateDefaultsInputValue = bool | int | float | str
 GenerateDefaultsInput = Mapping[str, GenerateDefaultsInputValue]
-GenerateExtraArg = bool | int | float | str | None
+GenerateExtraArg = bool | int | float | str
 
 
 class GenerateOptions(TypedDict):
@@ -82,7 +82,7 @@ class Qwen3TTSBaseModel:
         self,
         model: Qwen3TTSConditionalGenerationBase,
         processor: Qwen3TTSProcessor,
-        generate_defaults: Optional[GenerateDefaultsInput] = None,
+        generate_defaults: GenerateDefaultsInput | None = None,
     ):
         self.model = model
         self.processor = processor
@@ -148,7 +148,7 @@ class Qwen3TTSBaseModel:
             normalized_defaults: dict[str, GenerateDefaultsInputValue] = {}
             for key, value in generate_defaults_raw.items():
                 str_key = str(key)
-                if isinstance(value, (bool, int, float, str)) or value is None:
+                if isinstance(value, (bool, int, float, str)):
                     normalized_defaults[str_key] = value
             generate_defaults = normalized_defaults
         else:
@@ -166,7 +166,7 @@ class Qwen3TTSBaseModel:
                 f"does not support {api_name}, Please check Model Card or Readme for more details."
             )
 
-    def _supported_languages_set(self) -> Optional[set[str]]:
+    def _supported_languages_set(self) -> set[str] | None:
         langs = getattr(self.model, "get_supported_languages", None)
         if callable(langs):
             v = langs()
@@ -175,7 +175,7 @@ class Qwen3TTSBaseModel:
             return {str(x).lower() for x in v}
         return None
 
-    def _supported_speakers_set(self) -> Optional[set[str]]:
+    def _supported_speakers_set(self) -> set[str] | None:
         spks = getattr(self.model, "get_supported_speakers", None)
         if callable(spks):
             v = spks()
@@ -194,9 +194,6 @@ class Qwen3TTSBaseModel:
 
         bad: list[str] = []
         for lang in languages:
-            if lang is None:
-                bad.append(str(lang))
-                continue
             if str(lang).lower() not in supported:
                 bad.append(str(lang))
         if bad:
@@ -204,7 +201,7 @@ class Qwen3TTSBaseModel:
                 f"Unsupported languages: {bad}. Supported: {sorted(supported)}"
             )
 
-    def _validate_speakers(self, speakers: list[Optional[str]]) -> None:
+    def _validate_speakers(self, speakers: list[str]) -> None:
         """
         Validate that requested speakers are supported by the model.
         """
@@ -214,7 +211,7 @@ class Qwen3TTSBaseModel:
 
         bad: list[str] = []
         for spk in speakers:
-            if spk is None or spk == "":
+            if spk == "":
                 continue
             if str(spk).lower() not in supported:
                 bad.append(str(spk))
@@ -308,16 +305,16 @@ class Qwen3TTSBaseModel:
 
     def _merge_generate_kwargs(
         self,
-        do_sample: Optional[bool] = None,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        temperature: Optional[float] = None,
-        repetition_penalty: Optional[float] = None,
-        subtalker_dosample: Optional[bool] = None,
-        subtalker_top_k: Optional[int] = None,
-        subtalker_top_p: Optional[float] = None,
-        subtalker_temperature: Optional[float] = None,
-        max_new_tokens: Optional[int] = None,
+        do_sample: bool = True,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        temperature: float = 0.9,
+        repetition_penalty: float = 1.05,
+        subtalker_dosample: bool = True,
+        subtalker_top_k: int = 50,
+        subtalker_top_p: float = 1.0,
+        subtalker_temperature: float = 0.9,
+        max_new_tokens: int = 2048,
         **kwargs: GenerateExtraArg,
     ) -> GenerateOptionsExtended:
         """
@@ -336,29 +333,32 @@ class Qwen3TTSBaseModel:
             "max_new_tokens": 2048,
         }
 
-        def pick_bool(name: str, user_val: Optional[bool]) -> bool:
-            if user_val is not None:
+        def pick_bool(name: str, user_val: bool) -> bool:
+            hard_default = bool(hard_defaults[name])
+            if user_val != hard_default:
                 return user_val
             default_val = self.generate_defaults.get(name)
             if isinstance(default_val, bool):
                 return default_val
-            return bool(hard_defaults[name])
+            return hard_default
 
-        def pick_int(name: str, user_val: Optional[int]) -> int:
-            if user_val is not None:
+        def pick_int(name: str, user_val: int) -> int:
+            hard_default = int(hard_defaults[name])
+            if user_val != hard_default:
                 return user_val
             default_val = self.generate_defaults.get(name)
             if isinstance(default_val, int):
                 return default_val
-            return int(hard_defaults[name])
+            return hard_default
 
-        def pick_float(name: str, user_val: Optional[float]) -> float:
-            if user_val is not None:
-                return user_val
+        def pick_float(name: str, user_val: float) -> float:
+            hard_default = float(hard_defaults[name])
+            if user_val != hard_default:
+                return float(user_val)
             default_val = self.generate_defaults.get(name)
             if isinstance(default_val, (int, float)):
                 return float(default_val)
-            return float(hard_defaults[name])
+            return hard_default
 
         merged = GenerateOptionsExtended(
             do_sample=pick_bool("do_sample", do_sample),
@@ -389,13 +389,13 @@ class Qwen3TTSBaseModel:
                 continue
         return merged
 
-    def get_supported_speakers(self) -> Optional[list[str]]:
+    def get_supported_speakers(self) -> list[str] | None:
         supported = self._supported_speakers_set()
         if supported is None:
             return None
         return sorted(supported)
 
-    def get_supported_languages(self) -> Optional[list[str]]:
+    def get_supported_languages(self) -> list[str] | None:
         supported = self._supported_languages_set()
         if supported is None:
             return None

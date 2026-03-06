@@ -16,7 +16,6 @@
 """Batch-oriented generation orchestration helpers."""
 
 from collections.abc import Sequence
-from typing import Optional
 
 import torch
 
@@ -31,57 +30,67 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
     talker: Qwen3TTSTalkerForConditionalGeneration
 
     def _validate_input_ids_batch(
-        self, input_ids: Optional[list[torch.Tensor]]
+        self, input_ids: list[torch.Tensor]
     ) -> list[torch.Tensor]:
-        if input_ids is None or len(input_ids) == 0:
+        if len(input_ids) == 0:
             raise ValueError("`input_ids` must be a non-empty list of tensors.")
         return input_ids
 
     def _normalize_languages_batch(
-        self, languages: Optional[list[str]], batch_size: int
+        self, languages: Sequence[str], batch_size: int
     ) -> list[str]:
-        if languages is None:
+        if len(languages) == 0:
             return ["auto"] * batch_size
         if len(languages) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, languages={len(languages)}"
             )
-        return languages
+        normalized_languages: list[str] = []
+        for language in languages:
+            if not isinstance(language, str):
+                raise TypeError("`languages` items must be strings.")
+            normalized_languages.append(language)
+        return normalized_languages
 
     def _normalize_speakers_batch(
-        self, speakers: Optional[list[str | None]], batch_size: int
-    ) -> list[str | None]:
-        if speakers is None:
-            return [None] * batch_size
+        self, speakers: Sequence[str], batch_size: int
+    ) -> list[str]:
+        if len(speakers) == 0:
+            return [""] * batch_size
         if len(speakers) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, speakers={len(speakers)}"
             )
-        return speakers
+        normalized_speakers: list[str] = []
+        for speaker in speakers:
+            if not isinstance(speaker, str):
+                raise TypeError("`speakers` items must be strings.")
+            normalized_speakers.append(speaker)
+        return normalized_speakers
 
     def _normalize_instruct_ids_batch(
         self,
-        instruct_ids: Optional[list[torch.Tensor | None]],
+        instruct_ids: Sequence[torch.Tensor | None],
         batch_size: int,
     ) -> list[torch.Tensor | None]:
-        if instruct_ids is None:
+        if len(instruct_ids) == 0:
             return [None] * batch_size
         if len(instruct_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, instruct_ids={len(instruct_ids)}"
             )
-        return instruct_ids
+        return list(instruct_ids)
 
     def _normalize_ref_ids_batch(
-        self, ref_ids: Optional[list[torch.Tensor | None]], batch_size: int
+        self, ref_ids: Sequence[torch.Tensor | None], batch_size: int
     ) -> list[torch.Tensor | None]:
-        if ref_ids is None:
+        if len(ref_ids) == 0:
             return [None] * batch_size
         if len(ref_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, ref_ids={len(ref_ids)}"
             )
-        return ref_ids
+        return list(ref_ids)
 
     def _validate_voice_clone_prompt_batch(
         self, voice_clone_prompt: VoiceClonePrompt, batch_size: int
@@ -125,7 +134,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -280,7 +289,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -311,7 +320,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self,
         input_id: torch.Tensor,
         language: str,
-        speaker: str | None,
+        speaker: str,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
         ref_code: torch.Tensor | None,
@@ -359,7 +368,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -415,7 +424,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -433,7 +442,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
                 self._prepare_standard_batch_sample(
                     input_id=input_id,
                     language=language,
-                    speaker=None,
+                    speaker="",
                     speaker_embed=None,
                     non_streaming_mode=non_streaming_mode,
                 )
@@ -470,7 +479,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         input_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         languages: list[str],
-        speakers: list[str | None],
+        speakers: list[str],
         speaker_embeds: list[torch.Tensor | None],
         non_streaming_mode: bool,
         max_new_tokens: int,
@@ -482,7 +491,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
@@ -543,7 +552,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         input_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         languages: list[str],
-        speakers: list[str | None],
+        speakers: list[str],
         speaker_embeds: list[torch.Tensor | None],
         ref_codes: list[torch.Tensor | None],
         ref_ids: list[torch.Tensor | None],
@@ -558,7 +567,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_top_k: int,
         subtalker_top_p: float,
         subtalker_temperature: float,
-        eos_token_id: Optional[int],
+        eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,

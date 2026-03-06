@@ -310,9 +310,9 @@ class Qwen3TTSGenerationCoreMixin:
         )
 
     def _resolve_custom_voice_speaker_embed(
-        self, speaker: str | None, input_dtype: torch.dtype
+        self, speaker: str, input_dtype: torch.dtype
     ) -> torch.Tensor | None:
-        if speaker == "" or speaker is None:
+        if speaker == "":
             return None
         speaker_lower = speaker.lower()
         spk_id_map = self.config.talker_config.spk_id
@@ -330,7 +330,7 @@ class Qwen3TTSGenerationCoreMixin:
             )
         )
 
-    def _resolve_language_id(self, language: str, speaker: str | None) -> int | None:
+    def _resolve_language_id(self, language: str, speaker: str) -> int | None:
         language_lower = language.lower()
         language_map = self.config.talker_config.codec_language_id
         if language_map is None:
@@ -347,14 +347,11 @@ class Qwen3TTSGenerationCoreMixin:
 
         dialect_map = self.config.talker_config.spk_is_dialect or {}
         dialect_value = (
-            dialect_map.get(speaker.lower(), False)
-            if speaker is not None and speaker != ""
-            else False
+            dialect_map.get(speaker.lower(), False) if speaker != "" else False
         )
         if (
             language_lower in ["chinese", "auto"]
             and speaker != ""
-            and speaker is not None
             and dialect_value is not False
             and isinstance(dialect_value, str)
             and dialect_value in language_map
