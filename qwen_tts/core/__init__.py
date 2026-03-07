@@ -22,6 +22,7 @@ from .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
 )
 from .tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import Qwen3TTSTokenizerV2Model
 from .config import SpeakerConfiguration
+from .models.modeling_qwen3_tts_types import SubTalkerConfiguration
 
 __all__ = [
     "Qwen3TTSTokenizerV1Config",
@@ -29,4 +30,5 @@ __all__ = [
     "Qwen3TTSTokenizerV2Config",
     "Qwen3TTSTokenizerV2Model",
     "SpeakerConfiguration",
+    "SubTalkerConfiguration",
 ]

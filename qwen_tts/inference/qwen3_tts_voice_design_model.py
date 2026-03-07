@@ -18,7 +18,10 @@ from collections.abc import Sequence
 import numpy as np
 import torch
 
-from ..core.models import Qwen3TTSVoiceDesignForConditionalGeneration
+from ..core.models import (
+    Qwen3TTSVoiceDesignForConditionalGeneration,
+    SubTalkerConfiguration,
+)
 from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
 
 
@@ -37,10 +40,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         top_p: float = 1.0,
         temperature: float = 0.9,
         repetition_penalty: float = 1.05,
-        subtalker_dosample: bool = True,
-        subtalker_top_k: int = 50,
-        subtalker_top_p: float = 1.0,
-        subtalker_temperature: float = 0.9,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
         max_new_tokens: int = 2048,
         **kwargs: GenerateExtraArg,
     ) -> tuple[np.ndarray, int]:
@@ -66,10 +66,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
             top_p=top_p,
             temperature=temperature,
             repetition_penalty=repetition_penalty,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
@@ -97,10 +94,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         top_p: float = 1.0,
         temperature: float = 0.9,
         repetition_penalty: float = 1.05,
-        subtalker_dosample: bool = True,
-        subtalker_top_k: int = 50,
-        subtalker_top_p: float = 1.0,
-        subtalker_temperature: float = 0.9,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
         max_new_tokens: int = 2048,
         **kwargs: GenerateExtraArg,
     ) -> tuple[list[np.ndarray], int]:
@@ -143,10 +137,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
             top_p=top_p,
             temperature=temperature,
             repetition_penalty=repetition_penalty,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             max_new_tokens=max_new_tokens,
             **kwargs,
         )

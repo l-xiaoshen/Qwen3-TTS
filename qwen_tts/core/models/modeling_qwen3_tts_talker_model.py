@@ -14,6 +14,7 @@
 # limitations under the License.
 """PyTorch Qwen3TTS model."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Optional
 
@@ -48,6 +49,7 @@ from .modeling_qwen3_tts_attention import (
 from .modeling_qwen3_tts_talker_predictor import (
     Qwen3TTSTalkerCodePredictorModelForConditionalGeneration,
 )
+from .modeling_qwen3_tts_types import SubTalkerConfiguration
 
 logger = logging.get_logger(__name__)
 
@@ -437,6 +439,55 @@ class Qwen3TTSTalkerForConditionalGeneration(
         sub_talker_loss = sub_talker_outputs.loss
         return sub_talker_logits, sub_talker_loss
 
+    def _resolve_subtalker_generation_kwargs(
+        self,
+        subtalker_configuration: Optional[SubTalkerConfiguration],
+    ) -> tuple[Optional[bool], Optional[float], Optional[int], Optional[float]]:
+        if subtalker_configuration is None:
+            return None, None, None, None
+        if not isinstance(subtalker_configuration, Mapping):
+            raise TypeError("`subtalker_configuration` must be a mapping.")
+        unsupported_keys = sorted(
+            key
+            for key in subtalker_configuration
+            if key not in {"do_sample", "top_p", "top_k", "temperature"}
+        )
+        if len(unsupported_keys) != 0:
+            raise ValueError(
+                "Unsupported `subtalker_configuration` keys: "
+                f"{unsupported_keys}"
+            )
+
+        do_sample = subtalker_configuration.get("do_sample")
+        if do_sample is not None and not isinstance(do_sample, bool):
+            raise TypeError("`subtalker_configuration['do_sample']` must be a boolean.")
+
+        top_p = subtalker_configuration.get("top_p")
+        if top_p is not None:
+            if not isinstance(top_p, (int, float)) or isinstance(top_p, bool):
+                raise TypeError(
+                    "`subtalker_configuration['top_p']` must be numeric."
+                )
+            top_p = float(top_p)
+
+        top_k = subtalker_configuration.get("top_k")
+        if top_k is not None and (
+            not isinstance(top_k, int) or isinstance(top_k, bool)
+        ):
+            raise TypeError("`subtalker_configuration['top_k']` must be an integer.")
+
+        temperature = subtalker_configuration.get("temperature")
+        if temperature is not None:
+            if not isinstance(temperature, (int, float)) or isinstance(
+                temperature, bool
+            ):
+                raise TypeError(
+                    "`subtalker_configuration['temperature']` must be numeric."
+                )
+            temperature = float(temperature)
+
+        return do_sample, top_p, top_k, temperature
+
     @can_return_tuple
     def forward(
         self,
@@ -454,10 +505,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
         trailing_text_hidden: Optional[torch.Tensor] = None,
         tts_pad_embed: Optional[torch.Tensor] = None,
         generation_step: Optional[int] = None,
-        subtalker_dosample: Optional[bool] = None,
-        subtalker_top_p: Optional[float] = None,
-        subtalker_top_k: Optional[int] = None,
-        subtalker_temperature: Optional[float] = None,
+        subtalker_configuration: Optional[SubTalkerConfiguration] = None,
         **kwargs: Unpack[TalkerForwardKwargs],
     ) -> Qwen3TTSTalkerOutputWithPast:
         r"""
@@ -478,14 +526,20 @@ class Qwen3TTSTalkerForConditionalGeneration(
                 raise ValueError("`input_ids` is required for generation stage.")
             if past_hidden is None:
                 raise ValueError("`past_hidden` is required for generation stage.")
+            (
+                resolved_do_sample,
+                resolved_top_p,
+                resolved_top_k,
+                resolved_temperature,
+            ) = self._resolve_subtalker_generation_kwargs(subtalker_configuration)
             last_id_hidden = self.get_input_embeddings()(input_ids)
             predictor_result = self.code_predictor.generate(
                 inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
                 max_new_tokens=self.config.num_code_groups - 1,
-                do_sample=subtalker_dosample,
-                top_p=subtalker_top_p,
-                top_k=subtalker_top_k,
-                temperature=subtalker_temperature,
+                do_sample=resolved_do_sample,
+                top_p=resolved_top_p,
+                top_k=resolved_top_k,
+                temperature=resolved_temperature,
                 output_hidden_states=True,
                 return_dict_in_generate=True,
             )

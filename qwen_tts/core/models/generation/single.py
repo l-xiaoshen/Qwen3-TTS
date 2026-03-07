@@ -21,7 +21,10 @@ import torch
 
 from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
-from ..modeling_qwen3_tts_types import VoiceClonePromptSingle
+from ..modeling_qwen3_tts_types import (
+    SubTalkerConfiguration,
+    VoiceClonePromptSingle,
+)
 from .core import Qwen3TTSGenerationCoreMixin
 
 
@@ -87,10 +90,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         top_k: int,
         top_p: float,
         temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
@@ -118,10 +118,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=(
                 eos_token_id
                 if eos_token_id is not None
@@ -199,10 +196,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         top_k: int,
         top_p: float,
         temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
@@ -222,10 +216,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
             output_hidden_states=output_hidden_states,
@@ -244,10 +235,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         top_k: int,
         top_p: float,
         temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
@@ -271,10 +259,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
             output_hidden_states=output_hidden_states,
@@ -296,10 +281,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         top_k: int,
         top_p: float,
         temperature: float,
-        subtalker_dosample: bool,
-        subtalker_top_k: int,
-        subtalker_top_p: float,
-        subtalker_temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
         output_hidden_states: bool,
@@ -326,10 +308,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
             output_hidden_states=output_hidden_states,

@@ -21,6 +21,7 @@ import torch
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
     GenerateConfigPrimitive,
+    SubTalkerConfiguration,
     VoiceClonePrompt,
     VoiceClonePromptSingle,
 )
@@ -42,10 +43,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         top_k: int = 50,
         top_p: float = 1.0,
         temperature: float = 0.9,
-        subtalker_dosample: bool = True,
-        subtalker_top_k: int = 50,
-        subtalker_top_p: float = 1.0,
-        subtalker_temperature: float = 0.9,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
@@ -58,7 +56,8 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         language = self._normalize_language(language)
         speaker = self._normalize_speaker(speaker)
         self._validate_voice_clone_prompt(voice_clone_prompt)
-        _ = kwargs
+        if len(kwargs) != 0:
+            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_id = self._resolve_language_id(language, speaker)
         voice_clone_spk_embed = self.generate_speaker_prompt(
@@ -81,10 +80,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
             output_hidden_states=output_hidden_states,
@@ -106,10 +102,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         top_k: int = 50,
         top_p: float = 1.0,
         temperature: float = 0.9,
-        subtalker_dosample: bool = True,
-        subtalker_top_k: int = 50,
-        subtalker_top_p: float = 1.0,
-        subtalker_temperature: float = 0.9,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
         output_hidden_states: bool = True,
@@ -123,7 +116,8 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         languages = self._normalize_languages_batch(languages, batch_size)
         speakers = self._normalize_speakers_batch(speakers, batch_size)
         self._validate_voice_clone_prompt_batch(voice_clone_prompt, batch_size)
-        _ = kwargs
+        if len(kwargs) != 0:
+            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_ids = [
             self._resolve_language_id(language, speaker)
@@ -154,10 +148,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             top_k=top_k,
             top_p=top_p,
             temperature=temperature,
-            subtalker_dosample=subtalker_dosample,
-            subtalker_top_k=subtalker_top_k,
-            subtalker_top_p=subtalker_top_p,
-            subtalker_temperature=subtalker_temperature,
+            subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
             output_hidden_states=output_hidden_states,

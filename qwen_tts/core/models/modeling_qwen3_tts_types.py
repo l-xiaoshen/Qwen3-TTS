@@ -33,6 +33,13 @@ class VoiceClonePromptSingle(TypedDict):
     icl_mode: bool
 
 
+class SubTalkerConfiguration(TypedDict, total=False):
+    do_sample: bool
+    top_k: int
+    top_p: float
+    temperature: float
+
+
 GenerateConfigPrimitive = str | int | float | bool | None
 GenerateConfigValue = (
     GenerateConfigPrimitive
@@ -44,6 +51,7 @@ GenerateConfigValue = (
 __all__ = [
     "VoiceClonePrompt",
     "VoiceClonePromptSingle",
+    "SubTalkerConfiguration",
     "GenerateConfigPrimitive",
     "GenerateConfigValue",
 ]

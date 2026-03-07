@@ -18,6 +18,7 @@ A gradio demo for Qwen3 TTS models.
 """
 
 import argparse
+import json
 import os
 import tempfile
 from dataclasses import asdict
@@ -32,6 +33,7 @@ from .. import (
     Qwen3TTSCustomVoiceModel,
     Qwen3TTSVoiceCloneModel,
     Qwen3TTSVoiceDesignModel,
+    SubTalkerConfiguration,
     VoiceClonePromptItem,
 )
 
@@ -48,9 +50,7 @@ class DemoGenKwargs(TypedDict, total=False):
     top_k: int
     top_p: float
     repetition_penalty: float
-    subtalker_top_k: int
-    subtalker_top_p: float
-    subtalker_temperature: float
+    subtalker_configuration: SubTalkerConfiguration
 
 
 class DemoLaunchKwargs(TypedDict, total=False):
@@ -213,22 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Repetition penalty (optional).",
     )
     parser.add_argument(
-        "--subtalker-top-k",
-        type=int,
+        "--subtalker-configuration",
         default=None,
-        help="Subtalker top-k (optional, only for tokenizer v2).",
-    )
-    parser.add_argument(
-        "--subtalker-top-p",
-        type=float,
-        default=None,
-        help="Subtalker top-p (optional, only for tokenizer v2).",
-    )
-    parser.add_argument(
-        "--subtalker-temperature",
-        type=float,
-        default=None,
-        help="Subtalker temperature (optional, only for tokenizer v2).",
+        help=(
+            "JSON object for subtalker generation settings, for example "
+            '\'{"top_k": 32, "top_p": 0.95, "temperature": 0.8}\'.'
+        ),
     )
 
     return parser
@@ -253,12 +243,49 @@ def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
         mapping["top_p"] = float(args.top_p)
     if args.repetition_penalty is not None:
         mapping["repetition_penalty"] = float(args.repetition_penalty)
-    if args.subtalker_top_k is not None:
-        mapping["subtalker_top_k"] = int(args.subtalker_top_k)
-    if args.subtalker_top_p is not None:
-        mapping["subtalker_top_p"] = float(args.subtalker_top_p)
-    if args.subtalker_temperature is not None:
-        mapping["subtalker_temperature"] = float(args.subtalker_temperature)
+    if args.subtalker_configuration is not None:
+        try:
+            raw_subtalker_configuration = json.loads(args.subtalker_configuration)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "`--subtalker-configuration` must be valid JSON."
+            ) from exc
+        if not isinstance(raw_subtalker_configuration, dict):
+            raise ValueError("`--subtalker-configuration` must be a JSON object.")
+
+        subtalker_configuration: SubTalkerConfiguration = {}
+        for key, value in raw_subtalker_configuration.items():
+            if key == "do_sample":
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        "`subtalker_configuration.do_sample` must be a boolean."
+                    )
+                subtalker_configuration["do_sample"] = value
+            elif key == "top_k":
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError(
+                        "`subtalker_configuration.top_k` must be an integer."
+                    )
+                subtalker_configuration["top_k"] = value
+            elif key == "top_p":
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise ValueError(
+                        "`subtalker_configuration.top_p` must be numeric."
+                    )
+                subtalker_configuration["top_p"] = float(value)
+            elif key == "temperature":
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise ValueError(
+                        "`subtalker_configuration.temperature` must be numeric."
+                    )
+                subtalker_configuration["temperature"] = float(value)
+            else:
+                raise ValueError(
+                    "Unsupported `subtalker_configuration` key: "
+                    f"{key!r}. Supported keys are "
+                    "'do_sample', 'top_k', 'top_p', and 'temperature'."
+                )
+        mapping["subtalker_configuration"] = subtalker_configuration
     return mapping
 
 
