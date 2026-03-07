@@ -34,6 +34,9 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         instruct_id: torch.Tensor | None,
         language: str,
         speaker: SpeakerConfiguration | torch.Tensor,
+        ref_code: torch.Tensor | None = None,
+        ref_id: torch.Tensor | None = None,
+        use_icl_prompt: bool = False,
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -52,23 +55,31 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_id = self._validate_input_id(input_id)
         instruct_id = self._normalize_instruct_id(instruct_id)
+        ref_id = self._normalize_ref_id(ref_id)
         language = self._normalize_language(language)
         _ = kwargs
 
         if isinstance(speaker, torch.Tensor):
             language_id = self._resolve_language_id(language, "")
-            speaker_embed = speaker.to(device=self.talker.device, dtype=self.talker.dtype)
+            speaker_embed = speaker.to(
+                device=self.talker.device, dtype=self.talker.dtype
+            )
         else:
-            language_id = self._resolve_language_id_for_speaker_config(language, speaker)
+            language_id = self._resolve_language_id_for_speaker_config(
+                language, speaker
+            )
             speaker_embed = self._resolve_custom_voice_speaker_embed(
                 speaker, input_id.dtype
             )
-        return self._generate_standard_from_ids(
+        return self._generate_voice_clone_from_ids(
             input_id=input_id,
             instruct_id=instruct_id,
             language_id=language_id,
             speaker_embed=speaker_embed,
             non_streaming_mode=non_streaming_mode,
+            ref_code=ref_code,
+            ref_id=ref_id,
+            use_icl_prompt=use_icl_prompt,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             top_k=top_k,
@@ -91,6 +102,9 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         instruct_ids: Sequence[torch.Tensor | None] = (),
         languages: Sequence[str] = (),
         speakers: Sequence[SpeakerConfiguration | torch.Tensor] = (),
+        ref_codes: Sequence[torch.Tensor | None] = (),
+        ref_ids: Sequence[torch.Tensor | None] = (),
+        use_icl_prompts: Sequence[bool] = (),
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
@@ -111,6 +125,7 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
         batch_size = len(input_ids)
         instruct_ids = self._normalize_instruct_ids_batch(instruct_ids, batch_size)
         languages = self._normalize_languages_batch(languages, batch_size)
+        ref_ids = self._normalize_ref_ids_batch(ref_ids, batch_size)
         if len(speakers) == 0:
             speakers = [{} for _ in range(batch_size)]
         elif len(speakers) != batch_size:
@@ -119,6 +134,23 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
             )
         else:
             speakers = list(speakers)
+        if len(ref_codes) == 0:
+            ref_codes = [None] * batch_size
+        elif len(ref_codes) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_ids={batch_size}, ref_codes={len(ref_codes)}"
+            )
+        else:
+            ref_codes = list(ref_codes)
+        if len(use_icl_prompts) == 0:
+            use_icl_prompts = [False] * batch_size
+        elif len(use_icl_prompts) != batch_size:
+            raise ValueError(
+                "Batch size mismatch: "
+                f"input_ids={batch_size}, use_icl_prompts={len(use_icl_prompts)}"
+            )
+        else:
+            use_icl_prompts = [bool(flag) for flag in use_icl_prompts]
         _ = kwargs
 
         language_ids: list[int | None] = []
@@ -137,11 +169,14 @@ class Qwen3TTSCustomVoiceForConditionalGeneration(Qwen3TTSConditionalGenerationB
                     self._resolve_custom_voice_speaker_embed(speaker, input_id.dtype)
                 )
 
-        return self._generate_standard_batch_from_ids(
+        return self._generate_voice_clone_batch_from_ids(
             input_ids=input_ids,
             instruct_ids=instruct_ids,
             language_ids=language_ids,
             speaker_embeds=speaker_embeds,
+            ref_codes=list(ref_codes),
+            ref_ids=ref_ids,
+            use_icl_prompts=list(use_icl_prompts),
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

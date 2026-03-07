@@ -61,6 +61,50 @@ VoiceClonePromptSingleInput = Mapping[str, torch.Tensor | bool | None]
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     model: Qwen3TTSVoiceCloneForConditionalGeneration
 
+    def _extract_ref_speaker_embedding(self, wav: np.ndarray, sr: int) -> torch.Tensor:
+        wav_resample = wav
+        if sr != self.model.speaker_encoder_sample_rate:
+            wav_resample = librosa.resample(
+                y=wav_resample.astype(np.float32),
+                orig_sr=int(sr),
+                target_sr=self.model.speaker_encoder_sample_rate,
+            )
+        return self.model.extract_speaker_embedding(
+            audio=wav_resample, sr=self.model.speaker_encoder_sample_rate
+        )
+
+    @torch.inference_mode()
+    def extract_speaker_embedding(self, ref_audio: AudioLike) -> torch.Tensor:
+        """
+        Extract one speaker embedding from reference audio.
+
+        The returned tensor can be passed directly as `speaker` to
+        `Qwen3TTSCustomVoiceModel.generate_custom_voice(...)`.
+        """
+        self._ensure_model_type("base", "extract_speaker_embedding")
+
+        normalized = self._normalize_audio_inputs([ref_audio])
+        return self._extract_ref_speaker_embedding(*normalized[0])
+
+    @torch.inference_mode()
+    def extract_speaker_embedding_batch(
+        self, ref_audio: Sequence[AudioLike]
+    ) -> list[torch.Tensor]:
+        """
+        Extract speaker embeddings from reference audio batch.
+
+        The returned tensors can be passed directly as `speaker` entries to
+        `Qwen3TTSCustomVoiceModel.generate_custom_voice_batch(...)`.
+        """
+        self._ensure_model_type("base", "extract_speaker_embedding_batch")
+
+        if not isinstance(ref_audio, Sequence) or isinstance(ref_audio, (str, bytes)):
+            raise TypeError("`ref_audio` must be a sequence of audio inputs.")
+        ref_audio_list = list(ref_audio)
+
+        normalized = self._normalize_audio_inputs(ref_audio_list)
+        return [self._extract_ref_speaker_embedding(wav, sr) for wav, sr in normalized]
+
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
@@ -137,17 +181,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                         f"ref_text is required when x_vector_only_mode=False (ICL mode). Bad index={i}"
                     )
 
-            wav_resample = wav
-            if sr != self.model.speaker_encoder_sample_rate:
-                wav_resample = librosa.resample(
-                    y=wav_resample.astype(np.float32),
-                    orig_sr=int(sr),
-                    target_sr=self.model.speaker_encoder_sample_rate,
-                )
-
-            spk_emb = self.model.extract_speaker_embedding(
-                audio=wav_resample, sr=self.model.speaker_encoder_sample_rate
-            )
+            spk_emb = self._extract_ref_speaker_embedding(wav=wav, sr=sr)
 
             items.append(
                 VoiceClonePromptItem(
