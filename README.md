@@ -8,7 +8,7 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 - Use `Qwen3TTSCustomVoiceModel` for custom voice generation, speaker merge, and instruction control.
 - Use the hybrid `custom_voice` flow when instruction control and reference prompting are both required.
 
-## Features added in this fork
+## Features/API added in this fork
 
 - Speaker embedding extraction.
 - Separate single and batch generation APIs.
@@ -19,7 +19,7 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 
 `Qwen3TTSVoiceCloneModel` does not expose `instruct`. When instruction control is required, use `Qwen3TTSCustomVoiceModel.generate_custom_voice()` with a direct speaker embedding plus a reference prompt.
 
-## Minimal API flows
+## Usage
 
 ### Extract a speaker embedding
 
