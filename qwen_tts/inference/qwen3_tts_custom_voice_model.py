@@ -526,12 +526,15 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     )
                 ref_texts_for_ids = custom_voice_prompt_dict["ref_text"]
 
+        if len(ref_texts_for_ids) == 0:
+            ref_texts_for_ids = [""] * len(texts)
+
         input_role_ids: list[torch.Tensor] = []
         input_text_ids: list[torch.Tensor] = []
         instruct_ids: list[torch.Tensor | None] = []
         ref_ids: list[torch.Tensor | None] = []
         for text_value, instruct_value, ref_text_value in zip(
-            texts, instructs, ref_texts_for_ids
+            texts, instructs, ref_texts_for_ids, strict=True
         ):
             input_segments = self._build_runtime_segments(
                 text=text_value,
