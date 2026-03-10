@@ -444,8 +444,11 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 )
                 ref_text_for_id = ""
 
-        input_id = self._tokenize_assistant_input(text)
-        ref_id = self._tokenize_ref_text(ref_text_for_id)
+        input_segments = self._build_runtime_segments(text=text)
+        input_role_id, input_text_id = self._tokenize_assistant_segments(input_segments)
+        ref_id = self._tokenize_reference_segments(
+            self._build_reference_segments(ref_text_for_id)
+        )
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -459,7 +462,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         )
 
         talker_codes, _ = self.model.generate_voice_clone(
-            input_id=input_id,
+            input_role_id=input_role_id,
+            input_text_id=input_text_id,
             ref_id=ref_id,
             voice_clone_prompt=voice_clone_prompt_single,
             language=language_value,
@@ -559,8 +563,21 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 )
                 ref_texts_for_ids = []
 
-        input_ids = self._tokenize_assistant_inputs(texts)
-        ref_ids = self._tokenize_ref_texts(ref_texts_for_ids)
+        input_role_ids: list[torch.Tensor] = []
+        input_text_ids: list[torch.Tensor] = []
+        ref_ids: list[torch.Tensor | None] = []
+        for text_value, ref_text_value in zip(texts, ref_texts_for_ids):
+            input_segments = self._build_runtime_segments(text=text_value)
+            input_role_id, input_text_id = self._tokenize_assistant_segments(
+                input_segments
+            )
+            input_role_ids.append(input_role_id)
+            input_text_ids.append(input_text_id)
+            ref_ids.append(
+                self._tokenize_reference_segments(
+                    self._build_reference_segments(ref_text_value)
+                )
+            )
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -574,7 +591,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         )
 
         talker_codes_list, _ = self.model.generate_voice_clone_batch(
-            input_ids=input_ids,
+            input_role_ids=input_role_ids,
+            input_text_ids=input_text_ids,
             ref_ids=ref_ids,
             voice_clone_prompt=voice_clone_prompt_dict,
             languages=languages,

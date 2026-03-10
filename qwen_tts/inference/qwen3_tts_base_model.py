@@ -13,8 +13,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Callable, Mapping, Sequence
-from typing import TypedDict, Union, cast
+from collections.abc import Mapping, Sequence
+from typing import Literal, TypedDict, Union
 from typing_extensions import Self
 
 import numpy as np
@@ -43,6 +43,12 @@ AudioLike = Union[
 GenerateDefaultValue = bool | int | float | SubTalkerConfiguration
 GenerateDefaults = dict[str, GenerateDefaultValue]
 GenerateExtraArg = bool | int | float | str
+PromptSegmentType = Literal["instruction", "text"]
+
+
+class PromptSegment(TypedDict):
+    type: PromptSegmentType
+    content: str
 
 
 class GenerateOptions(TypedDict):
@@ -300,19 +306,154 @@ class Qwen3TTSBaseModel:
                 out[i] = (mono, a[1])
         return out
 
-    def _build_assistant_text(self, text: str) -> str:
-        return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+    @staticmethod
+    def _assistant_role_prefix() -> str:
+        return "<|im_start|>assistant\n"
 
-    def _build_ref_text(self, text: str) -> str:
-        return f"<|im_start|>assistant\n{text}<|im_end|>\n"
+    @staticmethod
+    def _user_role_prefix() -> str:
+        return "<|im_start|>user\n"
 
-    def _build_instruct_text(self, instruct: str) -> str:
-        return f"<|im_start|>user\n{instruct}<|im_end|>\n"
+    @staticmethod
+    def _turn_suffix() -> str:
+        return "<|im_end|>\n"
 
-    def _tokenize_text(self, text: str) -> torch.Tensor:
-        input_data = self.processor(text=text, return_tensors="pt", padding=True)
-        input_id = input_data["input_ids"].to(self.device)
-        return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+    @staticmethod
+    def _build_prompt_segment(
+        segment_type: PromptSegmentType, content: str
+    ) -> PromptSegment:
+        return PromptSegment(type=segment_type, content=content)
+
+    def _build_runtime_segments(
+        self, text: str, instruct: str = ""
+    ) -> list[PromptSegment]:
+        segments: list[PromptSegment] = []
+        if instruct != "":
+            segments.append(self._build_prompt_segment("instruction", instruct))
+        segments.append(self._build_prompt_segment("text", text))
+        return segments
+
+    def _build_reference_segments(self, ref_text: str) -> list[PromptSegment]:
+        if ref_text == "":
+            return []
+        return [self._build_prompt_segment("text", ref_text)]
+
+    @staticmethod
+    def _segment_contents(
+        segments: Sequence[PromptSegment], segment_type: PromptSegmentType
+    ) -> list[str]:
+        contents: list[str] = []
+        for segment in segments:
+            if not isinstance(segment, dict):
+                raise TypeError("Prompt segments must be dictionaries.")
+            current_type = segment.get("type")
+            current_content = segment.get("content")
+            if current_type not in ("instruction", "text"):
+                raise ValueError(
+                    "Prompt segments must use type 'instruction' or 'text'."
+                )
+            if not isinstance(current_content, str):
+                raise TypeError("Prompt segment `content` must be a string.")
+            if current_type == segment_type and current_content != "":
+                contents.append(current_content)
+        return contents
+
+    def _tokenize_text(
+        self, text: str, return_offsets_mapping: bool = False
+    ) -> Mapping[str, object]:
+        return self.processor(
+            text=text,
+            return_tensors="pt",
+            padding=True,
+            return_offsets_mapping=return_offsets_mapping,
+        )
+
+    def _extract_input_ids(self, input_data: Mapping[str, object]) -> torch.Tensor:
+        input_ids = input_data.get("input_ids")
+        if not isinstance(input_ids, torch.Tensor):
+            raise RuntimeError("Tokenizer output does not contain tensor `input_ids`.")
+        input_ids = input_ids.to(self.device)
+        return input_ids.unsqueeze(0) if input_ids.dim() == 1 else input_ids
+
+    @staticmethod
+    def _extract_offset_mapping(input_data: Mapping[str, object]) -> torch.Tensor:
+        offset_mapping = input_data.get("offset_mapping")
+        if not isinstance(offset_mapping, torch.Tensor):
+            raise RuntimeError(
+                "Tokenizer output does not contain tensor `offset_mapping`."
+            )
+        return offset_mapping
+
+    @staticmethod
+    def _locate_token_span(
+        offset_mapping: torch.Tensor, content_start_char: int, content_end_char: int
+    ) -> tuple[int, int]:
+        if offset_mapping.dim() == 3:
+            offsets = offset_mapping[0]
+        elif offset_mapping.dim() == 2:
+            offsets = offset_mapping
+        else:
+            raise RuntimeError("Unexpected `offset_mapping` shape.")
+
+        token_start: int | None = None
+        token_end: int | None = None
+        for index, (token_start_char, token_end_char) in enumerate(offsets.tolist()):
+            if token_start_char >= token_end_char:
+                continue
+            if (
+                token_end_char <= content_start_char
+                or token_start_char >= content_end_char
+            ):
+                continue
+            if token_start is None:
+                token_start = index
+            token_end = index + 1
+
+        if token_start is None or token_end is None:
+            raise RuntimeError("Unable to locate content token span in prompt.")
+        return token_start, token_end
+
+    def _tokenize_assistant_segments(
+        self, segments: Sequence[PromptSegment]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        spoken_text = "".join(self._segment_contents(segments, "text"))
+        if spoken_text == "":
+            raise ValueError("At least one non-empty `text` segment is required.")
+
+        role_prefix = self._assistant_role_prefix()
+        rendered_prompt = f"{role_prefix}{spoken_text}"
+        input_data = self._tokenize_text(
+            rendered_prompt,
+            return_offsets_mapping=True,
+        )
+        input_ids = self._extract_input_ids(input_data)
+        token_start, token_end = self._locate_token_span(
+            self._extract_offset_mapping(input_data),
+            content_start_char=len(role_prefix),
+            content_end_char=len(rendered_prompt),
+        )
+        return input_ids[:, :token_start], input_ids[:, token_start:token_end]
+
+    def _tokenize_instruction_segments(
+        self, segments: Sequence[PromptSegment]
+    ) -> torch.Tensor | None:
+        instruction_texts = self._segment_contents(segments, "instruction")
+        if len(instruction_texts) == 0:
+            return None
+
+        rendered_prompt = "".join(
+            f"{self._user_role_prefix()}{instruction}{self._turn_suffix()}"
+            for instruction in instruction_texts
+        )
+        return self._extract_input_ids(self._tokenize_text(rendered_prompt))
+
+    def _tokenize_reference_segments(
+        self, segments: Sequence[PromptSegment]
+    ) -> torch.Tensor | None:
+        if len(segments) == 0:
+            return None
+        _, ref_text_ids = self._tokenize_assistant_segments(segments)
+        return ref_text_ids
 
     def _normalize_language_value(self, language: str) -> str:
         if not isinstance(language, str):
@@ -333,46 +474,6 @@ class Qwen3TTSBaseModel:
                 raise TypeError("`language` list items must be strings.")
             normalized_languages.append(item)
         return normalized_languages
-
-    def _tokenize_optional_text(
-        self, text: str, builder: Callable[[str], str]
-    ) -> torch.Tensor | None:
-        if text == "":
-            return None
-        return self._tokenize_text(builder(text))
-
-    def _tokenize_optional_texts(
-        self, texts: Sequence[str], builder: Callable[[str], str]
-    ) -> list[torch.Tensor | None]:
-        return [self._tokenize_optional_text(text, builder) for text in texts]
-
-    def _tokenize_assistant_input(self, text: str) -> torch.Tensor:
-        return self._tokenize_text(self._build_assistant_text(text))
-
-    def _tokenize_assistant_inputs(self, texts: Sequence[str]) -> list[torch.Tensor]:
-        return [self._tokenize_text(self._build_assistant_text(text)) for text in texts]
-
-    def _tokenize_instruct(self, instruct: str) -> torch.Tensor | None:
-        return self._tokenize_optional_text(instruct, self._build_instruct_text)
-
-    def _tokenize_instructs(
-        self, instructs: Sequence[str]
-    ) -> list[torch.Tensor | None]:
-        return self._tokenize_optional_texts(instructs, self._build_instruct_text)
-
-    def _tokenize_ref_text(self, ref_text: str) -> torch.Tensor | None:
-        return self._tokenize_optional_text(ref_text, self._build_ref_text)
-
-    def _tokenize_ref_texts(
-        self, ref_texts: Sequence[str]
-    ) -> list[torch.Tensor | None]:
-        return self._tokenize_optional_texts(ref_texts, self._build_ref_text)
-
-    def _tokenize_texts_batch(self, texts: list[str]) -> list[torch.Tensor]:
-        input_ids: list[torch.Tensor] = []
-        for text in texts:
-            input_ids.append(self._tokenize_text(text))
-        return input_ids
 
     @staticmethod
     def _build_subtalker_configuration(
@@ -412,19 +513,31 @@ class Qwen3TTSBaseModel:
                 )
         return normalized
 
+    @staticmethod
+    def _coerce_subtalker_mapping(
+        value: object, field_name: str
+    ) -> dict[object, object]:
+        if not isinstance(value, Mapping):
+            raise TypeError(f"`{field_name}` must be a mapping.")
+        normalized_mapping: dict[object, object] = {}
+        for key, item in value.items():
+            normalized_mapping[key] = item
+        return normalized_mapping
+
     @classmethod
     def _parse_subtalker_configuration(
         cls,
-        subtalker_configuration: Mapping[object, object] | None,
+        subtalker_configuration: object | None,
     ) -> SubTalkerConfiguration:
         if subtalker_configuration is None:
             return SubTalkerConfiguration()
-        if not isinstance(subtalker_configuration, Mapping):
-            raise TypeError("`subtalker_configuration` must be a mapping.")
+        subtalker_configuration_mapping = cls._coerce_subtalker_mapping(
+            subtalker_configuration, "subtalker_configuration"
+        )
         return cls._build_subtalker_configuration(
             [
                 (str(key), value)
-                for key, value in subtalker_configuration.items()
+                for key, value in subtalker_configuration_mapping.items()
             ]
         )
 
@@ -448,12 +561,8 @@ class Qwen3TTSBaseModel:
             elif str_key == "subtalker_configuration":
                 if value is None:
                     continue
-                if not isinstance(value, Mapping):
-                    raise TypeError(
-                        "`generate_defaults['subtalker_configuration']` must be a mapping."
-                    )
                 parsed_generate_defaults[str_key] = cls._parse_subtalker_configuration(
-                    cast(Mapping[object, object], value)
+                    value
                 )
         return parsed_generate_defaults
 
@@ -472,9 +581,7 @@ class Qwen3TTSBaseModel:
                         "`generate_defaults['subtalker_configuration']` must be a SubTalkerConfiguration."
                     )
                 normalized_generate_defaults[key] = (
-                    self._normalize_subtalker_configuration(
-                        cast(SubTalkerConfiguration, value)
-                    )
+                    self._normalize_subtalker_configuration(value)
                 )
             elif isinstance(value, bool):
                 normalized_generate_defaults[key] = value
@@ -491,13 +598,19 @@ class Qwen3TTSBaseModel:
 
     def _normalize_subtalker_configuration(
         self,
-        subtalker_configuration: SubTalkerConfiguration | None,
+        subtalker_configuration: object | None,
     ) -> SubTalkerConfiguration:
         if subtalker_configuration is None:
             return SubTalkerConfiguration()
-        if not isinstance(subtalker_configuration, Mapping):
-            raise TypeError("`subtalker_configuration` must be a mapping.")
-        return self._build_subtalker_configuration(list(subtalker_configuration.items()))
+        subtalker_configuration_mapping = self._coerce_subtalker_mapping(
+            subtalker_configuration, "subtalker_configuration"
+        )
+        return self._build_subtalker_configuration(
+            [
+                (str(key), value)
+                for key, value in subtalker_configuration_mapping.items()
+            ]
+        )
 
     def _decode_talker_codes_batch(
         self, talker_codes_list: Sequence[torch.Tensor]
@@ -556,12 +669,11 @@ class Qwen3TTSBaseModel:
         generate_default_subtalker_configuration_value = self.generate_defaults.get(
             "subtalker_configuration"
         )
-        if isinstance(generate_default_subtalker_configuration_value, dict):
-            generate_default_subtalker_configuration = cast(
-                SubTalkerConfiguration, generate_default_subtalker_configuration_value
+        generate_default_subtalker_configuration = (
+            self._normalize_subtalker_configuration(
+                generate_default_subtalker_configuration_value
             )
-        else:
-            generate_default_subtalker_configuration = SubTalkerConfiguration()
+        )
 
         def pick_bool(name: str, user_val: bool) -> bool:
             hard_default = bool(hard_defaults[name])

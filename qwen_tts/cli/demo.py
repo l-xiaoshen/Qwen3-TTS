@@ -247,9 +247,7 @@ def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
         try:
             raw_subtalker_configuration = json.loads(args.subtalker_configuration)
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                "`--subtalker-configuration` must be valid JSON."
-            ) from exc
+            raise ValueError("`--subtalker-configuration` must be valid JSON.") from exc
         if not isinstance(raw_subtalker_configuration, dict):
             raise ValueError("`--subtalker-configuration` must be a JSON object.")
 
@@ -269,9 +267,7 @@ def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
                 subtalker_configuration["top_k"] = value
             elif key == "top_p":
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
-                    raise ValueError(
-                        "`subtalker_configuration.top_p` must be numeric."
-                    )
+                    raise ValueError("`subtalker_configuration.top_p` must be numeric.")
                 subtalker_configuration["top_p"] = float(value)
             elif key == "temperature":
                 if not isinstance(value, (int, float)) or isinstance(value, bool):

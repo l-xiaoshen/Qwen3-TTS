@@ -15,7 +15,6 @@
 """Voice-design conditional-generation model for Qwen3 TTS."""
 
 from collections.abc import Sequence
-from typing import cast
 
 import torch
 
@@ -30,7 +29,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
     @torch.no_grad()
     def generate_voice_design(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         instruct_id: torch.Tensor | None = None,
         language: str = "auto",
         non_streaming_mode: bool = False,
@@ -46,7 +46,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         return_dict_in_generate: bool = True,
         **kwargs: GenerateConfigPrimitive,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        input_id = self._validate_input_id(input_id)
+        input_role_id = self._validate_input_role_id(input_role_id)
+        input_text_id = self._validate_input_text_id(input_text_id)
         instruct_id = self._normalize_instruct_id(instruct_id)
         language = self._normalize_language(language)
         if len(kwargs) != 0:
@@ -54,7 +55,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
 
         language_id = self._resolve_language_id(language, "")
         return self._generate_standard_from_ids(
-            input_id=input_id,
+            input_role_id=input_role_id,
+            input_text_id=input_text_id,
             instruct_id=instruct_id,
             language_id=language_id,
             speaker_embed=None,
@@ -74,7 +76,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
     @torch.no_grad()
     def generate_voice_design_batch(
         self,
-        input_ids: list[torch.Tensor],
+        input_role_ids: list[torch.Tensor],
+        input_text_ids: list[torch.Tensor],
         instruct_ids: Sequence[torch.Tensor | None] = (),
         languages: Sequence[str] = (),
         non_streaming_mode: bool = False,
@@ -90,8 +93,13 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         return_dict_in_generate: bool = True,
         **kwargs: GenerateConfigPrimitive,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        input_ids = self._validate_input_ids_batch(input_ids)
-        batch_size = len(input_ids)
+        input_role_ids = self._validate_input_ids_batch(input_role_ids)
+        input_text_ids = self._validate_input_ids_batch(input_text_ids)
+        batch_size = len(input_role_ids)
+        if len(input_text_ids) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: input_role_ids={batch_size}, input_text_ids={len(input_text_ids)}"
+            )
         instruct_ids = self._normalize_instruct_ids_batch(instruct_ids, batch_size)
         languages = self._normalize_languages_batch(languages, batch_size)
         if len(kwargs) != 0:
@@ -100,13 +108,15 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         language_ids = [
             self._resolve_language_id(language, "") for language in languages
         ]
+        speaker_embeds: list[torch.Tensor | None] = []
+        for _ in range(len(input_role_ids)):
+            speaker_embeds.append(None)
         return self._generate_standard_batch_from_ids(
-            input_ids=input_ids,
+            input_role_ids=input_role_ids,
+            input_text_ids=input_text_ids,
             instruct_ids=instruct_ids,
             language_ids=language_ids,
-            speaker_embeds=[
-                cast(torch.Tensor | None, None) for _ in range(len(input_ids))
-            ],
+            speaker_embeds=speaker_embeds,
             non_streaming_mode=non_streaming_mode,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,

@@ -91,12 +91,23 @@ class Qwen3TTSGenerationCoreMixin:
         )
         return text_embed + codec_embed, tts_pad_embed
 
+    @staticmethod
+    def _require_non_empty_text_ids(
+        text_id: torch.Tensor, prompt_name: str
+    ) -> torch.Tensor:
+        if text_id.shape[1] == 0:
+            raise ValueError(
+                f"`{prompt_name}` must contain at least one content token."
+            )
+        return text_id
+
     def _build_talker_prefix_embeddings(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        input_dtype = input_role_id.dtype
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(
                 torch.tensor(
@@ -108,7 +119,7 @@ class Qwen3TTSGenerationCoreMixin:
                         ]
                     ],
                     device=self.talker.device,
-                    dtype=input_id.dtype,
+                    dtype=input_dtype,
                 )
             )
         ).chunk(3, dim=1)
@@ -135,7 +146,7 @@ class Qwen3TTSGenerationCoreMixin:
             torch.tensor(
                 codec_prefill_list,
                 device=self.talker.device,
-                dtype=input_id.dtype,
+                dtype=input_dtype,
             )
         )
         codec_input_embedding_1 = self.talker.get_input_embeddings()(
@@ -147,7 +158,7 @@ class Qwen3TTSGenerationCoreMixin:
                     ]
                 ],
                 device=self.talker.device,
-                dtype=input_id.dtype,
+                dtype=input_dtype,
             )
         )
         if speaker_embed is None:
@@ -165,7 +176,7 @@ class Qwen3TTSGenerationCoreMixin:
             )
 
         talker_input_embed_role = self.talker.text_projection(
-            self.talker.get_text_embeddings()(input_id[:, :3])
+            self.talker.get_text_embeddings()(input_role_id)
         )
         talker_input_embed_prefill = (
             torch.cat(
@@ -184,7 +195,7 @@ class Qwen3TTSGenerationCoreMixin:
 
     def _append_icl_talker_body_embeddings(
         self,
-        input_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         talker_input_embed: torch.Tensor,
         tts_eos_embed: torch.Tensor,
         tts_pad_embed: torch.Tensor,
@@ -196,9 +207,11 @@ class Qwen3TTSGenerationCoreMixin:
             raise ValueError(
                 "`ref_id` is required for ICL mode voice clone generation."
             )
+        input_text_id = self._require_non_empty_text_ids(input_text_id, "input_text_id")
+        ref_id = self._require_non_empty_text_ids(ref_id, "ref_id")
         icl_input_embed, trailing_text_hidden = self.generate_icl_prompt(
-            text_id=input_id[:, 3:-5],
-            ref_id=ref_id[:, 3:-2],
+            text_id=input_text_id,
+            ref_id=ref_id,
             ref_code=ref_code.to(self.talker.device),
             tts_pad_embed=tts_pad_embed,
             tts_eos_embed=tts_eos_embed,
@@ -209,19 +222,21 @@ class Qwen3TTSGenerationCoreMixin:
 
     def _append_standard_talker_body_embeddings(
         self,
-        input_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         talker_input_embed: torch.Tensor,
         codec_input_embedding: torch.Tensor,
         tts_eos_embed: torch.Tensor,
         tts_pad_embed: torch.Tensor,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        input_text_id = self._require_non_empty_text_ids(input_text_id, "input_text_id")
+        input_dtype = input_text_id.dtype
 
         talker_input_embed = torch.cat(
             [
                 talker_input_embed,
                 self.talker.text_projection(
-                    self.talker.get_text_embeddings()(input_id[:, 3:4])
+                    self.talker.get_text_embeddings()(input_text_id[:, :1])
                 )
                 + codec_input_embedding[:, -1:],
             ],
@@ -235,7 +250,7 @@ class Qwen3TTSGenerationCoreMixin:
                     torch.cat(
                         (
                             self.talker.text_projection(
-                                self.talker.get_text_embeddings()(input_id[:, 3:-5])
+                                self.talker.get_text_embeddings()(input_text_id)
                             ),
                             tts_eos_embed,
                         ),
@@ -245,10 +260,10 @@ class Qwen3TTSGenerationCoreMixin:
                         torch.tensor(
                             [
                                 [self.config.talker_config.codec_pad_id]
-                                * (input_id[:, 3:-5].shape[1] + 1)
+                                * (input_text_id.shape[1] + 1)
                             ],
                             device=self.talker.device,
-                            dtype=input_id.dtype,
+                            dtype=input_dtype,
                         )
                     ),
                     tts_pad_embed
@@ -256,7 +271,7 @@ class Qwen3TTSGenerationCoreMixin:
                         torch.tensor(
                             [[self.config.talker_config.codec_bos_id]],
                             device=self.talker.device,
-                            dtype=input_id.dtype,
+                            dtype=input_dtype,
                         )
                     ),
                 ],
@@ -267,7 +282,7 @@ class Qwen3TTSGenerationCoreMixin:
             trailing_text_hidden = torch.cat(
                 (
                     self.talker.text_projection(
-                        self.talker.get_text_embeddings()(input_id[:, 4:-5])
+                        self.talker.get_text_embeddings()(input_text_id[:, 1:])
                     ),
                     tts_eos_embed,
                 ),
@@ -277,7 +292,7 @@ class Qwen3TTSGenerationCoreMixin:
 
     def _append_voice_clone_talker_body_embeddings(
         self,
-        input_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         talker_input_embed: torch.Tensor,
         codec_input_embedding: torch.Tensor,
         tts_eos_embed: torch.Tensor,
@@ -293,7 +308,7 @@ class Qwen3TTSGenerationCoreMixin:
                     "`ref_code` is required for ICL mode voice clone generation."
                 )
             return self._append_icl_talker_body_embeddings(
-                input_id=input_id,
+                input_text_id=input_text_id,
                 talker_input_embed=talker_input_embed,
                 tts_eos_embed=tts_eos_embed,
                 tts_pad_embed=tts_pad_embed,
@@ -302,7 +317,7 @@ class Qwen3TTSGenerationCoreMixin:
                 ref_id=ref_id,
             )
         return self._append_standard_talker_body_embeddings(
-            input_id=input_id,
+            input_text_id=input_text_id,
             talker_input_embed=talker_input_embed,
             codec_input_embedding=codec_input_embedding,
             tts_eos_embed=tts_eos_embed,
@@ -312,7 +327,8 @@ class Qwen3TTSGenerationCoreMixin:
 
     def _prepare_standard_generation(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
@@ -323,13 +339,13 @@ class Qwen3TTSGenerationCoreMixin:
             tts_eos_embed,
             tts_pad_embed,
         ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
+            input_role_id=input_role_id,
             language_id=language_id,
             speaker_embed=speaker_embed,
         )
         talker_input_embed, trailing_text_hidden = (
             self._append_standard_talker_body_embeddings(
-                input_id=input_id,
+                input_text_id=input_text_id,
                 talker_input_embed=talker_input_embed,
                 codec_input_embedding=codec_input_embedding,
                 tts_eos_embed=tts_eos_embed,
@@ -341,7 +357,8 @@ class Qwen3TTSGenerationCoreMixin:
 
     def _prepare_voice_clone_generation(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
         non_streaming_mode: bool,
@@ -355,13 +372,13 @@ class Qwen3TTSGenerationCoreMixin:
             tts_eos_embed,
             tts_pad_embed,
         ) = self._build_talker_prefix_embeddings(
-            input_id=input_id,
+            input_role_id=input_role_id,
             language_id=language_id,
             speaker_embed=speaker_embed,
         )
         talker_input_embed, trailing_text_hidden = (
             self._append_voice_clone_talker_body_embeddings(
-                input_id=input_id,
+                input_text_id=input_text_id,
                 talker_input_embed=talker_input_embed,
                 codec_input_embedding=codec_input_embedding,
                 tts_eos_embed=tts_eos_embed,

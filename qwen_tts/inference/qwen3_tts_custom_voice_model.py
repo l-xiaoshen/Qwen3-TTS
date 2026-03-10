@@ -345,9 +345,15 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 )
             ref_text_for_id = custom_voice_prompt_single["ref_text"]
 
-        input_id = self._tokenize_assistant_input(text)
-        instruct_id = self._tokenize_instruct(instruct_value)
-        ref_id = self._tokenize_ref_text(ref_text_for_id)
+        input_segments = self._build_runtime_segments(
+            text=text,
+            instruct=instruct_value,
+        )
+        input_role_id, input_text_id = self._tokenize_assistant_segments(input_segments)
+        instruct_id = self._tokenize_instruction_segments(input_segments)
+        ref_id = self._tokenize_reference_segments(
+            self._build_reference_segments(ref_text_for_id)
+        )
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -361,7 +367,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         )
 
         talker_codes, _ = self.model.generate_custom_voice(
-            input_id=input_id,
+            input_role_id=input_role_id,
+            input_text_id=input_text_id,
             instruct_id=instruct_id,
             language=language_value,
             speaker=speaker_value,
@@ -519,9 +526,28 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     )
                 ref_texts_for_ids = custom_voice_prompt_dict["ref_text"]
 
-        input_ids = self._tokenize_assistant_inputs(texts)
-        instruct_ids = self._tokenize_instructs(instructs)
-        ref_ids = self._tokenize_ref_texts(ref_texts_for_ids)
+        input_role_ids: list[torch.Tensor] = []
+        input_text_ids: list[torch.Tensor] = []
+        instruct_ids: list[torch.Tensor | None] = []
+        ref_ids: list[torch.Tensor | None] = []
+        for text_value, instruct_value, ref_text_value in zip(
+            texts, instructs, ref_texts_for_ids
+        ):
+            input_segments = self._build_runtime_segments(
+                text=text_value,
+                instruct=instruct_value,
+            )
+            input_role_id, input_text_id = self._tokenize_assistant_segments(
+                input_segments
+            )
+            input_role_ids.append(input_role_id)
+            input_text_ids.append(input_text_id)
+            instruct_ids.append(self._tokenize_instruction_segments(input_segments))
+            ref_ids.append(
+                self._tokenize_reference_segments(
+                    self._build_reference_segments(ref_text_value)
+                )
+            )
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -535,7 +561,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         )
 
         talker_codes_list, _ = self.model.generate_custom_voice_batch(
-            input_ids=input_ids,
+            input_role_ids=input_role_ids,
+            input_text_ids=input_text_ids,
             instruct_ids=instruct_ids,
             languages=languages,
             speakers=speakers,

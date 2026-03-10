@@ -16,7 +16,6 @@
 """Batch-oriented generation orchestration helpers."""
 
 from collections.abc import Sequence
-from typing import cast
 
 import torch
 
@@ -75,7 +74,10 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         batch_size: int,
     ) -> list[torch.Tensor | None]:
         if len(instruct_ids) == 0:
-            return [cast(torch.Tensor | None, None) for _ in range(batch_size)]
+            normalized_instruct_ids: list[torch.Tensor | None] = []
+            for _ in range(batch_size):
+                normalized_instruct_ids.append(None)
+            return normalized_instruct_ids
         if len(instruct_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, instruct_ids={len(instruct_ids)}"
@@ -86,7 +88,10 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self, ref_ids: Sequence[torch.Tensor | None], batch_size: int
     ) -> list[torch.Tensor | None]:
         if len(ref_ids) == 0:
-            return [cast(torch.Tensor | None, None) for _ in range(batch_size)]
+            normalized_ref_ids: list[torch.Tensor | None] = []
+            for _ in range(batch_size):
+                normalized_ref_ids.append(None)
+            return normalized_ref_ids
         if len(ref_ids) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, ref_ids={len(ref_ids)}"
@@ -322,7 +327,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
 
     def _generate_standard_batch_from_ids(
         self,
-        input_ids: list[torch.Tensor],
+        input_role_ids: list[torch.Tensor],
+        input_text_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         language_ids: list[int | None],
         speaker_embeds: list[torch.Tensor | None],
@@ -339,7 +345,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (
-            len(input_ids)
+            len(input_role_ids)
+            == len(input_text_ids)
             == len(instruct_ids)
             == len(language_ids)
             == len(speaker_embeds)
@@ -349,12 +356,13 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         prepared_talker_input_embeds: list[torch.Tensor] = []
         trailing_text_hiddens: list[torch.Tensor] = []
         tts_pad_embed_last: torch.Tensor | None = None
-        for input_id, language_id, speaker_embed in zip(
-            input_ids, language_ids, speaker_embeds
+        for input_role_id, input_text_id, language_id, speaker_embed in zip(
+            input_role_ids, input_text_ids, language_ids, speaker_embeds
         ):
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
                 self._prepare_standard_generation(
-                    input_id=input_id,
+                    input_role_id=input_role_id,
+                    input_text_id=input_text_id,
                     language_id=language_id,
                     speaker_embed=speaker_embed,
                     non_streaming_mode=non_streaming_mode,
@@ -386,7 +394,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
 
     def _generate_voice_clone_batch_from_ids(
         self,
-        input_ids: list[torch.Tensor],
+        input_role_ids: list[torch.Tensor],
+        input_text_ids: list[torch.Tensor],
         instruct_ids: list[torch.Tensor | None],
         language_ids: list[int | None],
         speaker_embeds: list[torch.Tensor | None],
@@ -406,7 +415,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (
-            len(input_ids)
+            len(input_role_ids)
+            == len(input_text_ids)
             == len(instruct_ids)
             == len(language_ids)
             == len(speaker_embeds)
@@ -420,14 +430,16 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         trailing_text_hiddens: list[torch.Tensor] = []
         tts_pad_embed_last: torch.Tensor | None = None
         for (
-            input_id,
+            input_role_id,
+            input_text_id,
             language_id,
             speaker_embed,
             ref_code,
             ref_id,
             use_icl_prompt,
         ) in zip(
-            input_ids,
+            input_role_ids,
+            input_text_ids,
             language_ids,
             speaker_embeds,
             ref_codes,
@@ -436,7 +448,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         ):
             talker_input_embed, trailing_text_hidden, tts_pad_embed = (
                 self._prepare_voice_clone_generation(
-                    input_id=input_id,
+                    input_role_id=input_role_id,
+                    input_text_id=input_text_id,
                     language_id=language_id,
                     speaker_embed=speaker_embed,
                     non_streaming_mode=non_streaming_mode,

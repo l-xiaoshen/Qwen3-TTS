@@ -32,12 +32,19 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
 
-    def _validate_input_id(self, input_id: torch.Tensor) -> torch.Tensor:
-        if input_id.dim() == 1:
-            return input_id.unsqueeze(0)
-        if input_id.dim() != 2:
-            raise ValueError("`input_id` must be a 1D or 2D tensor.")
-        return input_id
+    def _validate_input_role_id(self, input_role_id: torch.Tensor) -> torch.Tensor:
+        if input_role_id.dim() == 1:
+            return input_role_id.unsqueeze(0)
+        if input_role_id.dim() != 2:
+            raise ValueError("`input_role_id` must be a 1D or 2D tensor.")
+        return input_role_id
+
+    def _validate_input_text_id(self, input_text_id: torch.Tensor) -> torch.Tensor:
+        if input_text_id.dim() == 1:
+            return input_text_id.unsqueeze(0)
+        if input_text_id.dim() != 2:
+            raise ValueError("`input_text_id` must be a 1D or 2D tensor.")
+        return input_text_id
 
     def _normalize_language(self, language: str) -> str:
         return language
@@ -225,7 +232,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
 
     def _generate_standard_from_ids(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
@@ -243,7 +251,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_standard_generation(
-                input_id=input_id,
+                input_role_id=input_role_id,
+                input_text_id=input_text_id,
                 language_id=language_id,
                 speaker_embed=speaker_embed,
                 non_streaming_mode=non_streaming_mode,
@@ -268,7 +277,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
 
     def _generate_voice_clone_from_ids(
         self,
-        input_id: torch.Tensor,
+        input_role_id: torch.Tensor,
+        input_text_id: torch.Tensor,
         instruct_id: torch.Tensor | None,
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
@@ -289,7 +299,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_voice_clone_generation(
-                input_id=input_id,
+                input_role_id=input_role_id,
+                input_text_id=input_text_id,
                 language_id=language_id,
                 speaker_embed=speaker_embed,
                 non_streaming_mode=non_streaming_mode,

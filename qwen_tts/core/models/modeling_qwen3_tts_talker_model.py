@@ -454,8 +454,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
         )
         if len(unsupported_keys) != 0:
             raise ValueError(
-                "Unsupported `subtalker_configuration` keys: "
-                f"{unsupported_keys}"
+                f"Unsupported `subtalker_configuration` keys: {unsupported_keys}"
             )
 
         do_sample = subtalker_configuration.get("do_sample")
@@ -465,9 +464,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
         top_p = subtalker_configuration.get("top_p")
         if top_p is not None:
             if not isinstance(top_p, (int, float)) or isinstance(top_p, bool):
-                raise TypeError(
-                    "`subtalker_configuration['top_p']` must be numeric."
-                )
+                raise TypeError("`subtalker_configuration['top_p']` must be numeric.")
             top_p = float(top_p)
 
         top_k = subtalker_configuration.get("top_k")

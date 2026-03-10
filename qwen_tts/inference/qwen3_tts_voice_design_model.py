@@ -57,8 +57,9 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         language_value = self._normalize_language_value(language)
         self._validate_languages([language_value])
 
-        input_id = self._tokenize_assistant_input(text)
-        instruct_id = self._tokenize_instruct(instruct)
+        segments = self._build_runtime_segments(text=text, instruct=instruct)
+        input_role_id, input_text_id = self._tokenize_assistant_segments(segments)
+        instruct_id = self._tokenize_instruction_segments(segments)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -72,7 +73,8 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         )
 
         talker_codes, _ = self.model.generate_voice_design(
-            input_id=input_id,
+            input_role_id=input_role_id,
+            input_text_id=input_text_id,
             instruct_id=instruct_id,
             language=language_value,
             non_streaming_mode=non_streaming_mode,
@@ -128,8 +130,18 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
 
         self._validate_languages(languages)
 
-        input_ids = self._tokenize_assistant_inputs(texts)
-        instruct_ids = self._tokenize_instructs(instructs)
+        input_role_ids: list[torch.Tensor] = []
+        input_text_ids: list[torch.Tensor] = []
+        instruct_ids: list[torch.Tensor | None] = []
+        for text_value, instruct_value in zip(texts, instructs):
+            segments = self._build_runtime_segments(
+                text=text_value,
+                instruct=instruct_value,
+            )
+            input_role_id, input_text_id = self._tokenize_assistant_segments(segments)
+            input_role_ids.append(input_role_id)
+            input_text_ids.append(input_text_id)
+            instruct_ids.append(self._tokenize_instruction_segments(segments))
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -143,7 +155,8 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         )
 
         talker_codes_list, _ = self.model.generate_voice_design_batch(
-            input_ids=input_ids,
+            input_role_ids=input_role_ids,
+            input_text_ids=input_text_ids,
             instruct_ids=instruct_ids,
             languages=languages,
             non_streaming_mode=non_streaming_mode,
