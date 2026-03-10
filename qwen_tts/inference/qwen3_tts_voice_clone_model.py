@@ -315,6 +315,33 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             icl_mode=bool(prompt["icl_mode"]),
         )
 
+    @staticmethod
+    def _normalize_ref_text_values(
+        ref_text: Sequence[str], batch_size: int
+    ) -> list[str]:
+        if not isinstance(ref_text, Sequence) or isinstance(ref_text, (str, bytes)):
+            raise TypeError("`ref_text` must be a sequence of strings.")
+        if len(ref_text) == 0:
+            return [""] * batch_size
+        if len(ref_text) != batch_size:
+            raise ValueError(
+                f"Batch size mismatch: text={batch_size}, ref_text={len(ref_text)}"
+            )
+
+        ref_text_values: list[str] = []
+        for item in ref_text:
+            if not isinstance(item, str):
+                raise TypeError("`ref_text` items must be strings.")
+            ref_text_values.append(item)
+        return ref_text_values
+
+    @staticmethod
+    def _validate_ref_text_for_icl_mode(icl_mode: bool, ref_text: str) -> None:
+        if icl_mode and ref_text == "":
+            raise ValueError(
+                "`ref_text` is required when `voice_clone_prompt` uses ICL mode."
+            )
+
     def _prepend_ref_code_for_decode(
         self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
     ) -> torch.Tensor:
@@ -442,7 +469,12 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 voice_clone_prompt_single = self._coerce_voice_clone_prompt_single(
                     voice_clone_prompt
                 )
-                ref_text_for_id = ""
+                ref_text_for_id = ref_text
+
+        self._validate_ref_text_for_icl_mode(
+            voice_clone_prompt_single["icl_mode"],
+            ref_text_for_id,
+        )
 
         input_segments = self._build_runtime_segments(text=text)
         input_role_id, input_text_id = self._tokenize_assistant_segments(input_segments)
@@ -514,6 +546,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             raise ValueError(
                 f"Batch size mismatch: text={len(texts)}, language={len(languages)}"
             )
+        normalized_ref_texts = self._normalize_ref_text_values(ref_text, len(texts))
 
         self._validate_languages(languages)
 
@@ -528,7 +561,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 raise TypeError("`ref_audio` must be a sequence of audio inputs.")
             prompt_items = self.create_voice_clone_prompt(
                 ref_audio=list(ref_audio),
-                ref_text=ref_text,
+                ref_text=normalized_ref_texts,
                 x_vector_only_mode=x_vector_only_mode,
             )
             if len(prompt_items) != len(texts):
@@ -561,12 +594,21 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 voice_clone_prompt_dict = self._coerce_voice_clone_prompt_dict(
                     voice_clone_prompt
                 )
-                ref_texts_for_ids = []
+                if len(voice_clone_prompt_dict["ref_code"]) != len(texts):
+                    raise ValueError(
+                        "Batch size mismatch in `voice_clone_prompt` fields and `text`."
+                    )
+                ref_texts_for_ids = normalized_ref_texts
+
+        for icl_mode, ref_text_value in zip(
+            voice_clone_prompt_dict["icl_mode"], ref_texts_for_ids, strict=True
+        ):
+            self._validate_ref_text_for_icl_mode(bool(icl_mode), ref_text_value)
 
         input_role_ids: list[torch.Tensor] = []
         input_text_ids: list[torch.Tensor] = []
         ref_ids: list[torch.Tensor | None] = []
-        for text_value, ref_text_value in zip(texts, ref_texts_for_ids):
+        for text_value, ref_text_value in zip(texts, ref_texts_for_ids, strict=True):
             input_segments = self._build_runtime_segments(text=text_value)
             input_role_id, input_text_id = self._tokenize_assistant_segments(
                 input_segments
