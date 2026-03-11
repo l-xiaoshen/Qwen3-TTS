@@ -23,7 +23,6 @@ from ..core.models import (
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import (
-    GenerateOptionsExtended,
     GenerateExtraArg,
     Qwen3TTSBaseModel,
     TTSInput,
@@ -33,106 +32,6 @@ from .qwen3_tts_base_model import (
 
 class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
     model: Qwen3TTSVoiceDesignForConditionalGeneration
-
-    def _prepend_ref_code_for_decode(
-        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
-    ) -> torch.Tensor:
-        if ref_code is None:
-            return talker_codes
-        return torch.cat([ref_code.to(talker_codes.device), talker_codes], dim=0)
-
-    def _trim_decoded_ref_prefix(
-        self,
-        wav: np.ndarray,
-        ref_code: torch.Tensor | None,
-        total_code_length: int,
-    ) -> np.ndarray:
-        if ref_code is None:
-            return wav
-        ref_len = int(ref_code.shape[0])
-        cut = int(ref_len / max(total_code_length, 1) * wav.shape[0])
-        return wav[cut:]
-
-    def _decode_voice_design_codes_single(
-        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
-    ) -> tuple[np.ndarray, int]:
-        codes_for_decode = self._prepend_ref_code_for_decode(talker_codes, ref_code)
-        wavs, fs = self._decode_talker_codes_batch([codes_for_decode])
-        return (
-            self._trim_decoded_ref_prefix(
-                wavs[0],
-                ref_code=ref_code,
-                total_code_length=int(codes_for_decode.shape[0]),
-            ),
-            fs,
-        )
-
-    def _generate_voice_design_part_wavs(
-        self,
-        tts_input: TTSInput,
-        language: str,
-        non_streaming_mode: bool,
-        gen_kwargs: GenerateOptionsExtended,
-    ) -> tuple[list[np.ndarray], int]:
-        tokenized_parts = self._tokenize_tts_input(tts_input)
-        context_ref_code: torch.Tensor | None = None
-        context_ref_id: torch.Tensor | None = None
-        part_wavs: list[np.ndarray] = []
-        fs_out: int | None = None
-
-        for tokenized_part in tokenized_parts:
-            current_use_icl_prompt = (
-                context_ref_code is not None and context_ref_id is not None
-            )
-            decode_ref_code = context_ref_code if current_use_icl_prompt else None
-
-            if not current_use_icl_prompt:
-                talker_codes, _ = self.model.generate_voice_design(
-                    input_role_id=tokenized_part.input_role_id,
-                    input_text_id=tokenized_part.input_text_id,
-                    instruct_id=tokenized_part.instruction_id,
-                    language=language,
-                    non_streaming_mode=non_streaming_mode,
-                    **gen_kwargs,
-                )
-            else:
-                talker_codes, _ = self.model.generate_voice_design(
-                    input_role_id=tokenized_part.input_role_id,
-                    input_text_id=tokenized_part.input_text_id,
-                    instruct_id=tokenized_part.instruction_id,
-                    language=language,
-                    ref_code=decode_ref_code,
-                    ref_id=context_ref_id,
-                    use_icl_prompt=current_use_icl_prompt,
-                    non_streaming_mode=non_streaming_mode,
-                    **gen_kwargs,
-                )
-
-            if current_use_icl_prompt:
-                wav, fs = self._decode_voice_design_codes_single(
-                    talker_codes,
-                    decode_ref_code,
-                )
-            else:
-                wavs, fs = self._decode_talker_codes_batch([talker_codes])
-                wav = wavs[0]
-
-            part_wavs.append(wav)
-            fs_out = fs if fs_out is None else fs_out
-            if fs_out != fs:
-                raise RuntimeError(
-                    "Inconsistent sample rates returned during generation."
-                )
-
-            context_ref_code = self._concat_code_context(context_ref_code, talker_codes)
-            context_ref_id = self._concat_text_context(
-                context_ref_id,
-                tokenized_part.input_text_id,
-            )
-
-        if fs_out is None:
-            raise RuntimeError("No audio was generated from `tts_input`.")
-        return part_wavs, fs_out
 
     @torch.no_grad()
     def generate_voice_design(
@@ -153,7 +52,8 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         Generate one shared-context multi-part utterance with the VoiceDesign model.
         """
         self._ensure_model_type("voice_design", "generate_voice_design")
-        normalized_tts_input = self._normalize_tts_input(tts_input)
+        plan = self._build_tts_input_plan(tts_input)
+        split_outputs = self._should_split_part_outputs(plan, non_streaming_mode)
 
         language_value = self._normalize_language_value(language)
         self._validate_languages([language_value])
@@ -168,12 +68,18 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
-        return self._generate_voice_design_part_wavs(
-            tts_input=normalized_tts_input,
+        talker_codes, _ = self.model.generate_voice_design(
+            input_role_id=plan.input_role_id,
+            input_text_id=plan.input_text_id,
+            instruct_id=plan.instruct_id,
             language=language_value,
             non_streaming_mode=non_streaming_mode,
-            gen_kwargs=gen_kwargs,
+            **gen_kwargs,
         )
+        wavs, fs = self._decode_talker_codes_batch([talker_codes])
+        if not split_outputs:
+            return [wavs[0]], fs
+        return self._split_wav_by_plan(wavs[0], talker_codes, plan), fs
 
     @torch.no_grad()
     def generate_voice_design_batch(
@@ -194,11 +100,12 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         Generate shared-context multi-part speech for a batch of requests.
         """
         self._ensure_model_type("voice_design", "generate_voice_design_batch")
-        normalized_tts_inputs = self._normalize_tts_inputs(tts_inputs)
-        languages = self._normalize_language_values(
-            language, len(normalized_tts_inputs)
-        )
+        plans = self._build_tts_input_plans(tts_inputs)
+        languages = self._normalize_language_values(language, len(plans))
         self._validate_languages(languages)
+        split_outputs = [
+            self._should_split_part_outputs(plan, non_streaming_mode) for plan in plans
+        ]
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -210,26 +117,23 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
-        wavs_out: list[list[np.ndarray]] = []
-        fs_out: int | None = None
-        for request_tts_input, request_language in zip(
-            normalized_tts_inputs,
-            languages,
-            strict=True,
-        ):
-            part_wavs, fs = self._generate_voice_design_part_wavs(
-                tts_input=request_tts_input,
-                language=request_language,
-                non_streaming_mode=non_streaming_mode,
-                gen_kwargs=gen_kwargs,
+        talker_codes_list, _ = self.model.generate_voice_design_batch(
+            input_role_ids=[plan.input_role_id for plan in plans],
+            input_text_ids=[plan.input_text_id for plan in plans],
+            instruct_ids=[plan.instruct_id for plan in plans],
+            languages=languages,
+            non_streaming_mode=non_streaming_mode,
+            **gen_kwargs,
+        )
+        wavs, fs = self._decode_talker_codes_batch(talker_codes_list)
+        wavs_out = [
+            (
+                self._split_wav_by_plan(wav, talker_codes, plan)
+                if split_output
+                else [wav]
             )
-            wavs_out.append(part_wavs)
-            fs_out = fs if fs_out is None else fs_out
-            if fs_out != fs:
-                raise RuntimeError(
-                    "Inconsistent sample rates returned during generation."
-                )
-
-        if fs_out is None:
-            raise RuntimeError("No audio was generated from `tts_inputs`.")
-        return wavs_out, fs_out
+            for wav, talker_codes, plan, split_output in zip(
+                wavs, talker_codes_list, plans, split_outputs, strict=True
+            )
+        ]
+        return wavs_out, fs

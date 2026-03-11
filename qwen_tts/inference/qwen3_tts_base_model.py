@@ -56,10 +56,13 @@ TTSInputs = list[TTSInput]
 
 
 @dataclass(frozen=True)
-class TokenizedTTSInputPart:
-    instruction_id: torch.Tensor | None
+class ContinuousTTSInputPlan:
+    instruct_id: torch.Tensor | None
     input_role_id: torch.Tensor
     input_text_id: torch.Tensor
+    token_owners: tuple[int, ...]
+    control_only_mask: tuple[bool, ...]
+    num_parts: int
 
 
 class GenerateOptions(TypedDict):
@@ -453,10 +456,19 @@ class Qwen3TTSBaseModel:
     def _tokenize_instruction_text(self, instruction: str) -> torch.Tensor | None:
         if instruction == "":
             return None
-        rendered_prompt = (
-            f"{self._user_role_prefix()}{instruction}{self._turn_suffix()}"
+        role_prefix = self._user_role_prefix()
+        rendered_prompt = f"{role_prefix}{instruction}{self._turn_suffix()}"
+        input_data = self._tokenize_text(
+            rendered_prompt,
+            return_offsets_mapping=True,
         )
-        return self._extract_input_ids(self._tokenize_text(rendered_prompt))
+        input_ids = self._extract_input_ids(input_data)
+        token_start, token_end = self._locate_token_span(
+            self._extract_offset_mapping(input_data),
+            content_start_char=len(role_prefix),
+            content_end_char=len(role_prefix) + len(instruction),
+        )
+        return input_ids[:, token_start:token_end]
 
     def _tokenize_reference_text(self, ref_text: str) -> torch.Tensor | None:
         if ref_text == "":
@@ -464,24 +476,59 @@ class Qwen3TTSBaseModel:
         _, ref_text_ids = self._tokenize_assistant_text(ref_text)
         return ref_text_ids
 
-    def _tokenize_tts_input_part(
-        self, tts_input_part: TTSInputPart
-    ) -> TokenizedTTSInputPart:
-        input_role_id, input_text_id = self._tokenize_assistant_text(
-            tts_input_part["text"]
+    def _build_tts_input_plan(self, tts_input: TTSInput) -> ContinuousTTSInputPlan:
+        normalized_tts_input = self._normalize_tts_input(tts_input)
+        first_part = normalized_tts_input[0]
+        first_role_id, first_text_id = self._tokenize_assistant_text(first_part["text"])
+
+        input_text_segments: list[torch.Tensor] = []
+        token_owners: list[int] = []
+        control_only_mask: list[bool] = []
+
+        first_instruction_id = self._tokenize_instruction_text(
+            first_part["instruction"]
         )
-        return TokenizedTTSInputPart(
-            instruction_id=self._tokenize_instruction_text(
+        input_role_id = first_role_id
+
+        if first_instruction_id is not None:
+            input_text_segments.append(first_instruction_id)
+            token_owners.extend([0] * int(first_instruction_id.shape[1]))
+            control_only_mask.extend([True] * int(first_instruction_id.shape[1]))
+
+        token_owners.extend([0] * int(first_text_id.shape[1]))
+        input_text_segments.append(first_text_id)
+        control_only_mask.extend([False] * int(first_text_id.shape[1]))
+
+        for part_index, tts_input_part in enumerate(normalized_tts_input[1:], start=1):
+            instruction_id = self._tokenize_instruction_text(
                 tts_input_part["instruction"]
-            ),
+            )
+            if instruction_id is not None:
+                input_text_segments.append(instruction_id)
+                token_owners.extend([part_index] * int(instruction_id.shape[1]))
+                control_only_mask.extend([True] * int(instruction_id.shape[1]))
+
+            _, next_text_id = self._tokenize_assistant_text(tts_input_part["text"])
+            input_text_segments.append(next_text_id)
+            token_owners.extend([part_index] * int(next_text_id.shape[1]))
+            control_only_mask.extend([False] * int(next_text_id.shape[1]))
+
+        input_text_id = torch.cat(input_text_segments, dim=1)
+        return ContinuousTTSInputPlan(
+            instruct_id=None,
             input_role_id=input_role_id,
             input_text_id=input_text_id,
+            token_owners=tuple(token_owners),
+            control_only_mask=tuple(control_only_mask),
+            num_parts=len(normalized_tts_input),
         )
 
-    def _tokenize_tts_input(self, tts_input: TTSInput) -> list[TokenizedTTSInputPart]:
+    def _build_tts_input_plans(
+        self, tts_inputs: TTSInputs
+    ) -> list[ContinuousTTSInputPlan]:
+        normalized_tts_inputs = self._normalize_tts_inputs(tts_inputs)
         return [
-            self._tokenize_tts_input_part(tts_input_part)
-            for tts_input_part in tts_input
+            self._build_tts_input_plan(tts_input) for tts_input in normalized_tts_inputs
         ]
 
     @staticmethod
@@ -506,10 +553,87 @@ class Qwen3TTSBaseModel:
             dim=0,
         )
 
+    @staticmethod
+    def _build_part_owner_trace(
+        token_owners: Sequence[int],
+        control_only_mask: Sequence[bool],
+        generated_code_length: int,
+    ) -> list[int]:
+        if len(token_owners) == 0:
+            raise ValueError("`token_owners` must not be empty.")
+        if len(control_only_mask) != len(token_owners):
+            raise ValueError("`control_only_mask` must align with `token_owners`.")
+
+        owner_trace: list[int] = []
+        last_spoken_owner = 0
+        if not control_only_mask[0]:
+            last_spoken_owner = int(token_owners[0])
+        for generation_step in range(generated_code_length):
+            token_index = generation_step + 1
+            if token_index < len(token_owners):
+                if control_only_mask[token_index]:
+                    owner_trace.append(-1)
+                    continue
+                last_spoken_owner = int(token_owners[token_index])
+            owner_trace.append(last_spoken_owner)
+        return owner_trace
+
+    @classmethod
+    def _validate_owner_trace(cls, owner_trace: Sequence[int]) -> None:
+        last_owner = -1
+        for owner in owner_trace:
+            if owner < 0:
+                continue
+            if owner < last_owner:
+                raise RuntimeError("Part ownership must progress monotonically.")
+            last_owner = owner
+
+    def _split_wav_by_plan(
+        self,
+        wav: np.ndarray,
+        talker_codes: torch.Tensor,
+        plan: ContinuousTTSInputPlan,
+    ) -> list[np.ndarray]:
+        upsample_rate = self._require_speech_tokenizer().get_decode_upsample_rate()
+        generated_code_length = int(talker_codes.shape[0])
+        owner_trace = self._build_part_owner_trace(
+            plan.token_owners,
+            plan.control_only_mask,
+            generated_code_length,
+        )
+        self._validate_owner_trace(owner_trace)
+
+        part_chunks: list[list[np.ndarray]] = [[] for _ in range(plan.num_parts)]
+        for generation_step, owner in enumerate(owner_trace):
+            sample_start = min(int(wav.shape[0]), generation_step * upsample_rate)
+            if generation_step == generated_code_length - 1:
+                sample_end = int(wav.shape[0])
+            else:
+                sample_end = min(int(wav.shape[0]), (generation_step + 1) * upsample_rate)
+            if owner < 0 or sample_end <= sample_start:
+                continue
+            part_chunks[owner].append(wav[sample_start:sample_end])
+
+        part_wavs: list[np.ndarray] = []
+        for chunks in part_chunks:
+            if len(chunks) == 0:
+                part_wavs.append(np.zeros((0,), dtype=wav.dtype))
+            elif len(chunks) == 1:
+                part_wavs.append(chunks[0])
+            else:
+                part_wavs.append(np.concatenate(chunks))
+        return part_wavs
+
     def _normalize_language_value(self, language: str) -> str:
         if not isinstance(language, str):
             raise TypeError("`language` must be a string.")
         return "Auto" if language == "" else language
+
+    @staticmethod
+    def _should_split_part_outputs(
+        plan: ContinuousTTSInputPlan, non_streaming_mode: bool
+    ) -> bool:
+        return plan.num_parts == 1 or not non_streaming_mode
 
     def _normalize_language_values(
         self, languages: Sequence[str], batch_size: int

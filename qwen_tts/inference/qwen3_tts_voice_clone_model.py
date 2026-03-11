@@ -27,12 +27,10 @@ from ..core.models import (
 )
 from .qwen3_tts_base_model import (
     AudioLike,
-    GenerateOptionsExtended,
     GenerateExtraArg,
     Qwen3TTSBaseModel,
     TTSInput,
     TTSInputs,
-    TokenizedTTSInputPart,
 )
 
 
@@ -361,64 +359,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 "`ref_text` is required when `voice_clone_prompt` uses ICL mode."
             )
 
-    def _generate_voice_clone_part_wavs(
-        self,
-        tokenized_parts: Sequence[TokenizedTTSInputPart],
-        voice_clone_prompt_single: VoiceClonePromptSingleDict,
-        language: str,
-        non_streaming_mode: bool,
-        ref_id: torch.Tensor | None,
-        gen_kwargs: GenerateOptionsExtended,
-    ) -> tuple[list[np.ndarray], int]:
-        if voice_clone_prompt_single["icl_mode"]:
-            context_ref_code = voice_clone_prompt_single["ref_code"]
-            context_ref_id = ref_id
-        else:
-            context_ref_code = None
-            context_ref_id = None
-
-        part_wavs: list[np.ndarray] = []
-        fs_out: int | None = None
-        for tokenized_part in tokenized_parts:
-            use_icl_prompt = context_ref_code is not None and context_ref_id is not None
-            decode_ref_code = context_ref_code if use_icl_prompt else None
-            runtime_prompt = VoiceClonePromptSingleDict(
-                ref_code=decode_ref_code,
-                ref_spk_embedding=voice_clone_prompt_single["ref_spk_embedding"],
-                x_vector_only_mode=voice_clone_prompt_single["x_vector_only_mode"],
-                icl_mode=use_icl_prompt,
-            )
-            talker_codes, _ = self.model.generate_voice_clone(
-                input_role_id=tokenized_part.input_role_id,
-                input_text_id=tokenized_part.input_text_id,
-                voice_clone_prompt=runtime_prompt,
-                instruct_id=tokenized_part.instruction_id,
-                ref_id=context_ref_id,
-                language=language,
-                non_streaming_mode=non_streaming_mode,
-                **gen_kwargs,
-            )
-            wav, fs = self._decode_voice_clone_codes_single(
-                talker_codes,
-                decode_ref_code,
-            )
-            part_wavs.append(wav)
-            fs_out = fs if fs_out is None else fs_out
-            if fs_out != fs:
-                raise RuntimeError(
-                    "Inconsistent sample rates returned during generation."
-                )
-
-            context_ref_code = self._concat_code_context(context_ref_code, talker_codes)
-            context_ref_id = self._concat_text_context(
-                context_ref_id,
-                tokenized_part.input_text_id,
-            )
-
-        if fs_out is None:
-            raise RuntimeError("No audio was generated from `tts_input`.")
-        return part_wavs, fs_out
-
     def _prepend_ref_code_for_decode(
         self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
     ) -> torch.Tensor:
@@ -501,7 +441,8 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         Voice clone one shared-context multi-part request using the Base model.
         """
         self._ensure_model_type("base", "generate_voice_clone")
-        normalized_tts_input = self._normalize_tts_input(tts_input)
+        plan = self._build_tts_input_plan(tts_input)
+        split_outputs = self._should_split_part_outputs(plan, non_streaming_mode)
         if not isinstance(language, str):
             raise TypeError("`language` must be a string.")
         if not isinstance(ref_text, str):
@@ -550,7 +491,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             voice_clone_prompt_single["icl_mode"],
             ref_text_for_id,
         )
-        tokenized_parts = self._tokenize_tts_input(normalized_tts_input)
         ref_id = self._tokenize_reference_text(ref_text_for_id)
 
         gen_kwargs = self._merge_generate_kwargs(
@@ -563,14 +503,28 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
-        return self._generate_voice_clone_part_wavs(
-            tokenized_parts=tokenized_parts,
-            voice_clone_prompt_single=voice_clone_prompt_single,
+        talker_codes, _ = self.model.generate_voice_clone(
+            input_role_id=plan.input_role_id,
+            input_text_id=plan.input_text_id,
+            voice_clone_prompt=voice_clone_prompt_single,
+            instruct_id=plan.instruct_id,
+            ref_id=ref_id,
             language=language_value,
             non_streaming_mode=non_streaming_mode,
-            ref_id=ref_id,
-            gen_kwargs=gen_kwargs,
+            **gen_kwargs,
         )
+        ref_code_for_decode = (
+            voice_clone_prompt_single["ref_code"]
+            if voice_clone_prompt_single["icl_mode"]
+            else None
+        )
+        wav, fs = self._decode_voice_clone_codes_single(
+            talker_codes,
+            ref_code_for_decode,
+        )
+        if not split_outputs:
+            return [wav], fs
+        return self._split_wav_by_plan(wav, talker_codes, plan), fs
 
     @torch.no_grad()
     def generate_voice_clone_batch(
@@ -597,8 +551,11 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         Voice clone a batch of shared-context multi-part requests using the Base model.
         """
         self._ensure_model_type("base", "generate_voice_clone_batch")
-        normalized_tts_inputs = self._normalize_tts_inputs(tts_inputs)
-        batch_size = len(normalized_tts_inputs)
+        plans = self._build_tts_input_plans(tts_inputs)
+        batch_size = len(plans)
+        split_outputs = [
+            self._should_split_part_outputs(plan, non_streaming_mode) for plan in plans
+        ]
         languages = self._normalize_language_values(language, batch_size)
         normalized_ref_texts = self._normalize_ref_text_values(ref_text, batch_size)
 
@@ -669,26 +626,39 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
+        ref_ids = [
+            self._tokenize_reference_text(ref_text_for_id)
+            for ref_text_for_id in ref_texts_for_ids
+        ]
+        talker_codes_list, _ = self.model.generate_voice_clone_batch(
+            input_role_ids=[plan.input_role_id for plan in plans],
+            input_text_ids=[plan.input_text_id for plan in plans],
+            voice_clone_prompt=voice_clone_prompt_dict,
+            instruct_ids=[plan.instruct_id for plan in plans],
+            ref_ids=ref_ids,
+            languages=languages,
+            non_streaming_mode=non_streaming_mode,
+            **gen_kwargs,
+        )
         wavs_out: list[list[np.ndarray]] = []
         fs_out: int | None = None
-        for index, (request_tts_input, request_language, ref_text_for_id) in enumerate(
-            zip(normalized_tts_inputs, languages, ref_texts_for_ids, strict=True)
+        for talker_codes, plan, ref_code, icl_mode, split_output in zip(
+            talker_codes_list,
+            plans,
+            voice_clone_prompt_dict["ref_code"],
+            voice_clone_prompt_dict["icl_mode"],
+            split_outputs,
+            strict=True,
         ):
-            voice_clone_prompt_single = self._prompt_dict_item_to_single(
-                voice_clone_prompt_dict,
-                index,
+            wav, fs = self._decode_voice_clone_codes_single(
+                talker_codes,
+                ref_code if bool(icl_mode) else None,
             )
-            tokenized_parts = self._tokenize_tts_input(request_tts_input)
-            request_ref_id = self._tokenize_reference_text(ref_text_for_id)
-            part_wavs, fs = self._generate_voice_clone_part_wavs(
-                tokenized_parts=tokenized_parts,
-                voice_clone_prompt_single=voice_clone_prompt_single,
-                language=request_language,
-                non_streaming_mode=non_streaming_mode,
-                ref_id=request_ref_id,
-                gen_kwargs=gen_kwargs,
+            wavs_out.append(
+                self._split_wav_by_plan(wav, talker_codes, plan)
+                if split_output
+                else [wav]
             )
-            wavs_out.append(part_wavs)
             fs_out = fs if fs_out is None else fs_out
             if fs_out != fs:
                 raise RuntimeError(

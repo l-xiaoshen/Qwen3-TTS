@@ -37,6 +37,8 @@ tts_input = [
 ]
 ```
 
+One `TTSInput` request is synthesized as one continuous generation stream. When `non_streaming_mode=False`, the runtime API returns one audio item per input part, and batch APIs return one list of part audios per request. When `non_streaming_mode=True`, multi-part requests are still accepted but may return a single output item for the full request.
+
 ### Extract a speaker embedding
 
 Use the base model to extract a speaker embedding from reference audio.
