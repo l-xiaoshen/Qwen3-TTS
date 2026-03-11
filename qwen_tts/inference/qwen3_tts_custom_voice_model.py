@@ -64,7 +64,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
     def _normalize_custom_voice_tts_input(self, tts_input: TTSInput) -> TTSInput:
         model_size = self.model.tts_model_size
-        if not (isinstance(model_size, str) and model_size in "0b6"):
+        if model_size != "0b6":
             return tts_input
 
         normalized_tts_input: TTSInput = []
