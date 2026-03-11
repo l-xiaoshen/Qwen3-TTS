@@ -1,6 +1,6 @@
 # Qwen TTS Fork
 
-This fork extends `qwen-tts` with additional inference APIs for speaker embeddings, reusable prompts, weighted speaker mixing, and hybrid custom voice generation.
+This fork extends `qwen-tts` with additional inference APIs for speaker embeddings, reusable prompts, weighted speaker mixing, hybrid custom voice generation, and ordered multi-part `TTSInput` requests.
 
 The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 
@@ -15,11 +15,27 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 - Public `SpeakerConfiguration` support.
 - Weighted speaker merge.
 - Reusable prompt builders.
-- Hybrid custom voice generation with `speaker`, reference audio, reference text, and `instruct`.
-
-`Qwen3TTSVoiceCloneModel` does not expose `instruct`. When instruction control is required, use `Qwen3TTSCustomVoiceModel.generate_custom_voice()` with a direct speaker embedding plus a reference prompt.
+- Hybrid custom voice generation with `speaker`, reference audio, and reference text.
+- Ordered `TTSInput` requests with one audio output per input part.
 
 ## Usage
+
+### Build a `TTSInput`
+
+Runtime generation now uses an ordered list of parts:
+
+```python
+tts_input = [
+    {
+        "instruction": "Speak slowly.",
+        "text": "Hi folks, today",
+    },
+    {
+        "instruction": "Speak much faster.",
+        "text": "I'm going to introduce a new feature.",
+    },
+]
+```
 
 ### Extract a speaker embedding
 
@@ -50,20 +66,19 @@ from qwen_tts import Qwen3TTSCustomVoiceModel
 tts = Qwen3TTSCustomVoiceModel.from_pretrained(
     "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 )
-wav, sr = tts.generate_custom_voice(
-    text=text,
+wavs, sr = tts.generate_custom_voice(
+    tts_input=tts_input,
     speaker=embedding,
-    instruct="Calm and low voice.",
 )
 ```
 
 For batch generation, use the batch API.
 
 ```python
-wavs, sr = tts.generate_custom_voice_batch(
-    text=texts,
+tts_inputs = [tts_input, tts_input]
+audio_batches, sr = tts.generate_custom_voice_batch(
+    tts_inputs=tts_inputs,
     speaker=embeddings,
-    instruct=instructs,
 )
 ```
 
@@ -73,7 +88,7 @@ Use `SpeakerConfiguration` to mix built-in speakers.
 
 ```python
 speaker = {"Vivian": 1.0, "Ryan": 0.3}
-wav, sr = tts.generate_custom_voice(text=text, speaker=speaker)
+wavs, sr = tts.generate_custom_voice(tts_input=tts_input, speaker=speaker)
 ```
 
 ### Clone from reference audio and reference text
@@ -90,7 +105,7 @@ prompt = clone.create_voice_clone_prompt(
     ref_audio=[ref_audio],
     ref_text=[ref_text],
 )[0]
-wav, sr = clone.generate_voice_clone(text=text, voice_clone_prompt=prompt)
+wavs, sr = clone.generate_voice_clone(tts_input=tts_input, voice_clone_prompt=prompt)
 ```
 
 ### Use reference prompting with instruction
@@ -98,12 +113,11 @@ wav, sr = clone.generate_voice_clone(text=text, voice_clone_prompt=prompt)
 Use the hybrid `custom_voice` flow when instruction control and reference prompting must be combined.
 
 ```python
-wav, sr = tts.generate_custom_voice(
-    text=text,
+wavs, sr = tts.generate_custom_voice(
+    tts_input=tts_input,
     speaker=embedding,
     ref_audio=ref_audio,
     ref_text=ref_text,
-    instruct="Speak with restrained frustration.",
 )
 ```
 
@@ -114,11 +128,10 @@ prompt = tts.create_custom_voice_prompt(
     ref_audio=[ref_audio],
     ref_text=[ref_text],
 )[0]
-wav, sr = tts.generate_custom_voice(
-    text=text,
+wavs, sr = tts.generate_custom_voice(
+    tts_input=tts_input,
     speaker=embedding,
     custom_voice_prompt=prompt,
-    instruct="Speak with restrained frustration.",
 )
 ```
 
@@ -138,6 +151,8 @@ The fork exports the following top-level objects:
 - `Qwen3TTSVoiceCloneModel`
 - `Qwen3TTSCustomVoiceModel`
 - `Qwen3TTSVoiceDesignModel`
+- `TTSInputPart`
+- `TTSInput`
 - `VoiceClonePromptItem`
 - `CustomVoicePromptItem`
 - `SpeakerConfiguration`

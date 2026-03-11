@@ -17,7 +17,7 @@ import time
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSVoiceDesignModel
+from qwen_tts import Qwen3TTSVoiceDesignModel, TTSInput
 
 
 def main():
@@ -35,36 +35,46 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wav, sr = tts.generate_voice_design(
-        text="哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+    single_input: TTSInput = [
+        {
+            "instruction": "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
+            "text": "哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+        }
+    ]
+    wavs, sr = tts.generate_voice_design(
+        tts_input=single_input,
         language="Chinese",
-        instruct="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
     )
 
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[VoiceDesign Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_voice_design_single.wav", wav, sr)
+    sf.write("qwen3_tts_test_voice_design_single.wav", wavs[0], sr)
 
     # -------- Batch --------
-    texts = [
-        "哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
-        "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there!",
+    tts_inputs: list[TTSInput] = [
+        [
+            {
+                "instruction": "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
+                "text": "哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+            }
+        ],
+        [
+            {
+                "instruction": "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice.",
+                "text": "It's in the top drawer... wait, it's empty? No way, that's impossible! I'm sure I put it there!",
+            }
+        ],
     ]
     languages = ["Chinese", "English"]
-    instructs = [
-        "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
-        "Speak in an incredulous tone, but with a hint of panic beginning to creep into your voice.",
-    ]
 
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_voice_design_batch(
-        text=texts,
+    wavs_batch, sr = tts.generate_voice_design_batch(
+        tts_inputs=tts_inputs,
         language=languages,
-        instruct=instructs,
         max_new_tokens=2048,
     )
 
@@ -72,8 +82,9 @@ def main():
     t1 = time.time()
     print(f"[VoiceDesign Batch] time: {t1 - t0:.3f}s")
 
-    for i, w in enumerate(wavs):
-        sf.write(f"qwen3_tts_test_voice_design_batch_{i}.wav", w, sr)
+    for i, request_wavs in enumerate(wavs_batch):
+        for j, wav in enumerate(request_wavs):
+            sf.write(f"qwen3_tts_test_voice_design_batch_{i}_{j}.wav", wav, sr)
 
 
 if __name__ == "__main__":

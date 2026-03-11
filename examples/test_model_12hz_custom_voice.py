@@ -17,7 +17,7 @@ import time
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSCustomVoiceModel
+from qwen_tts import Qwen3TTSCustomVoiceModel, TTSInput
 
 
 def main():
@@ -35,36 +35,49 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wav, sr = tts.generate_custom_voice(
-        text="其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+    single_input: TTSInput = [
+        {
+            "instruction": "用特别愤怒的语气说",
+            "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+        }
+    ]
+    wavs, sr = tts.generate_custom_voice(
+        tts_input=single_input,
         language="Chinese",
         speaker={"Vivian": 1.0},
-        instruct="用特别愤怒的语气说",
     )
 
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[CustomVoice Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_custom_single.wav", wav, sr)
+    sf.write("qwen3_tts_test_custom_single.wav", wavs[0], sr)
 
     # -------- Batch (some empty instruct) --------
-    texts = [
-        "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
-        "She said she would be here by noon.",
+    tts_inputs: list[TTSInput] = [
+        [
+            {
+                "instruction": "",
+                "text": "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
+            }
+        ],
+        [
+            {
+                "instruction": "Very happy.",
+                "text": "She said she would be here by noon.",
+            }
+        ],
     ]
     languages = ["Chinese", "English"]
     speakers = [{"Vivian": 1.0}, {"Ryan": 1.0}]
-    instructs = ["", "Very happy."]
 
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_custom_voice_batch(
-        text=texts,
+    wavs_batch, sr = tts.generate_custom_voice_batch(
+        tts_inputs=tts_inputs,
         language=languages,
         speaker=speakers,
-        instruct=instructs,
         max_new_tokens=2048,
     )
 
@@ -72,8 +85,9 @@ def main():
     t1 = time.time()
     print(f"[CustomVoice Batch] time: {t1 - t0:.3f}s")
 
-    for i, w in enumerate(wavs):
-        sf.write(f"qwen3_tts_test_custom_batch_{i}.wav", w, sr)
+    for i, request_wavs in enumerate(wavs_batch):
+        for j, wav in enumerate(request_wavs):
+            sf.write(f"qwen3_tts_test_custom_batch_{i}_{j}.wav", wav, sr)
 
 
 if __name__ == "__main__":

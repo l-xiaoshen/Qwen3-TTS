@@ -20,7 +20,7 @@ from typing import TypedDict
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSVoiceCloneModel, SubTalkerConfiguration
+from qwen_tts import Qwen3TTSVoiceCloneModel, SubTalkerConfiguration, TTSInput
 
 
 class VoiceCloneGenKwargs(TypedDict):
@@ -37,22 +37,34 @@ def ensure_dir(d: str):
     os.makedirs(d, exist_ok=True)
 
 
+def single_input(text: str) -> TTSInput:
+    return [{"instruction": "", "text": text}]
+
+
 def run_case(tts: Qwen3TTSVoiceCloneModel, out_dir: str, case_name: str, call_fn):
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wav_or_wavs, sr = call_fn()
-    if isinstance(wav_or_wavs, list):
-        wavs = wav_or_wavs
+    wavs_or_wavs_batch, sr = call_fn()
+    if (
+        isinstance(wavs_or_wavs_batch, list)
+        and len(wavs_or_wavs_batch) > 0
+        and isinstance(wavs_or_wavs_batch[0], list)
+    ):
+        wavs_batch = wavs_or_wavs_batch
+    elif isinstance(wavs_or_wavs_batch, list):
+        wavs_batch = [wavs_or_wavs_batch]
     else:
-        wavs = [wav_or_wavs]
+        wavs_batch = [[wavs_or_wavs_batch]]
 
     torch.cuda.synchronize()
     t1 = time.time()
-    print(f"[{case_name}] time: {t1 - t0:.3f}s, n_wavs={len(wavs)}, sr={sr}")
+    num_wavs = sum(len(request_wavs) for request_wavs in wavs_batch)
+    print(f"[{case_name}] time: {t1 - t0:.3f}s, n_wavs={num_wavs}, sr={sr}")
 
-    for i, w in enumerate(wavs):
-        sf.write(os.path.join(out_dir, f"{case_name}_{i}.wav"), w, sr)
+    for i, request_wavs in enumerate(wavs_batch):
+        for j, wav in enumerate(request_wavs):
+            sf.write(os.path.join(out_dir, f"{case_name}_{i}_{j}.wav"), wav, sr)
 
 
 def main():
@@ -121,7 +133,7 @@ def main():
             OUT_DIR,
             f"case1_promptSingle_synSingle_direct_{mode_tag}",
             lambda: tts.generate_voice_clone(
-                text=syn_text_single,
+                tts_input=single_input(syn_text_single),
                 language=syn_lang_single,
                 ref_audio=ref_audio_single,
                 ref_text=ref_text_single,
@@ -138,7 +150,7 @@ def main():
                 x_vector_only_mode=[xvec_only],
             )
             return tts.generate_voice_clone(
-                text=syn_text_single,
+                tts_input=single_input(syn_text_single),
                 language=syn_lang_single,
                 voice_clone_prompt=prompt_items[0],
                 **common_gen_kwargs,
@@ -157,7 +169,10 @@ def main():
             OUT_DIR,
             f"case2_promptSingle_synBatch_direct_{mode_tag}",
             lambda: tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_inputs=[
+                    single_input(syn_text_batch[0]),
+                    single_input(syn_text_batch[1]),
+                ],
                 language=syn_lang_batch,
                 ref_audio=[ref_audio_single, ref_audio_single],
                 ref_text=[ref_text_single, ref_text_single],
@@ -175,7 +190,10 @@ def main():
             )
             prompt_items = prompt_items * len(syn_text_batch)
             return tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_inputs=[
+                    single_input(syn_text_batch[0]),
+                    single_input(syn_text_batch[1]),
+                ],
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,
                 **common_gen_kwargs,
@@ -194,7 +212,10 @@ def main():
             OUT_DIR,
             f"case3_promptBatch_synBatch_direct_{mode_tag}",
             lambda: tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_inputs=[
+                    single_input(syn_text_batch[0]),
+                    single_input(syn_text_batch[1]),
+                ],
                 language=syn_lang_batch,
                 ref_audio=ref_audio_batch,
                 ref_text=ref_text_batch,
@@ -211,7 +232,10 @@ def main():
                 x_vector_only_mode=[xvec_only, xvec_only],
             )
             return tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_inputs=[
+                    single_input(syn_text_batch[0]),
+                    single_input(syn_text_batch[1]),
+                ],
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,
                 **common_gen_kwargs,

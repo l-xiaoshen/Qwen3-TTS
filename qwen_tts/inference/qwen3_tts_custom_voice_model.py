@@ -25,8 +25,13 @@ from qwen_tts.core import SpeakerConfiguration, SubTalkerConfiguration
 from ..core.models import Qwen3TTSCustomVoiceForConditionalGeneration
 from .qwen3_tts_base_model import (
     AudioLike,
+    GenerateOptionsExtended,
     GenerateExtraArg,
     Qwen3TTSBaseModel,
+    TTSInput,
+    TTSInputPart,
+    TTSInputs,
+    TokenizedTTSInputPart,
 )
 
 
@@ -56,6 +61,81 @@ CustomVoicePromptSingleInput = Mapping[str, torch.Tensor | str]
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     model: Qwen3TTSCustomVoiceForConditionalGeneration
+
+    def _normalize_custom_voice_tts_input(self, tts_input: TTSInput) -> TTSInput:
+        model_size = self.model.tts_model_size
+        if not (isinstance(model_size, str) and model_size in "0b6"):
+            return tts_input
+
+        normalized_tts_input: TTSInput = []
+        for tts_input_part in tts_input:
+            normalized_tts_input.append(
+                TTSInputPart(
+                    instruction="",
+                    text=tts_input_part["text"],
+                )
+            )
+        return normalized_tts_input
+
+    def _generate_custom_voice_part_wavs(
+        self,
+        tokenized_parts: Sequence[TokenizedTTSInputPart],
+        speaker: SpeakerConfiguration | torch.Tensor,
+        language: str,
+        non_streaming_mode: bool,
+        ref_code: torch.Tensor | None,
+        ref_id: torch.Tensor | None,
+        use_icl_prompt: bool,
+        gen_kwargs: GenerateOptionsExtended,
+    ) -> tuple[list[np.ndarray], int]:
+        context_ref_code = ref_code if use_icl_prompt else None
+        context_ref_id = ref_id if use_icl_prompt else None
+
+        part_wavs: list[np.ndarray] = []
+        fs_out: int | None = None
+        for tokenized_part in tokenized_parts:
+            current_use_icl_prompt = (
+                context_ref_code is not None and context_ref_id is not None
+            )
+            decode_ref_code = context_ref_code if current_use_icl_prompt else None
+            talker_codes, _ = self.model.generate_custom_voice(
+                input_role_id=tokenized_part.input_role_id,
+                input_text_id=tokenized_part.input_text_id,
+                instruct_id=tokenized_part.instruction_id,
+                language=language,
+                speaker=speaker,
+                ref_code=decode_ref_code,
+                ref_id=context_ref_id,
+                use_icl_prompt=current_use_icl_prompt,
+                non_streaming_mode=non_streaming_mode,
+                **gen_kwargs,
+            )
+
+            if current_use_icl_prompt:
+                wav, fs = self._decode_custom_voice_codes_single(
+                    talker_codes,
+                    decode_ref_code,
+                )
+            else:
+                wavs, fs = self._decode_talker_codes_batch([talker_codes])
+                wav = wavs[0]
+
+            part_wavs.append(wav)
+            fs_out = fs if fs_out is None else fs_out
+            if fs_out != fs:
+                raise RuntimeError(
+                    "Inconsistent sample rates returned during generation."
+                )
+
+            context_ref_code = self._concat_code_context(context_ref_code, talker_codes)
+            context_ref_id = self._concat_text_context(
+                context_ref_id,
+                tokenized_part.input_text_id,
+            )
+
+        if fs_out is None:
+            raise RuntimeError("No audio was generated from `tts_input`.")
+        return part_wavs, fs_out
 
     @torch.inference_mode()
     def create_custom_voice_prompt(
@@ -252,10 +332,9 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     @torch.no_grad()
     def generate_custom_voice(
         self,
-        text: str,
+        tts_input: TTSInput,
         speaker: SpeakerConfiguration | torch.Tensor,
         language: str = "Auto",
-        instruct: str = "",
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -270,31 +349,22 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         | CustomVoicePromptItem
         | None = None,
         **kwargs: GenerateExtraArg,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
-        Generate one utterance with the CustomVoice model using a speaker
+        Generate one shared-context multi-part request with the CustomVoice model using a speaker
         configuration or a direct speaker embedding. Optionally, an ICL
         reference prompt can be layered on top through `ref_audio`/`ref_text`
         or `custom_voice_prompt`.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice")
-
-        if not isinstance(text, str):
-            raise TypeError("`text` must be a string.")
-        if not isinstance(instruct, str):
-            raise TypeError("`instruct` must be a string.")
+        normalized_tts_input = self._normalize_custom_voice_tts_input(
+            self._normalize_tts_input(tts_input)
+        )
         if not isinstance(ref_text, str):
             raise TypeError("`ref_text` must be a string.")
 
         language_value = self._normalize_language_value(language)
         speaker_value = speaker
-
-        model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size in "0b6":
-            # for 0b6 model, instruct is not supported
-            instruct_value = ""
-        else:
-            instruct_value = instruct
 
         self._validate_languages([language_value])
         if not isinstance(speaker_value, torch.Tensor):
@@ -345,15 +415,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 )
             ref_text_for_id = custom_voice_prompt_single["ref_text"]
 
-        input_segments = self._build_runtime_segments(
-            text=text,
-            instruct=instruct_value,
-        )
-        input_role_id, input_text_id = self._tokenize_assistant_segments(input_segments)
-        instruct_id = self._tokenize_instruction_segments(input_segments)
-        ref_id = self._tokenize_reference_segments(
-            self._build_reference_segments(ref_text_for_id)
-        )
+        tokenized_parts = self._tokenize_tts_input(normalized_tts_input)
+        ref_id = self._tokenize_reference_text(ref_text_for_id)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -365,13 +428,11 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
-
-        talker_codes, _ = self.model.generate_custom_voice(
-            input_role_id=input_role_id,
-            input_text_id=input_text_id,
-            instruct_id=instruct_id,
-            language=language_value,
+        return self._generate_custom_voice_part_wavs(
+            tokenized_parts=tokenized_parts,
             speaker=speaker_value,
+            language=language_value,
+            non_streaming_mode=non_streaming_mode,
             ref_code=(
                 custom_voice_prompt_single["ref_code"]
                 if custom_voice_prompt_single is not None
@@ -379,25 +440,15 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             ),
             ref_id=ref_id,
             use_icl_prompt=custom_voice_prompt_single is not None,
-            non_streaming_mode=non_streaming_mode,
-            **gen_kwargs,
+            gen_kwargs=gen_kwargs,
         )
-
-        if custom_voice_prompt_single is not None:
-            return self._decode_custom_voice_codes_single(
-                talker_codes,
-                custom_voice_prompt_single["ref_code"],
-            )
-        wavs, fs = self._decode_talker_codes_batch([talker_codes])
-        return wavs[0], fs
 
     @torch.no_grad()
     def generate_custom_voice_batch(
         self,
-        text: list[str],
+        tts_inputs: TTSInputs,
         speaker: Sequence[SpeakerConfiguration | torch.Tensor],
         language: Sequence[str] = (),
-        instruct: Sequence[str] = (),
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -412,23 +463,20 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         | list[CustomVoicePromptItem]
         | None = None,
         **kwargs: GenerateExtraArg,
-    ) -> tuple[list[np.ndarray], int]:
+    ) -> tuple[list[list[np.ndarray]], int]:
         """
-        Generate speech with the CustomVoice model using speaker
+        Generate shared-context multi-part speech with the CustomVoice model using speaker
         configurations or direct speaker embeddings. Optionally, batched ICL
         reference prompts can be layered on top.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
-
-        if not isinstance(text, list):
-            raise TypeError("`text` must be a list of strings.")
-        texts: list[str] = []
-        for item in text:
-            if not isinstance(item, str):
-                raise TypeError("`text` list items must be strings.")
-            texts.append(item)
-
-        languages = self._normalize_language_values(language, len(texts))
+        normalized_tts_inputs = self._normalize_tts_inputs(tts_inputs)
+        batch_size = len(normalized_tts_inputs)
+        normalized_tts_inputs = [
+            self._normalize_custom_voice_tts_input(tts_input)
+            for tts_input in normalized_tts_inputs
+        ]
+        languages = self._normalize_language_values(language, batch_size)
 
         if not isinstance(speaker, Sequence) or isinstance(speaker, (str, bytes)):
             raise TypeError(
@@ -436,24 +484,11 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             )
         speakers = list(speaker)
 
-        model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size in "0b6":
-            # for 0b6 model, instruct is not supported
-            instructs = [""] * len(texts)
-        elif not isinstance(instruct, Sequence) or isinstance(instruct, (str, bytes)):
-            raise TypeError("`instruct` must be a sequence of strings.")
-        elif len(instruct) == 0:
-            instructs = [""] * len(texts)
-        else:
-            instructs = []
-            for item in instruct:
-                if not isinstance(item, str):
-                    raise TypeError("`instruct` list items must be strings.")
-                instructs.append(item)
-
-        if not (len(texts) == len(languages) == len(speakers) == len(instructs)):
+        if len(speakers) == 0:
+            speakers = [{} for _ in range(batch_size)]
+        if not (batch_size == len(languages) == len(speakers)):
             raise ValueError(
-                f"Batch size mismatch: text={len(texts)}, language={len(languages)}, speaker={len(speakers)}, instruct={len(instructs)}"
+                f"Batch size mismatch: tts_inputs={batch_size}, language={len(languages)}, speaker={len(speakers)}"
             )
 
         self._validate_languages(languages)
@@ -478,9 +513,9 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     ref_audio=list(ref_audio),
                     ref_text=ref_text,
                 )
-                if len(prompt_items) != len(texts):
+                if len(prompt_items) != batch_size:
                     raise ValueError(
-                        f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
+                        f"Batch size mismatch: prompt={len(prompt_items)}, tts_inputs={batch_size}"
                     )
                 custom_voice_prompt_dict = self._prompt_items_to_custom_voice_prompt(
                     prompt_items
@@ -508,9 +543,9 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                             "`custom_voice_prompt` list items must be CustomVoicePromptItem."
                         )
                     prompt_items.append(item)
-                if len(prompt_items) != len(texts):
+                if len(prompt_items) != batch_size:
                     raise ValueError(
-                        f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
+                        f"Batch size mismatch: prompt={len(prompt_items)}, tts_inputs={batch_size}"
                     )
                 custom_voice_prompt_dict = self._prompt_items_to_custom_voice_prompt(
                     prompt_items
@@ -520,37 +555,14 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 custom_voice_prompt_dict = self._coerce_custom_voice_prompt_dict(
                     custom_voice_prompt
                 )
-                if len(custom_voice_prompt_dict["ref_code"]) != len(texts):
+                if len(custom_voice_prompt_dict["ref_code"]) != batch_size:
                     raise ValueError(
-                        "Batch size mismatch in `custom_voice_prompt` fields and `text`."
+                        "Batch size mismatch in `custom_voice_prompt` fields and `tts_inputs`."
                     )
                 ref_texts_for_ids = custom_voice_prompt_dict["ref_text"]
 
         if len(ref_texts_for_ids) == 0:
-            ref_texts_for_ids = [""] * len(texts)
-
-        input_role_ids: list[torch.Tensor] = []
-        input_text_ids: list[torch.Tensor] = []
-        instruct_ids: list[torch.Tensor | None] = []
-        ref_ids: list[torch.Tensor | None] = []
-        for text_value, instruct_value, ref_text_value in zip(
-            texts, instructs, ref_texts_for_ids, strict=True
-        ):
-            input_segments = self._build_runtime_segments(
-                text=text_value,
-                instruct=instruct_value,
-            )
-            input_role_id, input_text_id = self._tokenize_assistant_segments(
-                input_segments
-            )
-            input_role_ids.append(input_role_id)
-            input_text_ids.append(input_text_id)
-            instruct_ids.append(self._tokenize_instruction_segments(input_segments))
-            ref_ids.append(
-                self._tokenize_reference_segments(
-                    self._build_reference_segments(ref_text_value)
-                )
-            )
+            ref_texts_for_ids = [""] * batch_size
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -562,29 +574,46 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             max_new_tokens=max_new_tokens,
             **kwargs,
         )
-
-        talker_codes_list, _ = self.model.generate_custom_voice_batch(
-            input_role_ids=input_role_ids,
-            input_text_ids=input_text_ids,
-            instruct_ids=instruct_ids,
-            languages=languages,
-            speakers=speakers,
-            ref_codes=(
-                custom_voice_prompt_dict["ref_code"]
-                if custom_voice_prompt_dict is not None
-                else ()
-            ),
-            ref_ids=ref_ids,
-            use_icl_prompts=(
-                [True] * len(texts) if custom_voice_prompt_dict is not None else ()
-            ),
-            non_streaming_mode=non_streaming_mode,
-            **gen_kwargs,
-        )
-
-        if custom_voice_prompt_dict is not None:
-            return self._decode_custom_voice_codes_batch(
-                talker_codes_list,
-                custom_voice_prompt_dict["ref_code"],
+        wavs_out: list[list[np.ndarray]] = []
+        fs_out: int | None = None
+        for index, (
+            request_tts_input,
+            speaker_value,
+            request_language,
+            ref_text_for_id,
+        ) in enumerate(
+            zip(
+                normalized_tts_inputs,
+                speakers,
+                languages,
+                ref_texts_for_ids,
+                strict=True,
             )
-        return self._decode_talker_codes_batch(talker_codes_list)
+        ):
+            tokenized_parts = self._tokenize_tts_input(request_tts_input)
+            request_ref_code = (
+                custom_voice_prompt_dict["ref_code"][index]
+                if custom_voice_prompt_dict is not None
+                else None
+            )
+            request_ref_id = self._tokenize_reference_text(ref_text_for_id)
+            part_wavs, fs = self._generate_custom_voice_part_wavs(
+                tokenized_parts=tokenized_parts,
+                speaker=speaker_value,
+                language=request_language,
+                non_streaming_mode=non_streaming_mode,
+                ref_code=request_ref_code,
+                ref_id=request_ref_id,
+                use_icl_prompt=custom_voice_prompt_dict is not None,
+                gen_kwargs=gen_kwargs,
+            )
+            wavs_out.append(part_wavs)
+            fs_out = fs if fs_out is None else fs_out
+            if fs_out != fs:
+                raise RuntimeError(
+                    "Inconsistent sample rates returned during generation."
+                )
+
+        if fs_out is None:
+            raise RuntimeError("No audio was generated from `tts_inputs`.")
+        return wavs_out, fs_out

@@ -14,7 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections.abc import Mapping, Sequence
-from typing import Literal, TypedDict, Union
+from dataclasses import dataclass
+from typing import TypedDict, Union
 from typing_extensions import Self
 
 import numpy as np
@@ -43,12 +44,22 @@ AudioLike = Union[
 GenerateDefaultValue = bool | int | float | SubTalkerConfiguration
 GenerateDefaults = dict[str, GenerateDefaultValue]
 GenerateExtraArg = bool | int | float | str
-PromptSegmentType = Literal["instruction", "text"]
 
 
-class PromptSegment(TypedDict):
-    type: PromptSegmentType
-    content: str
+class TTSInputPart(TypedDict):
+    instruction: str
+    text: str
+
+
+TTSInput = list[TTSInputPart]
+TTSInputs = list[TTSInput]
+
+
+@dataclass(frozen=True)
+class TokenizedTTSInputPart:
+    instruction_id: torch.Tensor | None
+    input_role_id: torch.Tensor
+    input_text_id: torch.Tensor
 
 
 class GenerateOptions(TypedDict):
@@ -319,44 +330,55 @@ class Qwen3TTSBaseModel:
         return "<|im_end|>\n"
 
     @staticmethod
-    def _build_prompt_segment(
-        segment_type: PromptSegmentType, content: str
-    ) -> PromptSegment:
-        return PromptSegment(type=segment_type, content=content)
+    def _normalize_tts_input_part(tts_input_part: object, index: int) -> TTSInputPart:
+        if not isinstance(tts_input_part, Mapping):
+            raise TypeError(
+                f"`tts_input[{index}]` must be a mapping with `instruction` and `text`."
+            )
+        normalized_tts_input_part: dict[str, object] = {}
+        for key, value in tts_input_part.items():
+            if not isinstance(key, str):
+                raise TypeError(f"`tts_input[{index}]` keys must be strings.")
+            normalized_tts_input_part[key] = value
 
-    def _build_runtime_segments(
-        self, text: str, instruct: str = ""
-    ) -> list[PromptSegment]:
-        segments: list[PromptSegment] = []
-        if instruct != "":
-            segments.append(self._build_prompt_segment("instruction", instruct))
-        segments.append(self._build_prompt_segment("text", text))
-        return segments
+        instruction = normalized_tts_input_part.get("instruction")
+        text = normalized_tts_input_part.get("text")
+        if not isinstance(instruction, str):
+            raise TypeError(f"`tts_input[{index}].instruction` must be a string.")
+        if not isinstance(text, str):
+            raise TypeError(f"`tts_input[{index}].text` must be a string.")
+        if text.strip() == "":
+            raise ValueError(f"`tts_input[{index}].text` must be non-empty.")
+        return TTSInputPart(instruction=instruction, text=text)
 
-    def _build_reference_segments(self, ref_text: str) -> list[PromptSegment]:
-        if ref_text == "":
-            return []
-        return [self._build_prompt_segment("text", ref_text)]
+    @classmethod
+    def _normalize_tts_input(cls, tts_input: object) -> TTSInput:
+        if not isinstance(tts_input, Sequence) or isinstance(tts_input, (str, bytes)):
+            raise TypeError("`tts_input` must be a sequence of TTSInputPart items.")
 
-    @staticmethod
-    def _segment_contents(
-        segments: Sequence[PromptSegment], segment_type: PromptSegmentType
-    ) -> list[str]:
-        contents: list[str] = []
-        for segment in segments:
-            if not isinstance(segment, dict):
-                raise TypeError("Prompt segments must be dictionaries.")
-            current_type = segment.get("type")
-            current_content = segment.get("content")
-            if current_type not in ("instruction", "text"):
-                raise ValueError(
-                    "Prompt segments must use type 'instruction' or 'text'."
-                )
-            if not isinstance(current_content, str):
-                raise TypeError("Prompt segment `content` must be a string.")
-            if current_type == segment_type and current_content != "":
-                contents.append(current_content)
-        return contents
+        normalized_tts_input: TTSInput = []
+        for index, tts_input_part in enumerate(tts_input):
+            normalized_tts_input.append(
+                cls._normalize_tts_input_part(tts_input_part, index)
+            )
+        if len(normalized_tts_input) == 0:
+            raise ValueError("`tts_input` must contain at least one part.")
+        return normalized_tts_input
+
+    @classmethod
+    def _normalize_tts_inputs(cls, tts_inputs: object) -> TTSInputs:
+        if not isinstance(tts_inputs, Sequence) or isinstance(tts_inputs, (str, bytes)):
+            raise TypeError("`tts_inputs` must be a sequence of TTSInput requests.")
+
+        normalized_tts_inputs: TTSInputs = []
+        for index, tts_input in enumerate(tts_inputs):
+            try:
+                normalized_tts_inputs.append(cls._normalize_tts_input(tts_input))
+            except (TypeError, ValueError) as exc:
+                raise type(exc)(f"`tts_inputs[{index}]`: {exc}") from exc
+        if len(normalized_tts_inputs) == 0:
+            raise ValueError("`tts_inputs` must contain at least one request.")
+        return normalized_tts_inputs
 
     def _tokenize_text(
         self, text: str, return_offsets_mapping: bool = False
@@ -413,15 +435,9 @@ class Qwen3TTSBaseModel:
             raise RuntimeError("Unable to locate content token span in prompt.")
         return token_start, token_end
 
-    def _tokenize_assistant_segments(
-        self, segments: Sequence[PromptSegment]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        spoken_text = "".join(self._segment_contents(segments, "text"))
-        if spoken_text == "":
-            raise ValueError("At least one non-empty `text` segment is required.")
-
+    def _tokenize_assistant_text(self, text: str) -> tuple[torch.Tensor, torch.Tensor]:
         role_prefix = self._assistant_role_prefix()
-        rendered_prompt = f"{role_prefix}{spoken_text}"
+        rendered_prompt = f"{role_prefix}{text}"
         input_data = self._tokenize_text(
             rendered_prompt,
             return_offsets_mapping=True,
@@ -434,26 +450,61 @@ class Qwen3TTSBaseModel:
         )
         return input_ids[:, :token_start], input_ids[:, token_start:token_end]
 
-    def _tokenize_instruction_segments(
-        self, segments: Sequence[PromptSegment]
-    ) -> torch.Tensor | None:
-        instruction_texts = self._segment_contents(segments, "instruction")
-        if len(instruction_texts) == 0:
+    def _tokenize_instruction_text(self, instruction: str) -> torch.Tensor | None:
+        if instruction == "":
             return None
-
-        rendered_prompt = "".join(
+        rendered_prompt = (
             f"{self._user_role_prefix()}{instruction}{self._turn_suffix()}"
-            for instruction in instruction_texts
         )
         return self._extract_input_ids(self._tokenize_text(rendered_prompt))
 
-    def _tokenize_reference_segments(
-        self, segments: Sequence[PromptSegment]
-    ) -> torch.Tensor | None:
-        if len(segments) == 0:
+    def _tokenize_reference_text(self, ref_text: str) -> torch.Tensor | None:
+        if ref_text == "":
             return None
-        _, ref_text_ids = self._tokenize_assistant_segments(segments)
+        _, ref_text_ids = self._tokenize_assistant_text(ref_text)
         return ref_text_ids
+
+    def _tokenize_tts_input_part(
+        self, tts_input_part: TTSInputPart
+    ) -> TokenizedTTSInputPart:
+        input_role_id, input_text_id = self._tokenize_assistant_text(
+            tts_input_part["text"]
+        )
+        return TokenizedTTSInputPart(
+            instruction_id=self._tokenize_instruction_text(
+                tts_input_part["instruction"]
+            ),
+            input_role_id=input_role_id,
+            input_text_id=input_text_id,
+        )
+
+    def _tokenize_tts_input(self, tts_input: TTSInput) -> list[TokenizedTTSInputPart]:
+        return [
+            self._tokenize_tts_input_part(tts_input_part)
+            for tts_input_part in tts_input
+        ]
+
+    @staticmethod
+    def _concat_text_context(
+        existing_text_id: torch.Tensor | None, new_text_id: torch.Tensor
+    ) -> torch.Tensor:
+        if existing_text_id is None:
+            return new_text_id
+        return torch.cat(
+            [existing_text_id, new_text_id.to(existing_text_id.device)],
+            dim=1,
+        )
+
+    @staticmethod
+    def _concat_code_context(
+        existing_code: torch.Tensor | None, new_code: torch.Tensor
+    ) -> torch.Tensor:
+        if existing_code is None:
+            return new_code
+        return torch.cat(
+            [existing_code, new_code.to(existing_code.device)],
+            dim=0,
+        )
 
     def _normalize_language_value(self, language: str) -> str:
         if not isinstance(language, str):

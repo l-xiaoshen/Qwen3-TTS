@@ -79,7 +79,12 @@ tts = Qwen3TTSCustomVoiceModel.from_pretrained(
 )
 
 wavs, sr = tts.generate_custom_voice(
-    text="She said she would be here by noon.",
+    tts_input=[
+        {
+            "instruction": "",
+            "text": "She said she would be here by noon.",
+        }
+    ],
     speaker={"speaker_test": 1.0},
 )
 sf.write("output.wav", wavs[0], sr)

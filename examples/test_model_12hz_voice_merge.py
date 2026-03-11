@@ -17,7 +17,7 @@ import time
 import torch
 import soundfile as sf
 
-from qwen_tts import Qwen3TTSCustomVoiceModel
+from qwen_tts import Qwen3TTSCustomVoiceModel, TTSInput
 
 
 def main():
@@ -38,17 +38,18 @@ def main():
     for ryan_weight in [i * 0.1 for i in range(10)]:
         speakers.append({"Vivian": 1, "Ryan": ryan_weight})
 
-    texts = [text] * 10
+    tts_inputs: list[TTSInput] = [
+        [{"instruction": "", "text": text}] for _ in range(10)
+    ]
     languages = [language] * 10
 
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_custom_voice_batch(
-        text=texts,
+    wavs_batch, sr = tts.generate_custom_voice_batch(
+        tts_inputs=tts_inputs,
         language=languages,
         speaker=speakers,
-        instruct=[],
         max_new_tokens=2048,
     )
 
@@ -56,9 +57,9 @@ def main():
     t1 = time.time()
     print(f"[CustomVoice Merge Batch] time: {t1 - t0:.3f}s")
 
-    for i, w in enumerate(wavs):
+    for i, request_wavs in enumerate(wavs_batch):
         ryan = round(i * 0.1, 1)
-        sf.write(f"qwen3_tts_test_voice_merge_ryan_{ryan:.1f}.wav", w, sr)
+        sf.write(f"qwen3_tts_test_voice_merge_ryan_{ryan:.1f}.wav", request_wavs[0], sr)
 
 
 if __name__ == "__main__":

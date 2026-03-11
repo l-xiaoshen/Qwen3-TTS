@@ -32,6 +32,9 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_role_id: torch.Tensor,
         input_text_id: torch.Tensor,
         instruct_id: torch.Tensor | None = None,
+        ref_code: torch.Tensor | None = None,
+        ref_id: torch.Tensor | None = None,
+        use_icl_prompt: bool = False,
         language: str = "auto",
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
@@ -49,11 +52,36 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         input_role_id = self._validate_input_role_id(input_role_id)
         input_text_id = self._validate_input_text_id(input_text_id)
         instruct_id = self._normalize_instruct_id(instruct_id)
+        ref_id = self._normalize_ref_id(ref_id)
         language = self._normalize_language(language)
         if len(kwargs) != 0:
             raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_id = self._resolve_language_id(language, "")
+        if use_icl_prompt:
+            if ref_code is None:
+                raise ValueError("`ref_code` is required when `use_icl_prompt=True`.")
+            return self._generate_voice_clone_from_ids(
+                input_role_id=input_role_id,
+                input_text_id=input_text_id,
+                instruct_id=instruct_id,
+                language_id=language_id,
+                speaker_embed=None,
+                non_streaming_mode=non_streaming_mode,
+                ref_code=ref_code,
+                ref_id=ref_id,
+                use_icl_prompt=True,
+                max_new_tokens=max_new_tokens,
+                do_sample=do_sample,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                subtalker_configuration=subtalker_configuration,
+                eos_token_id=eos_token_id,
+                repetition_penalty=repetition_penalty,
+                output_hidden_states=output_hidden_states,
+                return_dict_in_generate=return_dict_in_generate,
+            )
         return self._generate_standard_from_ids(
             input_role_id=input_role_id,
             input_text_id=input_text_id,
