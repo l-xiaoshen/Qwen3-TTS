@@ -26,6 +26,9 @@ from ..modeling_qwen3_tts_types import SubTalkerConfiguration, VoiceClonePrompt
 from .core import Qwen3TTSGenerationCoreMixin
 
 
+StringBatchInput = list[str] | tuple[str, ...]
+
+
 class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
@@ -38,7 +41,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         return input_ids
 
     def _normalize_languages_batch(
-        self, languages: Sequence[str], batch_size: int
+        self, languages: StringBatchInput, batch_size: int
     ) -> list[str]:
         if len(languages) == 0:
             return ["auto"] * batch_size
@@ -46,15 +49,10 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, languages={len(languages)}"
             )
-        normalized_languages: list[str] = []
-        for language in languages:
-            if not isinstance(language, str):
-                raise TypeError("`languages` items must be strings.")
-            normalized_languages.append(language)
-        return normalized_languages
+        return list(languages)
 
     def _normalize_speakers_batch(
-        self, speakers: Sequence[str], batch_size: int
+        self, speakers: StringBatchInput, batch_size: int
     ) -> list[str]:
         if len(speakers) == 0:
             return [""] * batch_size
@@ -62,12 +60,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, speakers={len(speakers)}"
             )
-        normalized_speakers: list[str] = []
-        for speaker in speakers:
-            if not isinstance(speaker, str):
-                raise TypeError("`speakers` items must be strings.")
-            normalized_speakers.append(speaker)
-        return normalized_speakers
+        return list(speakers)
 
     def _normalize_instruct_ids_batch(
         self,
