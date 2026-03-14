@@ -500,8 +500,13 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             ref_texts_for_ids = [it.ref_text for it in prompt_items]
         else:
             if isinstance(voice_clone_prompt, list):
-                prompt_items_raw = list(voice_clone_prompt)
-                prompt_items: list[VoiceClonePromptItem] = list(prompt_items_raw)
+                prompt_items: list[VoiceClonePromptItem] = []
+                for item in voice_clone_prompt:
+                    if not isinstance(item, VoiceClonePromptItem):
+                        raise TypeError(
+                            "`voice_clone_prompt` list items must be VoiceClonePromptItem."
+                        )
+                    prompt_items.append(item)
                 if len(prompt_items) != len(texts):
                     raise ValueError(
                         f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"

@@ -457,8 +457,13 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     "`ref_text` is already included in `custom_voice_prompt`."
                 )
             if isinstance(custom_voice_prompt, list):
-                prompt_items_raw = list(custom_voice_prompt)
-                prompt_items: list[CustomVoicePromptItem] = list(prompt_items_raw)
+                prompt_items: list[CustomVoicePromptItem] = []
+                for item in custom_voice_prompt:
+                    if not isinstance(item, CustomVoicePromptItem):
+                        raise TypeError(
+                            "`custom_voice_prompt` list items must be CustomVoicePromptItem."
+                        )
+                    prompt_items.append(item)
                 if len(prompt_items) != len(texts):
                     raise ValueError(
                         f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
