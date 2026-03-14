@@ -282,7 +282,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         speaker_value = speaker
 
         model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size in "0b6":
+        if isinstance(model_size, str) and model_size == "0b6":
             # for 0b6 model, instruct is not supported
             instruct_value = ""
         else:
@@ -408,7 +408,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         speakers = list(speaker)
 
         model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size in "0b6":
+        if isinstance(model_size, str) and model_size == "0b6":
             # for 0b6 model, instruct is not supported
             instructs = [""] * len(texts)
         elif len(instruct) == 0:
