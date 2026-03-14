@@ -213,16 +213,9 @@ class Qwen3TTSBaseModel:
         """
         Validate that requested speaker configuration is supported by the model.
         """
-        if not isinstance(speaker, dict):
-            raise TypeError("`speaker` must be a dict mapping speaker ids to weights.")
-
         supported = self._supported_speakers_set()
         bad: list[str] = []
-        for speaker_id, weight in speaker.items():
-            if not isinstance(speaker_id, str):
-                raise TypeError("`speaker` keys must be strings.")
-            if not isinstance(weight, (int, float)) or isinstance(weight, bool):
-                raise TypeError("`speaker` values must be numeric weights.")
+        for speaker_id in speaker:
             if (
                 supported is not None
                 and speaker_id != ""
@@ -239,15 +232,10 @@ class Qwen3TTSBaseModel:
 
     def _validate_speaker_configurations(
         self,
-        speaker_configurations: Sequence[SpeakerConfiguration],
+        speaker_configurations: list[SpeakerConfiguration]
+        | tuple[SpeakerConfiguration, ...],
         batch_size: int,
     ) -> None:
-        if not isinstance(speaker_configurations, Sequence) or isinstance(
-            speaker_configurations, (str, bytes)
-        ):
-            raise TypeError(
-                "`speaker` must be a sequence of speaker configuration dictionaries."
-            )
         if len(speaker_configurations) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: text={batch_size}, speaker={len(speaker_configurations)}"
@@ -275,17 +263,13 @@ class Qwen3TTSBaseModel:
             )
 
     def _normalize_audio_inputs(
-        self, audios: list[AudioLike]
+        self, audios: list[AudioLike] | tuple[AudioLike, ...]
     ) -> list[tuple[np.ndarray, int]]:
         """
         Normalize audio inputs into a list of (waveform, sr).
         """
-        if not isinstance(audios, list):
-            raise TypeError("`audios` must be a list of audio inputs.")
-        items = audios
-
         out: list[tuple[np.ndarray, int]] = []
-        for a in items:
+        for a in audios:
             if isinstance(a, str):
                 out.append(load_audio_to_np_and_sr(a))
             elif isinstance(a, tuple) and len(a) == 2 and isinstance(a[0], np.ndarray):
@@ -315,24 +299,14 @@ class Qwen3TTSBaseModel:
         return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
 
     def _normalize_language_value(self, language: str) -> str:
-        if not isinstance(language, str):
-            raise TypeError("`language` must be a string.")
         return "Auto" if language == "" else language
 
     def _normalize_language_values(
-        self, languages: Sequence[str], batch_size: int
+        self, languages: list[str] | tuple[str, ...], batch_size: int
     ) -> list[str]:
-        if not isinstance(languages, Sequence) or isinstance(languages, (str, bytes)):
-            raise TypeError("`language` must be a sequence of strings.")
         if len(languages) == 0:
             return ["Auto"] * batch_size
-
-        normalized_languages: list[str] = []
-        for item in languages:
-            if not isinstance(item, str):
-                raise TypeError("`language` list items must be strings.")
-            normalized_languages.append(item)
-        return normalized_languages
+        return list(languages)
 
     def _tokenize_optional_text(
         self, text: str, builder: Callable[[str], str]
@@ -422,10 +396,7 @@ class Qwen3TTSBaseModel:
         if not isinstance(subtalker_configuration, Mapping):
             raise TypeError("`subtalker_configuration` must be a mapping.")
         return cls._build_subtalker_configuration(
-            [
-                (str(key), value)
-                for key, value in subtalker_configuration.items()
-            ]
+            [(str(key), value) for key, value in subtalker_configuration.items()]
         )
 
     @classmethod
@@ -497,7 +468,9 @@ class Qwen3TTSBaseModel:
             return SubTalkerConfiguration()
         if not isinstance(subtalker_configuration, Mapping):
             raise TypeError("`subtalker_configuration` must be a mapping.")
-        return self._build_subtalker_configuration(list(subtalker_configuration.items()))
+        return self._build_subtalker_configuration(
+            list(subtalker_configuration.items())
+        )
 
     def _decode_talker_codes_batch(
         self, talker_codes_list: Sequence[torch.Tensor]

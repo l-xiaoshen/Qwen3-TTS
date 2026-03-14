@@ -59,6 +59,9 @@ class VoiceClonePromptSingleDict(TypedDict):
 
 VoiceClonePromptInput = Mapping[str, Sequence[torch.Tensor | bool | None]]
 VoiceClonePromptSingleInput = Mapping[str, torch.Tensor | bool | None]
+AudioBatchInput = list[AudioLike] | tuple[AudioLike, ...]
+StringBatchInput = list[str] | tuple[str, ...]
+BoolBatchInput = list[bool] | tuple[bool, ...]
 
 
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
@@ -91,7 +94,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
 
     @torch.inference_mode()
     def extract_speaker_embedding_batch(
-        self, ref_audio: Sequence[AudioLike]
+        self, ref_audio: AudioBatchInput
     ) -> list[torch.Tensor]:
         """
         Extract speaker embeddings from reference audio batch.
@@ -100,9 +103,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         `Qwen3TTSCustomVoiceModel.generate_custom_voice_batch(...)`.
         """
         self._ensure_model_type("base", "extract_speaker_embedding_batch")
-
-        if not isinstance(ref_audio, Sequence) or isinstance(ref_audio, (str, bytes)):
-            raise TypeError("`ref_audio` must be a sequence of audio inputs.")
         ref_audio_list = list(ref_audio)
 
         normalized = self._normalize_audio_inputs(ref_audio_list)
@@ -111,9 +111,9 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
-        ref_audio: Sequence[AudioLike],
-        ref_text: Sequence[str] = (),
-        x_vector_only_mode: Sequence[bool] = (),
+        ref_audio: AudioBatchInput,
+        ref_text: StringBatchInput = (),
+        x_vector_only_mode: BoolBatchInput = (),
     ) -> list[VoiceClonePromptItem]:
         """
         Build voice-clone prompt items from reference audio (and optionally reference text) using Base model.
@@ -121,35 +121,17 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         self._ensure_model_type("base", "create_voice_clone_prompt")
 
         speech_tokenizer = self._require_speech_tokenizer()
-        if not isinstance(ref_audio, Sequence) or isinstance(ref_audio, (str, bytes)):
-            raise TypeError("`ref_audio` must be a sequence of audio inputs.")
-        ref_audio_list: list[AudioLike] = []
-        for item in ref_audio:
-            ref_audio_list.append(item)
+        ref_audio_list = list(ref_audio)
 
-        if not isinstance(ref_text, Sequence) or isinstance(ref_text, (str, bytes)):
-            raise TypeError("`ref_text` must be a sequence of strings.")
         if len(ref_text) == 0:
             ref_text_list: list[str] = [""] * len(ref_audio_list)
         else:
-            ref_text_list = []
-            for item in ref_text:
-                if not isinstance(item, str):
-                    raise TypeError("`ref_text` items must be strings.")
-                ref_text_list.append(item)
+            ref_text_list = list(ref_text)
 
-        if not isinstance(x_vector_only_mode, Sequence) or isinstance(
-            x_vector_only_mode, (str, bytes)
-        ):
-            raise TypeError("`x_vector_only_mode` must be a sequence of booleans.")
         if len(x_vector_only_mode) == 0:
             xvec_list: list[bool] = [False] * len(ref_audio_list)
         else:
-            xvec_list = []
-            for item in x_vector_only_mode:
-                if not isinstance(item, bool):
-                    raise TypeError("`x_vector_only_mode` items must be booleans.")
-                xvec_list.append(item)
+            xvec_list = list(x_vector_only_mode)
 
         if len(ref_text_list) != len(ref_audio_list) or len(xvec_list) != len(
             ref_audio_list
@@ -398,15 +380,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("base", "generate_voice_clone")
 
-        if not isinstance(text, str):
-            raise TypeError("`text` must be a string.")
-        if not isinstance(language, str):
-            raise TypeError("`language` must be a string.")
-        if not isinstance(ref_text, str):
-            raise TypeError("`ref_text` must be a string.")
-        if not isinstance(x_vector_only_mode, bool):
-            raise TypeError("`x_vector_only_mode` must be a boolean.")
-
         language_value = self._normalize_language_value(language)
         self._validate_languages([language_value])
 
@@ -475,10 +448,10 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     def generate_voice_clone_batch(
         self,
         text: list[str],
-        language: Sequence[str] = (),
-        ref_audio: Sequence[AudioLike] | None = None,
-        ref_text: Sequence[str] = (),
-        x_vector_only_mode: Sequence[bool] = (),
+        language: StringBatchInput = (),
+        ref_audio: AudioBatchInput | None = None,
+        ref_text: StringBatchInput = (),
+        x_vector_only_mode: BoolBatchInput = (),
         voice_clone_prompt: VoiceClonePromptInput
         | list[VoiceClonePromptItem]
         | None = None,
@@ -497,13 +470,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("base", "generate_voice_clone_batch")
 
-        if not isinstance(text, list):
-            raise TypeError("`text` must be a list of strings.")
-        texts: list[str] = []
-        for item in text:
-            if not isinstance(item, str):
-                raise TypeError("`text` list items must be strings.")
-            texts.append(item)
+        texts = list(text)
 
         languages = self._normalize_language_values(language, len(texts))
         if len(texts) != len(languages):
@@ -518,10 +485,6 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 raise ValueError(
                     "Either `voice_clone_prompt` or `ref_audio` must be provided."
                 )
-            if not isinstance(ref_audio, Sequence) or isinstance(
-                ref_audio, (str, bytes)
-            ):
-                raise TypeError("`ref_audio` must be a sequence of audio inputs.")
             prompt_items = self.create_voice_clone_prompt(
                 ref_audio=list(ref_audio),
                 ref_text=ref_text,
@@ -538,13 +501,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         else:
             if isinstance(voice_clone_prompt, list):
                 prompt_items_raw = list(voice_clone_prompt)
-                prompt_items: list[VoiceClonePromptItem] = []
-                for item in prompt_items_raw:
-                    if not isinstance(item, VoiceClonePromptItem):
-                        raise TypeError(
-                            "`voice_clone_prompt` list items must be VoiceClonePromptItem."
-                        )
-                    prompt_items.append(item)
+                prompt_items: list[VoiceClonePromptItem] = list(prompt_items_raw)
                 if len(prompt_items) != len(texts):
                     raise ValueError(
                         f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"

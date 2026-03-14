@@ -13,8 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Sequence
-
 import numpy as np
 import torch
 
@@ -23,6 +21,9 @@ from ..core.models import (
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
+
+
+StringBatchInput = list[str] | tuple[str, ...]
 
 
 class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
@@ -48,11 +49,6 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         Generate one utterance with the VoiceDesign model.
         """
         self._ensure_model_type("voice_design", "generate_voice_design")
-
-        if not isinstance(text, str):
-            raise TypeError("`text` must be a string.")
-        if not isinstance(instruct, str):
-            raise TypeError("`instruct` must be a string.")
 
         language_value = self._normalize_language_value(language)
         self._validate_languages([language_value])
@@ -87,7 +83,7 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         self,
         text: list[str],
         instruct: list[str],
-        language: Sequence[str] = (),
+        language: StringBatchInput = (),
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -103,21 +99,8 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("voice_design", "generate_voice_design_batch")
 
-        if not isinstance(text, list):
-            raise TypeError("`text` must be a list of strings.")
-        texts: list[str] = []
-        for item in text:
-            if not isinstance(item, str):
-                raise TypeError("`text` list items must be strings.")
-            texts.append(item)
-
-        if not isinstance(instruct, list):
-            raise TypeError("`instruct` must be a list of strings.")
-        instructs: list[str] = []
-        for item in instruct:
-            if not isinstance(item, str):
-                raise TypeError("`instruct` list items must be strings.")
-            instructs.append(item)
+        texts = list(text)
+        instructs = list(instruct)
 
         languages = self._normalize_language_values(language, len(texts))
 

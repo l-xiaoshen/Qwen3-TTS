@@ -52,6 +52,12 @@ class CustomVoicePromptSingleDict(TypedDict):
 
 CustomVoicePromptInput = Mapping[str, Sequence[torch.Tensor | str]]
 CustomVoicePromptSingleInput = Mapping[str, torch.Tensor | str]
+AudioBatchInput = list[AudioLike] | tuple[AudioLike, ...]
+StringBatchInput = list[str] | tuple[str, ...]
+SpeakerBatchInput = (
+    list[SpeakerConfiguration | torch.Tensor]
+    | tuple[SpeakerConfiguration | torch.Tensor, ...]
+)
 
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
@@ -60,8 +66,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     @torch.inference_mode()
     def create_custom_voice_prompt(
         self,
-        ref_audio: Sequence[AudioLike],
-        ref_text: Sequence[str],
+        ref_audio: AudioBatchInput,
+        ref_text: StringBatchInput,
     ) -> list[CustomVoicePromptItem]:
         """
         Build reusable ICL prompt items from reference audio/text for the
@@ -71,21 +77,14 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         self._ensure_model_type("custom_voice", "create_custom_voice_prompt")
 
         speech_tokenizer = self._require_speech_tokenizer()
-        if not isinstance(ref_audio, Sequence) or isinstance(ref_audio, (str, bytes)):
-            raise TypeError("`ref_audio` must be a sequence of audio inputs.")
         ref_audio_list: list[AudioLike] = list(ref_audio)
 
-        if not isinstance(ref_text, Sequence) or isinstance(ref_text, (str, bytes)):
-            raise TypeError("`ref_text` must be a sequence of strings.")
-        ref_text_list: list[str] = []
-        for item in ref_text:
-            if not isinstance(item, str):
-                raise TypeError("`ref_text` items must be strings.")
+        ref_text_list = list(ref_text)
+        for item in ref_text_list:
             if item.strip() == "":
                 raise ValueError(
                     "`ref_text` items must be non-empty for CustomVoice ICL prompting."
                 )
-            ref_text_list.append(item)
 
         if len(ref_audio_list) != len(ref_text_list):
             raise ValueError(
@@ -279,13 +278,6 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice")
 
-        if not isinstance(text, str):
-            raise TypeError("`text` must be a string.")
-        if not isinstance(instruct, str):
-            raise TypeError("`instruct` must be a string.")
-        if not isinstance(ref_text, str):
-            raise TypeError("`ref_text` must be a string.")
-
         language_value = self._normalize_language_value(language)
         speaker_value = speaker
 
@@ -298,10 +290,6 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
 
         self._validate_languages([language_value])
         if not isinstance(speaker_value, torch.Tensor):
-            if not isinstance(speaker_value, dict):
-                raise TypeError(
-                    "`speaker` must be a speaker configuration dictionary or a tensor embedding."
-                )
             self._validate_speaker_configuration(speaker_value)
 
         custom_voice_prompt_single: CustomVoicePromptSingleDict | None = None
@@ -388,9 +376,9 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def generate_custom_voice_batch(
         self,
         text: list[str],
-        speaker: Sequence[SpeakerConfiguration | torch.Tensor],
-        language: Sequence[str] = (),
-        instruct: Sequence[str] = (),
+        speaker: SpeakerBatchInput,
+        language: StringBatchInput = (),
+        instruct: StringBatchInput = (),
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -399,8 +387,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         repetition_penalty: float = 1.05,
         subtalker_configuration: SubTalkerConfiguration | None = None,
         max_new_tokens: int = 2048,
-        ref_audio: Sequence[AudioLike] | None = None,
-        ref_text: Sequence[str] = (),
+        ref_audio: AudioBatchInput | None = None,
+        ref_text: StringBatchInput = (),
         custom_voice_prompt: CustomVoicePromptInput
         | list[CustomVoicePromptItem]
         | None = None,
@@ -413,36 +401,20 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
 
-        if not isinstance(text, list):
-            raise TypeError("`text` must be a list of strings.")
-        texts: list[str] = []
-        for item in text:
-            if not isinstance(item, str):
-                raise TypeError("`text` list items must be strings.")
-            texts.append(item)
+        texts = list(text)
 
         languages = self._normalize_language_values(language, len(texts))
 
-        if not isinstance(speaker, Sequence) or isinstance(speaker, (str, bytes)):
-            raise TypeError(
-                "`speaker` must be a sequence of speaker configuration dictionaries or tensor embeddings."
-            )
         speakers = list(speaker)
 
         model_size = self.model.tts_model_size
         if isinstance(model_size, str) and model_size in "0b6":
             # for 0b6 model, instruct is not supported
             instructs = [""] * len(texts)
-        elif not isinstance(instruct, Sequence) or isinstance(instruct, (str, bytes)):
-            raise TypeError("`instruct` must be a sequence of strings.")
         elif len(instruct) == 0:
             instructs = [""] * len(texts)
         else:
-            instructs = []
-            for item in instruct:
-                if not isinstance(item, str):
-                    raise TypeError("`instruct` list items must be strings.")
-                instructs.append(item)
+            instructs = list(instruct)
 
         if not (len(texts) == len(languages) == len(speakers) == len(instructs)):
             raise ValueError(
@@ -453,20 +425,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         for speaker_value in speakers:
             if isinstance(speaker_value, torch.Tensor):
                 continue
-            if not isinstance(speaker_value, dict):
-                raise TypeError(
-                    "`speaker` items must be speaker configuration dictionaries or tensor embeddings."
-                )
             self._validate_speaker_configuration(speaker_value)
 
         custom_voice_prompt_dict: CustomVoicePromptDict | None = None
         ref_texts_for_ids: list[str] = []
         if custom_voice_prompt is None:
             if ref_audio is not None:
-                if not isinstance(ref_audio, Sequence) or isinstance(
-                    ref_audio, (str, bytes)
-                ):
-                    raise TypeError("`ref_audio` must be a sequence of audio inputs.")
                 prompt_items = self.create_custom_voice_prompt(
                     ref_audio=list(ref_audio),
                     ref_text=ref_text,
@@ -494,13 +458,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 )
             if isinstance(custom_voice_prompt, list):
                 prompt_items_raw = list(custom_voice_prompt)
-                prompt_items: list[CustomVoicePromptItem] = []
-                for item in prompt_items_raw:
-                    if not isinstance(item, CustomVoicePromptItem):
-                        raise TypeError(
-                            "`custom_voice_prompt` list items must be CustomVoicePromptItem."
-                        )
-                    prompt_items.append(item)
+                prompt_items: list[CustomVoicePromptItem] = list(prompt_items_raw)
                 if len(prompt_items) != len(texts):
                     raise ValueError(
                         f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
