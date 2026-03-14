@@ -35,7 +35,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         voice_clone_prompt: VoiceClonePromptSingle,
         instruct_id: torch.Tensor | None = None,
         ref_id: torch.Tensor | None = None,
-        language: str = "auto",
+        language: str = "Auto",
         speaker: str = "",
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,

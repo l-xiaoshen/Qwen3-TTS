@@ -44,7 +44,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         self, languages: StringBatchInput, batch_size: int
     ) -> list[str]:
         if len(languages) == 0:
-            return ["auto"] * batch_size
+            return ["Auto"] * batch_size
         if len(languages) != batch_size:
             raise ValueError(
                 f"Batch size mismatch: input_ids={batch_size}, languages={len(languages)}"

@@ -32,7 +32,7 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         self,
         input_id: torch.Tensor,
         instruct_id: torch.Tensor | None = None,
-        language: str = "auto",
+        language: str = "Auto",
         non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
