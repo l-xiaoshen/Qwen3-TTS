@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from collections.abc import Sequence
-from typing import Mapping, TypedDict
+from typing import TypedDict
 
 import numpy as np
 import torch

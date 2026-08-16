@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,24 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import sox
 import copy
-import numpy as np
-import torch
 import operator
-import onnxruntime
-
-import torch.nn as nn
-import torch.nn.functional as F
-import torchaudio.compliance.kaldi as kaldi
-
-from librosa.filters import mel as librosa_mel_fn
 from itertools import accumulate
-from typing import List, Optional
-from torch import Tensor
+
+import numpy as np
+import onnxruntime
+import sox
+import torch
+import torch.nn.functional as F
+from librosa.filters import mel as librosa_mel_fn
+from torch import Tensor, nn
+from torchaudio.compliance import kaldi
 
 from .core_vq import DistributedGroupResidualVectorQuantization
-from .whisper_encoder import WhisperEncoder, Conv1d, ConvTranspose1d
+from .whisper_encoder import Conv1d, ConvTranspose1d, WhisperEncoder
 
 
 def dynamic_range_compression_torch(x, C=1, clip_val=1e-5):
@@ -228,8 +224,8 @@ class WhisperEncoderVQ(WhisperEncoder):
         audio_vq_no_quantize: bool = False,
         audio_vq_ff_layer: int = 0,
         audio_vq_threshold_ema_dead_code: float = 0.1,
-        audio_vq_codebook_dim: Optional[int] = None,
-        audio_vq_ds_rate: Optional[int] = None,
+        audio_vq_codebook_dim: int | None = None,
+        audio_vq_ds_rate: int | None = None,
     ):
         super().__init__(
             n_mels,
@@ -310,7 +306,7 @@ class WhisperEncoderVQ(WhisperEncoder):
             "vq_num_tokens": vq_num_tokens,
         }
 
-    def _do_quantize(self, x: torch.Tensor, pe: Optional[torch.Tensor] = None, y=None):
+    def _do_quantize(self, x: torch.Tensor, pe: torch.Tensor | None = None, y=None):
         """
         x: torch.Tensor, shape = (T, D)
         q: torch.Tensor, shape = (T, D)
@@ -358,10 +354,10 @@ class WhisperEncoderVQ(WhisperEncoder):
 
     def forward(
         self,
-        x_list: List[Tensor],
-        audio_mellens: List[int],
-        audio_aftercnnlens: List[int],
-        audio_seqlens: List[int],
+        x_list: list[Tensor],
+        audio_mellens: list[int],
+        audio_aftercnnlens: list[int],
+        audio_seqlens: list[int],
         return_indices=False,
         audio_pitchs=None,
     ):
@@ -411,11 +407,7 @@ class WhisperEncoderVQ(WhisperEncoder):
         cu_seqlens = list(accumulate(output_list, func=operator.add, initial=0))
         cu_seqlens = torch.Tensor(cu_seqlens).to(device=x.device, dtype=torch.int32)
 
-        layer_id = 0
-
-        for block in self.blocks:
-            layer_id += 1
-
+        for layer_id, block in enumerate(self.blocks, start=1):
             x = block(x, cu_seqlens=cu_seqlens)
 
             if self.audio_vq_layers == layer_id:  # vq inside encoder

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -24,21 +23,21 @@ from .inference.qwen3_tts_custom_voice_model import (
     CustomVoicePromptItem,
     Qwen3TTSCustomVoiceModel,
 )
+from .inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
 from .inference.qwen3_tts_voice_clone_model import (
     Qwen3TTSVoiceCloneModel,
     VoiceClonePromptItem,
 )
 from .inference.qwen3_tts_voice_design_model import Qwen3TTSVoiceDesignModel
-from .inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
 
 __all__ = [
-    "Qwen3TTSBaseModel",
-    "SpeakerConfiguration",
-    "SubTalkerConfiguration",
     "CustomVoicePromptItem",
+    "Qwen3TTSBaseModel",
     "Qwen3TTSCustomVoiceModel",
+    "Qwen3TTSTokenizer",
     "Qwen3TTSVoiceCloneModel",
     "Qwen3TTSVoiceDesignModel",
+    "SpeakerConfiguration",
+    "SubTalkerConfiguration",
     "VoiceClonePromptItem",
-    "Qwen3TTSTokenizer",
 ]

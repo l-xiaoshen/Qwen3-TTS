@@ -1,22 +1,18 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import ClassVar
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, auto_docstring, logging
 from transformers.utils.hub import cached_file
 
-from torch.nn.utils.rnn import pad_sequence
-
-from .vq.whisper_encoder import get_mel_audio, get_T_after_cnn
-from .vq.speech_vq import WhisperEncoderVQ, XVectorExtractor
-
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Config,
-    Qwen3TTSTokenizerV1EncoderConfig,
     Qwen3TTSTokenizerV1DecoderConfig,
+    Qwen3TTSTokenizerV1EncoderConfig,
 )
 from .modeling_qwen3_tts_tokenizer_v1_core import (
     Qwen3TTSTokenizerV1DecoderBigVGANModel,
@@ -24,6 +20,8 @@ from .modeling_qwen3_tts_tokenizer_v1_core import (
     Qwen3TTSTokenizerV1DecoderPreTrainedModel,
     Qwen3TTSTokenizerV1EncoderPreTrainedModel,
 )
+from .vq.speech_vq import WhisperEncoderVQ, XVectorExtractor
+from .vq.whisper_encoder import get_mel_audio, get_T_after_cnn
 
 logger = logging.get_logger(__name__)
 
@@ -61,7 +59,7 @@ class Qwen3TTSTokenizerV1DecoderOutput(ModelOutput):
 class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
     config: Qwen3TTSTokenizerV1DecoderConfig
     base_model_prefix = "model"
-    _no_split_modules = [
+    _no_split_modules: ClassVar[list[str]] = [
         "Qwen3TTSTokenizerV1DecoderDiTModel",
         "Qwen3TTSTokenizerV1DecoderBigVGANModel",
     ]
@@ -71,7 +69,7 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
         attn_impl = config._attn_implementation
         if config._attn_implementation == "flash_attention_2":
             if callable(getattr(logger, "warning_once", None)):
-                getattr(logger, "warning_once")(
+                logger.warning_once(
                     "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
                     "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
                 )
@@ -83,7 +81,7 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
             attn_impl = "sdpa"
         elif config._attn_implementation == "eager":
             if callable(getattr(logger, "warning_once", None)):
-                getattr(logger, "warning_once")(
+                logger.warning_once(
                     "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
                 )
             else:
@@ -300,12 +298,12 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
     def encode(
         self,
         input_values: torch.Tensor,
-        padding_mask: Optional[torch.Tensor] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[
-        tuple[list[torch.LongTensor], list[torch.FloatTensor], list[torch.FloatTensor]],
-        Qwen3TTSTokenizerV1EncoderOutput,
-    ]:
+        padding_mask: torch.Tensor | None = None,
+        return_dict: bool | None = None,
+    ) -> (
+        tuple[list[torch.LongTensor], list[torch.FloatTensor], list[torch.FloatTensor]]
+        | Qwen3TTSTokenizerV1EncoderOutput
+    ):
         """
         Encodes the input audio waveform into discrete codes.
 
@@ -354,8 +352,8 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
         audio_codes: torch.Tensor,
         xvectors: torch.Tensor,
         ref_mels: torch.Tensor,
-        return_dict: Optional[bool] = None,
-    ) -> Union[tuple[list[torch.FloatTensor]], Qwen3TTSTokenizerV1DecoderOutput]:
+        return_dict: bool | None = None,
+    ) -> tuple[list[torch.FloatTensor]] | Qwen3TTSTokenizerV1DecoderOutput:
         """
         Decodes the given frames into an output audio waveform.
 

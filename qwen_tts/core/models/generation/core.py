@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
 # All rights reserved.
 #
@@ -395,7 +394,7 @@ class Qwen3TTSGenerationCoreMixin:
             raise ValueError("Speaker map is not available in config")
 
         mixed_embed: torch.Tensor | None = None
-        supported = sorted(list(spk_id_map.keys()))
+        supported = sorted(spk_id_map.keys())
         for speaker_name, weight in speaker.items():
             speaker_lower = speaker_name.lower()
             if speaker_lower not in spk_id_map:
@@ -426,7 +425,7 @@ class Qwen3TTSGenerationCoreMixin:
             language_id = None
         else:
             if language_lower not in language_map:
-                supported = sorted(list(language_map.keys()))
+                supported = sorted(language_map.keys())
                 raise ValueError(
                     f"Unsupported language: {language}. Supported languages: {supported}"
                 )

@@ -1,5 +1,5 @@
-from collections.abc import Mapping, Sequence
 import typing as tp
+from collections.abc import Mapping, Sequence
 
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.processing_utils import ProcessingKwargs, ProcessorMixin
@@ -30,7 +30,7 @@ class Qwen3TTSProcessor(ProcessorMixin):
             The Jinja template to use for formatting the conversation. If not provided, the default chat template is used.
     """
 
-    attributes = ["tokenizer"]
+    attributes: tp.ClassVar[list[str]] = ["tokenizer"]
     tokenizer_class = ("Qwen2Tokenizer", "Qwen2TokenizerFast")
 
     def __init__(self, tokenizer=None, chat_template=None):

@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from transformers.configuration_utils import PretrainedConfig, layer_type_validation
 from transformers.modeling_rope_utils import rope_config_validation
 from transformers.utils import logging
@@ -35,14 +37,21 @@ class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
         self,
         mel_dim=128,
         enc_dim=1024,
-        enc_channels=[512, 512, 512, 512, 1536],
-        enc_kernel_sizes=[5, 3, 3, 3, 1],
-        enc_dilations=[1, 2, 3, 4, 1],
+        enc_channels=None,
+        enc_kernel_sizes=None,
+        enc_dilations=None,
         enc_attention_channels=128,
         enc_res2net_scale=8,
         enc_se_channels=128,
         sample_rate=24000,
     ):
+        if enc_channels is None:
+            enc_channels = [512, 512, 512, 512, 1536]
+        if enc_kernel_sizes is None:
+            enc_kernel_sizes = [5, 3, 3, 3, 1]
+        if enc_dilations is None:
+            enc_dilations = [1, 2, 3, 4, 1]
+
         self.mel_dim = mel_dim
         self.enc_dim = enc_dim
         self.enc_channels = enc_channels
@@ -153,10 +162,10 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_talker_code_predictor"
-    keys_to_ignore_at_inference = ["past_key_values"]
+    keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalkerCodePredictor`
-    base_model_tp_plan = {
+    base_model_tp_plan: ClassVar[dict[str, str]] = {
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
         "layers.*.self_attn.v_proj": "colwise",
@@ -165,7 +174,7 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         "layers.*.mlp.up_proj": "colwise",
         "layers.*.mlp.down_proj": "rowwise",
     }
-    base_model_pp_plan = {
+    base_model_pp_plan: ClassVar[dict[str, tuple[list[str], list[str]]]] = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
         "layers": (["hidden_states", "attention_mask"], ["hidden_states"]),
         "norm": (["hidden_states"], ["hidden_states"]),
@@ -335,10 +344,10 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_talker"
-    keys_to_ignore_at_inference = ["past_key_values"]
+    keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalker`
-    base_model_tp_plan = {
+    base_model_tp_plan: ClassVar[dict[str, str]] = {
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
         "layers.*.self_attn.v_proj": "colwise",
@@ -347,12 +356,14 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         "layers.*.mlp.up_proj": "colwise",
         "layers.*.mlp.down_proj": "rowwise",
     }
-    base_model_pp_plan = {
+    base_model_pp_plan: ClassVar[dict[str, tuple[list[str], list[str]]]] = {
         "embed_tokens": (["input_ids"], ["inputs_embeds"]),
         "layers": (["hidden_states", "attention_mask"], ["hidden_states"]),
         "norm": (["hidden_states"], ["hidden_states"]),
     }
-    sub_configs = {"code_predictor_config": Qwen3TTSTalkerCodePredictorConfig}
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
+        "code_predictor_config": Qwen3TTSTalkerCodePredictorConfig
+    }
 
     def __init__(
         self,
@@ -448,7 +459,7 @@ class Qwen3TTSConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts"
-    sub_configs = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "talker_config": Qwen3TTSTalkerConfig,
         "speaker_encoder_config": Qwen3TTSSpeakerEncoderConfig,
     }
@@ -496,4 +507,4 @@ class Qwen3TTSConfig(PretrainedConfig):
         self.tts_eos_token_id = tts_eos_token_id
 
 
-__all__ = ["Qwen3TTSConfig", "Qwen3TTSTalkerConfig", "Qwen3TTSSpeakerEncoderConfig"]
+__all__ = ["Qwen3TTSConfig", "Qwen3TTSSpeakerEncoderConfig", "Qwen3TTSTalkerConfig"]

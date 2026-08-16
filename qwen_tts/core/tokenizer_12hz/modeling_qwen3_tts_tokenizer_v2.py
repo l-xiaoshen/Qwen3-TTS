@@ -1,7 +1,6 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
@@ -98,9 +97,9 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
     def encode(
         self,
         input_values: torch.Tensor,
-        padding_mask: Optional[torch.Tensor] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[tuple[list[torch.LongTensor]], Qwen3TTSTokenizerV2EncoderOutput]:
+        padding_mask: torch.Tensor | None = None,
+        return_dict: bool | None = None,
+    ) -> tuple[list[torch.LongTensor]] | Qwen3TTSTokenizerV2EncoderOutput:
         """
         Encodes the input audio waveform into discrete codes.
 
@@ -138,8 +137,8 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
     def decode(
         self,
         audio_codes: torch.Tensor,
-        return_dict: Optional[bool] = None,
-    ) -> Union[tuple[list[torch.FloatTensor]], Qwen3TTSTokenizerV2DecoderOutput]:
+        return_dict: bool | None = None,
+    ) -> tuple[list[torch.FloatTensor]] | Qwen3TTSTokenizerV2DecoderOutput:
         """
         Decodes the given frames into an output audio waveform.
 

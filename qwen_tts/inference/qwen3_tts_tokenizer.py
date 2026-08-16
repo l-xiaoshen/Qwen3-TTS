@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Protocol, Union
+from typing import Protocol
 
 import numpy as np
 import torch
@@ -29,12 +28,12 @@ from ..core import (
 from .qwen3_tts_tokenizer_audio_mixin import Qwen3TTSTokenizerAudioMixin
 from .qwen3_tts_tokenizer_decode_mixin import Qwen3TTSTokenizerDecodeMixin
 
-AudioInput = Union[
-    str,  # wav path, or base64 string
-    np.ndarray,  # 1-D float array
-    list[str],
-    list[np.ndarray],
-]
+AudioInput = (
+    str  # wav path, or base64 string
+    | np.ndarray  # 1-D float array
+    | list[str]
+    | list[np.ndarray]
+)
 
 
 class _TokenizerFeatureExtractor(Protocol):
@@ -133,7 +132,7 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
     def encode(
         self,
         audios: AudioInput,
-        sr: Optional[int] = None,
+        sr: int | None = None,
         return_dict: bool = True,
     ):
         """

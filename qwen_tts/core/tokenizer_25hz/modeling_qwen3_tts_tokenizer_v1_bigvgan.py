@@ -9,7 +9,6 @@ from torch.nn import Parameter
 from torch.nn import functional as F
 from transformers.utils import auto_docstring, logging
 
-
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderBigVGANConfig,
 )

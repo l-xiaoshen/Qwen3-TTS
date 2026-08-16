@@ -1,7 +1,8 @@
 """PyTorch Qwen3TTS model."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import ClassVar
 
 import torch
 from torch import nn
@@ -39,7 +40,7 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
     config_class = Qwen3TTSConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = ["Qwen3TTSDecoderLayer"]
+    _no_split_modules: ClassVar[list[str]] = ["Qwen3TTSDecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -74,8 +75,8 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
 class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules = []
-    _skip_keys_device_placement = ["past_key_values"]
+    _no_split_modules: ClassVar[list[str]] = []
+    _skip_keys_device_placement: ClassVar[list[str]] = ["past_key_values"]
     _supports_flash_attn = True
     _supports_sdpa = True
     _supports_flex_attn = True
@@ -252,7 +253,7 @@ def eager_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
+    attention_mask: torch.Tensor | None,
     scaling: float,
     dropout: float = 0.0,
     **kwargs,
@@ -399,10 +400,10 @@ class Qwen3TTSTalkerAttention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: AttentionMask,
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        past_key_values: Cache | None = None,
+        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -503,12 +504,12 @@ class Qwen3TTSTalkerCodePredictorOutputWithPast(ModelOutput):
         `past_key_values` input) to speed up sequential decoding.
     """
 
-    loss: Optional[torch.Tensor] = None
-    logits: Optional[torch.Tensor] = None
-    past_key_values: Optional[Cache] = None
-    hidden_states: Optional[tuple[torch.Tensor, ...]] = None
-    attentions: Optional[tuple[torch.Tensor, ...]] = None
-    generation_steps: Optional[int] = None
+    loss: torch.Tensor | None = None
+    logits: torch.Tensor | None = None
+    past_key_values: Cache | None = None
+    hidden_states: tuple[torch.Tensor, ...] | None = None
+    attentions: tuple[torch.Tensor, ...] | None = None
+    generation_steps: int | None = None
 
 
 class Qwen3TTSTalkerTextMLP(nn.Module):
@@ -617,10 +618,10 @@ class Qwen3TTSAttention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: AttentionMask,
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        past_key_values: Cache | None = None,
+        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -708,16 +709,15 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
         self,
         hidden_states: torch.Tensor,
         attention_mask: AttentionMask = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        output_attentions: Optional[bool] = False,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[
-            tuple[torch.Tensor, torch.Tensor]
-        ] = None,  # necessary, but kept here for BC
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        output_attentions: bool | None = False,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor]
+        | None = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
+    ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 

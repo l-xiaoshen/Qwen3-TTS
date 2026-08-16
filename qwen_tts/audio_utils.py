@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -27,9 +26,7 @@ import soundfile as sf
 def is_probably_base64(s: str) -> bool:
     if s.startswith("data:audio"):
         return True
-    if ("/" not in s and "\\" not in s) and len(s) > 256:
-        return True
-    return False
+    return bool(("/" not in s and "\\" not in s) and len(s) > 256)
 
 
 def is_url(s: str) -> bool:

@@ -1,8 +1,9 @@
 """Qwen3TTSTokenizerV1 model configuration"""
 
+from typing import ClassVar
+
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
-
 
 logger = logging.get_logger(__name__)
 
@@ -65,22 +66,33 @@ class Qwen3TTSTokenizerV1DecoderDiTConfig(PretrainedConfig):
         rope_theta=10000.0,
         max_position_embeddings=32768,
         block_size=24,
-        look_ahead_layers=[10],
-        look_backward_layers=[0, 20],
+        look_ahead_layers=None,
+        look_backward_layers=None,
         repeats=2,
         num_embeds=8193,
         mel_dim=80,
         dropout=0.1,
         enc_emb_dim=192,
         enc_dim=128,
-        enc_channels=[256, 256, 256, 256, 768],
-        enc_kernel_sizes=[5, 3, 3, 3, 1],
-        enc_dilations=[1, 2, 3, 4, 1],
+        enc_channels=None,
+        enc_kernel_sizes=None,
+        enc_dilations=None,
         enc_attention_channels=64,
         enc_res2net_scale=2,
         enc_se_channels=64,
         **kwargs,
     ):
+        if look_ahead_layers is None:
+            look_ahead_layers = [10]
+        if look_backward_layers is None:
+            look_backward_layers = [0, 20]
+        if enc_channels is None:
+            enc_channels = [256, 256, 256, 256, 768]
+        if enc_kernel_sizes is None:
+            enc_kernel_sizes = [5, 3, 3, 3, 1]
+        if enc_dilations is None:
+            enc_dilations = [1, 2, 3, 4, 1]
+
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
@@ -133,12 +145,21 @@ class Qwen3TTSTokenizerV1DecoderBigVGANConfig(PretrainedConfig):
         self,
         mel_dim=80,
         upsample_initial_channel=1536,
-        resblock_kernel_sizes=[3, 7, 11],
-        resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-        upsample_rates=[5, 3, 2, 2, 2, 2],
-        upsample_kernel_sizes=[11, 7, 4, 4, 4, 4],
+        resblock_kernel_sizes=None,
+        resblock_dilation_sizes=None,
+        upsample_rates=None,
+        upsample_kernel_sizes=None,
         **kwargs,
     ):
+        if resblock_kernel_sizes is None:
+            resblock_kernel_sizes = [3, 7, 11]
+        if resblock_dilation_sizes is None:
+            resblock_dilation_sizes = [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+        if upsample_rates is None:
+            upsample_rates = [5, 3, 2, 2, 2, 2]
+        if upsample_kernel_sizes is None:
+            upsample_kernel_sizes = [11, 7, 4, 4, 4, 4]
+
         self.mel_dim = mel_dim
         self.upsample_initial_channel = upsample_initial_channel
         self.resblock_kernel_sizes = resblock_kernel_sizes
@@ -163,7 +184,7 @@ class Qwen3TTSTokenizerV1DecoderConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_tokenizer_v1_decoder"
-    sub_configs = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "dit_config": Qwen3TTSTokenizerV1DecoderDiTConfig,
         "bigvgan_config": Qwen3TTSTokenizerV1DecoderBigVGANConfig,
     }
@@ -277,7 +298,7 @@ class Qwen3TTSTokenizerV1Config(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_tokenizer_25hz"
-    sub_configs = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "encoder_config": Qwen3TTSTokenizerV1EncoderConfig,
         "decoder_config": Qwen3TTSTokenizerV1DecoderConfig,
     }
@@ -315,8 +336,8 @@ class Qwen3TTSTokenizerV1Config(PretrainedConfig):
 
 __all__ = [
     "Qwen3TTSTokenizerV1Config",
-    "Qwen3TTSTokenizerV1EncoderConfig",
-    "Qwen3TTSTokenizerV1DecoderConfig",
     "Qwen3TTSTokenizerV1DecoderBigVGANConfig",
+    "Qwen3TTSTokenizerV1DecoderConfig",
     "Qwen3TTSTokenizerV1DecoderDiTConfig",
+    "Qwen3TTSTokenizerV1EncoderConfig",
 ]

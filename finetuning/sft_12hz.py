@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -21,11 +20,12 @@ import shutil
 import torch
 from accelerate import Accelerator
 from dataset import TTSDataset
-from qwen_tts import Qwen3TTSBaseModel
 from safetensors.torch import save_file
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import AutoConfig
+
+from qwen_tts import Qwen3TTSBaseModel
 
 target_speaker_embedding = None
 
@@ -58,7 +58,8 @@ def train():
     )
     config = AutoConfig.from_pretrained(MODEL_PATH)
 
-    train_data = open(args.train_jsonl).readlines()
+    with open(args.train_jsonl) as train_file:
+        train_data = train_file.readlines()
     train_data = [json.loads(line) for line in train_data]
     dataset = TTSDataset(train_data, qwen3tts.processor, config)
     train_dataloader = DataLoader(
@@ -127,7 +128,7 @@ def train():
                 talker_hidden_states = hidden_states[codec_mask[:, 1:]]
                 talker_codec_ids = codec_ids[codec_mask]
 
-                sub_talker_logits, sub_talker_loss = (
+                _sub_talker_logits, sub_talker_loss = (
                     model.talker.forward_sub_talker_finetune(
                         talker_codec_ids, talker_hidden_states
                     )
@@ -173,7 +174,7 @@ def train():
             }
 
             drop_prefix = "speaker_encoder"
-            keys_to_drop = [k for k in state_dict.keys() if k.startswith(drop_prefix)]
+            keys_to_drop = [k for k in state_dict if k.startswith(drop_prefix)]
             for k in keys_to_drop:
                 del state_dict[k]
 

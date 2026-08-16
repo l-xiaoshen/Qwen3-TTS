@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
 # All rights reserved.
 #
@@ -20,7 +19,7 @@ from .core import Qwen3TTSGenerationCoreMixin
 from .single import Qwen3TTSGenerationSingleMixin
 
 __all__ = [
-    "Qwen3TTSGenerationCoreMixin",
     "Qwen3TTSGenerationBatchMixin",
+    "Qwen3TTSGenerationCoreMixin",
     "Qwen3TTSGenerationSingleMixin",
 ]

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,21 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-import math
-import torch
-import operator
 import importlib
-
-import numpy as np
-import torch.nn.functional as F
-
-from functools import lru_cache
-from typing import Callable, Optional, Union, List
-from torch import nn, Tensor
+import math
+import operator
+import os
+from collections.abc import Callable
+from functools import cache
 from itertools import accumulate
 
-flash_attn_varlen_func: Optional[Callable[..., Tensor]] = None
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
+
+flash_attn_varlen_func: Callable[..., Tensor] | None = None
 try:
     flash_attn_module = importlib.import_module("flash_attn.flash_attn_interface")
     flash_attn_varlen_func = getattr(flash_attn_module, "flash_attn_varlen_func", None)
@@ -45,7 +43,7 @@ N_FFT = 400
 HOP_LENGTH = 160
 
 
-@lru_cache(maxsize=None)
+@cache
 def mel_filters(device, n_mels: int) -> torch.Tensor:
     """
     load the mel filterbank matrix for projecting STFT into a Mel spectrogram.
@@ -65,10 +63,10 @@ def mel_filters(device, n_mels: int) -> torch.Tensor:
 
 
 def log_mel_spectrogram(
-    audio: Union[str, np.ndarray, torch.Tensor],
+    audio: str | np.ndarray | torch.Tensor,
     n_mels: int = 80,
     padding: int = 0,
-    device: Optional[Union[str, torch.device]] = None,
+    device: str | torch.device | None = None,
 ):
     """
     Compute the log-Mel spectrogram of
@@ -142,7 +140,7 @@ def sinusoids(length, channels, max_timescale=10000):
 
 class Conv1d(nn.Conv1d):
     def _conv_forward(
-        self, input: Tensor, weight: Tensor, bias: Optional[Tensor]
+        self, input: Tensor, weight: Tensor, bias: Tensor | None
     ) -> Tensor:
         return super()._conv_forward(
             input,
@@ -153,7 +151,7 @@ class Conv1d(nn.Conv1d):
 
 class ConvTranspose1d(nn.ConvTranspose1d):
     def _conv_forward(
-        self, input: Tensor, weight: Tensor, bias: Optional[Tensor]
+        self, input: Tensor, weight: Tensor, bias: Tensor | None
     ) -> Tensor:
         return super()._conv_forward(
             input,
@@ -185,7 +183,7 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self,
         x: Tensor,
-        cu_seqlens: Optional[Tensor] = None,
+        cu_seqlens: Tensor | None = None,
     ):
         q = self.query(x)
         k = self.key(x)
@@ -214,7 +212,7 @@ class MultiHeadAttention(nn.Module):
         return output
 
     def _normalize_cu_seqlens(
-        self, cu_seqlens: Optional[Tensor], n_ctx: int, device: torch.device
+        self, cu_seqlens: Tensor | None, n_ctx: int, device: torch.device
     ) -> Tensor:
         if cu_seqlens is None:
             return torch.tensor([0, n_ctx], device=device, dtype=torch.int32)
@@ -379,14 +377,14 @@ class WhisperEncoder(nn.Module):
     def set_audio_sync(self):
         for name, param in self.named_parameters():
             if not name.startswith("blocks"):
-                setattr(param, "audio_sync", True)
+                param.audio_sync = True
 
     def forward(
         self,
-        x_list: List[Tensor],
-        audio_mellens: List[int],
-        audio_aftercnnlens: List[int],
-        audio_seqlens: List[int],
+        x_list: list[Tensor],
+        audio_mellens: list[int],
+        audio_aftercnnlens: list[int],
+        audio_seqlens: list[int],
     ):
         """
         x : torch.Tensor, shape = (n_mels, n_ctx)
@@ -423,9 +421,7 @@ class WhisperEncoder(nn.Module):
         cu_seqlens = list(accumulate(output_list, func=operator.add, initial=0))
         cu_seqlens = torch.Tensor(cu_seqlens).to(device=x.device, dtype=torch.int32)
 
-        layer_id = 0
         for block in self.blocks:
-            layer_id += 1
             x = block(x, cu_seqlens=cu_seqlens)
 
         if self.avg_pooler:

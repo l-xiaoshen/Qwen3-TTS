@@ -33,13 +33,13 @@
 
 import random
 import typing as tp
+from math import ceil
 
 import numpy as np
-from einops import rearrange, repeat
-from math import ceil
 import torch
-from torch import nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
+from torch import nn
 
 T = tp.TypeVar("T")
 D = tp.TypeVar("D")
@@ -290,7 +290,7 @@ class VectorQuantization(nn.Module):
         self,
         dim: int,
         codebook_size: int,
-        codebook_dim: tp.Optional[int] = None,
+        codebook_dim: int | None = None,
         decay: float = 0.99,
         epsilon: float = 1e-5,
         kmeans_init: bool = True,
@@ -354,10 +354,9 @@ class VectorQuantization(nn.Module):
 
         loss = torch.tensor([0.0], device=device, requires_grad=self.training)
 
-        if self.training:
-            if self.commitment_weight > 0:
-                commit_loss = F.mse_loss(quantize.detach(), x)
-                loss = loss + commit_loss * self.commitment_weight
+        if self.training and self.commitment_weight > 0:
+            commit_loss = F.mse_loss(quantize.detach(), x)
+            loss = loss + commit_loss * self.commitment_weight
 
         quantize = self.project_out(quantize)
         # quantize = rearrange(quantize, "b n d -> b d n")
@@ -374,7 +373,7 @@ class DistributedResidualVectorQuantization(nn.Module):
         *,
         num_quantizers: int,
         quantize_dropout: bool = False,
-        rand_num_quant: tp.Optional[list[int]] = None,
+        rand_num_quant: list[int] | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -444,10 +443,10 @@ class DistributedResidualVectorQuantization(nn.Module):
             raise RuntimeError("`embed_avg` buffer is not a tensor.")
         return inited, cluster_size, embed, embed_avg
 
-    def forward(self, x, n_q: tp.Optional[int] = None):
+    def forward(self, x, n_q: int | None = None):
         quantized_out = torch.zeros_like(x)
         residual = x
-        bb, cc, tt = x.shape
+        _bb, _cc, tt = x.shape
         device = x.device
 
         all_losses = []
@@ -516,13 +515,13 @@ class DistributedResidualVectorQuantization(nn.Module):
 
         # sync buffers after one forward step
         # distrib.broadcast_tensors(self.buffers())
-        out_losses, out_indices, out_sub_quants = map(
+        out_losses, out_indices, _out_sub_quants = map(
             torch.stack, (all_losses, all_indices, all_sub_quants)
         )
 
         return quantized_out, out_indices, out_losses
 
-    def encode(self, x: torch.Tensor, n_q: tp.Optional[int] = None) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, n_q: int | None = None) -> torch.Tensor:
         residual = x
         all_indices = []
         if n_q is None:
@@ -588,7 +587,7 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
         num_groups: int,
         num_quantizers: int,
         quantize_dropout: bool = False,
-        rand_num_quant: tp.Optional[list[int]] = None,
+        rand_num_quant: list[int] | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -605,7 +604,7 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
         )
         self.num_groups = num_groups
 
-    def forward(self, x, n_q: tp.Optional[int] = None):
+    def forward(self, x, n_q: int | None = None):
         x_lst = torch.chunk(x, chunks=self.num_groups, dim=1)
         all_quantized_out = []
         all_indices = []
@@ -624,7 +623,7 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
             out_losses,
         )
 
-    def encode(self, x: torch.Tensor, n_q: tp.Optional[int] = None) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, n_q: int | None = None) -> torch.Tensor:
         x_lst = torch.chunk(x, chunks=self.num_groups, dim=1)
         return torch.stack(
             [mod.encode(item, n_q) for mod, item in zip(self.rvqs, x_lst)], dim=1

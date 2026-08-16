@@ -1,9 +1,11 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
+import itertools
+from typing import ClassVar
+
 import torch
 from torch import nn
 from transformers.utils import auto_docstring, logging
-
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderDiTConfig,
@@ -35,7 +37,7 @@ logger = logging.get_logger(__name__)
 @auto_docstring
 class Qwen3TTSTokenizerV1DecoderDiTModel(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
     config: Qwen3TTSTokenizerV1DecoderDiTConfig
-    _no_split_modules = ["DiTDecoderLayer"]
+    _no_split_modules: ClassVar[list[str]] = ["DiTDecoderLayer"]
 
     def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
         super().__init__(config)
@@ -208,7 +210,7 @@ class Qwen3TTSTokenizerV1DecoderDiTModel(Qwen3TTSTokenizerV1DecoderPreTrainedMod
             )
 
         values = initial_state.clone()
-        for t0, t1 in zip(time_embedding[:-1], time_embedding[1:]):
+        for t0, t1 in itertools.pairwise(time_embedding):
             dt = t1 - t0
             vt = ode_function(t0, values)
             values = values + vt * dt
@@ -218,8 +220,8 @@ class Qwen3TTSTokenizerV1DecoderDiTModel(Qwen3TTSTokenizerV1DecoderPreTrainedMod
 
 
 __all__ = [
-    "Qwen3TTSTokenizerV1DecoderPreTrainedModel",
-    "Qwen3TTSTokenizerV1EncoderPreTrainedModel",
     "Qwen3TTSTokenizerV1DecoderBigVGANModel",
     "Qwen3TTSTokenizerV1DecoderDiTModel",
+    "Qwen3TTSTokenizerV1DecoderPreTrainedModel",
+    "Qwen3TTSTokenizerV1EncoderPreTrainedModel",
 ]

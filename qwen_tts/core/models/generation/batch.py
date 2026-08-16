@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
 # All rights reserved.
 #
@@ -24,7 +23,6 @@ from ..configuration_qwen3_tts import Qwen3TTSConfig
 from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 from ..modeling_qwen3_tts_types import SubTalkerConfiguration, VoiceClonePrompt
 from .core import Qwen3TTSGenerationCoreMixin
-
 
 StringBatchInput = list[str] | tuple[str, ...]
 

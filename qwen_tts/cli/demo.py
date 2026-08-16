@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -22,7 +21,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
-from typing import Dict, List, Optional, Tuple, TypedDict, Union
+from typing import TypedDict
 
 import gradio as gr
 import numpy as np
@@ -37,11 +36,9 @@ from .. import (
     VoiceClonePromptItem,
 )
 
-Qwen3TTSFeatureModel = Union[
-    Qwen3TTSCustomVoiceModel,
-    Qwen3TTSVoiceDesignModel,
-    Qwen3TTSVoiceCloneModel,
-]
+Qwen3TTSFeatureModel = (
+    Qwen3TTSCustomVoiceModel | Qwen3TTSVoiceDesignModel | Qwen3TTSVoiceCloneModel
+)
 
 
 class DemoGenKwargs(TypedDict, total=False):
@@ -69,8 +66,8 @@ def _title_case_display(s: str) -> str:
 
 
 def _build_choices_and_map(
-    items: Optional[List[str]],
-) -> Tuple[List[str], Dict[str, str]]:
+    items: list[str] | None,
+) -> tuple[list[str], dict[str, str]]:
     if not items:
         return [], {}
     display = [_title_case_display(x) for x in items]
@@ -247,9 +244,7 @@ def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
         try:
             raw_subtalker_configuration = json.loads(args.subtalker_configuration)
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                "`--subtalker-configuration` must be valid JSON."
-            ) from exc
+            raise ValueError("`--subtalker-configuration` must be valid JSON.") from exc
         if not isinstance(raw_subtalker_configuration, dict):
             raise ValueError("`--subtalker-configuration` must be a JSON object.")
 
@@ -269,9 +264,7 @@ def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
                 subtalker_configuration["top_k"] = value
             elif key == "top_p":
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
-                    raise ValueError(
-                        "`subtalker_configuration.top_p` must be numeric."
-                    )
+                    raise ValueError("`subtalker_configuration.top_p` must be numeric.")
                 subtalker_configuration["top_p"] = float(value)
             elif key == "temperature":
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -321,7 +314,7 @@ def _normalize_audio(wav: object, eps: float = 1e-12, clip: bool = True) -> np.n
     return y
 
 
-def _audio_to_tuple(audio: object) -> Optional[Tuple[np.ndarray, int]]:
+def _audio_to_tuple(audio: object) -> tuple[np.ndarray, int] | None:
     if audio is None:
         return None
 
@@ -347,7 +340,7 @@ def _audio_to_tuple(audio: object) -> Optional[Tuple[np.ndarray, int]]:
     return None
 
 
-def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> Tuple[int, np.ndarray]:
+def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> tuple[int, np.ndarray]:
     wav = np.asarray(wav, dtype=np.float32)
     return sr, wav
 
@@ -736,7 +729,7 @@ Upload a previously saved voice file, then synthesize new text.
                             if not isinstance(items_raw, list) or len(items_raw) == 0:
                                 return None, "Empty voice items (音色为空)."
 
-                            items: List[VoiceClonePromptItem] = []
+                            items: list[VoiceClonePromptItem] = []
                             for d in items_raw:
                                 if not isinstance(d, dict):
                                     return (
@@ -848,12 +841,12 @@ def main(argv=None) -> int:
     gen_kwargs_default = _collect_gen_kwargs(args)
     demo = build_demo(tts, ckpt, gen_kwargs_default)
 
-    launch_kwargs: DemoLaunchKwargs = dict(
-        server_name=args.ip,
-        server_port=args.port,
-        share=args.share,
-        ssl_verify=True if args.ssl_verify else False,
-    )
+    launch_kwargs: DemoLaunchKwargs = {
+        "server_name": args.ip,
+        "server_port": args.port,
+        "share": args.share,
+        "ssl_verify": bool(args.ssl_verify),
+    }
     if args.ssl_certfile is not None:
         launch_kwargs["ssl_certfile"] = args.ssl_certfile
     if args.ssl_keyfile is not None:

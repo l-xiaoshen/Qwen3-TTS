@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -17,8 +16,8 @@ import os
 import time
 from typing import TypedDict
 
-import torch
 import soundfile as sf
+import torch
 
 from qwen_tts import Qwen3TTSVoiceCloneModel, SubTalkerConfiguration
 
@@ -120,7 +119,7 @@ def main():
             tts,
             OUT_DIR,
             f"case1_promptSingle_synSingle_direct_{mode_tag}",
-            lambda: tts.generate_voice_clone(
+            lambda xvec_only=xvec_only: tts.generate_voice_clone(
                 text=syn_text_single,
                 language=syn_lang_single,
                 ref_audio=ref_audio_single,
@@ -131,7 +130,7 @@ def main():
         )
 
         # Case 1b: prompt single + synth single, via create_voice_clone_prompt
-        def _case1b():
+        def _case1b(xvec_only=xvec_only):
             prompt_items = tts.create_voice_clone_prompt(
                 ref_audio=[ref_audio_single],
                 ref_text=[ref_text_single],
@@ -156,7 +155,7 @@ def main():
             tts,
             OUT_DIR,
             f"case2_promptSingle_synBatch_direct_{mode_tag}",
-            lambda: tts.generate_voice_clone_batch(
+            lambda xvec_only=xvec_only: tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 ref_audio=[ref_audio_single, ref_audio_single],
@@ -167,7 +166,7 @@ def main():
         )
 
         # Case 2b: prompt single + synth batch, via create_voice_clone_prompt
-        def _case2b():
+        def _case2b(xvec_only=xvec_only):
             prompt_items = tts.create_voice_clone_prompt(
                 ref_audio=[ref_audio_single],
                 ref_text=[ref_text_single],
@@ -193,7 +192,7 @@ def main():
             tts,
             OUT_DIR,
             f"case3_promptBatch_synBatch_direct_{mode_tag}",
-            lambda: tts.generate_voice_clone_batch(
+            lambda xvec_only=xvec_only: tts.generate_voice_clone_batch(
                 text=syn_text_batch,
                 language=syn_lang_batch,
                 ref_audio=ref_audio_batch,
@@ -204,7 +203,7 @@ def main():
         )
 
         # Case 3b: prompt batch + synth batch, via create_voice_clone_prompt
-        def _case3b():
+        def _case3b(xvec_only=xvec_only):
             prompt_items = tts.create_voice_clone_prompt(
                 ref_audio=ref_audio_batch,
                 ref_text=ref_text_batch,

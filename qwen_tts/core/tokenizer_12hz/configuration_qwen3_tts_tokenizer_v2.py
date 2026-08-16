@@ -1,10 +1,10 @@
 """Qwen3TTSTokenizerV2 model configuration"""
 
-from transformers.configuration_utils import PretrainedConfig
-from transformers.utils import logging
+from typing import ClassVar
 
 from transformers import MimiConfig
-
+from transformers.configuration_utils import PretrainedConfig
+from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
 
@@ -121,7 +121,7 @@ class Qwen3TTSTokenizerV2Config(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_tokenizer_12hz"
-    sub_configs = {
+    sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "encoder_config": MimiConfig,
         "decoder_config": Qwen3TTSTokenizerV2DecoderConfig,
     }

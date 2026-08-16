@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,22 +12,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import TypeVar, List, Tuple, Union
+from typing import TypeVar
 
 import numpy as np
 import torch
-from qwen_tts.audio_utils import load_audio_to_np_and_sr
-from qwen_tts.core.models import Qwen3TTSConfig, mel_spectrogram
 from torch.utils.data import Dataset
 
-AudioLike = Union[
-    str,  # wav path, URL, base64
-    np.ndarray,  # waveform (requires sr)
-    Tuple[np.ndarray, int],  # (waveform, sr)
-]
+from qwen_tts.audio_utils import load_audio_to_np_and_sr
+from qwen_tts.core.models import Qwen3TTSConfig, mel_spectrogram
+
+AudioLike = (
+    str  # wav path, URL, base64
+    | np.ndarray  # waveform (requires sr)
+    | tuple[np.ndarray, int]  # (waveform, sr)
+)
 
 T = TypeVar("T")
-MaybeList = Union[T, List[T]]
+MaybeList = T | list[T]
 
 
 class TTSDataset(Dataset[dict[str, torch.Tensor]]):
@@ -42,8 +42,8 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         return len(self.data_list)
 
     def _normalize_audio_inputs(
-        self, audios: Union[AudioLike, List[AudioLike]]
-    ) -> List[Tuple[np.ndarray, int]]:
+        self, audios: AudioLike | list[AudioLike]
+    ) -> list[tuple[np.ndarray, int]]:
         """
         Normalize audio inputs into a list of (waveform, sr).
 
@@ -69,7 +69,7 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         else:
             items = [audios]
 
-        out: List[Tuple[np.ndarray, int]] = []
+        out: list[tuple[np.ndarray, int]] = []
         for a in items:
             if isinstance(a, str):
                 out.append(load_audio_to_np_and_sr(a))
@@ -87,7 +87,7 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
     def _build_assistant_text(self, text: str) -> str:
         return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
 
-    def _ensure_list(self, x: MaybeList[T]) -> List[T]:
+    def _ensure_list(self, x: MaybeList[T]) -> list[T]:
         return x if isinstance(x, list) else [x]
 
     def _tokenize_texts(self, text: str) -> torch.Tensor:

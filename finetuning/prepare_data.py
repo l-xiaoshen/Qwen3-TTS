@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -37,7 +36,8 @@ def main():
         device_map=args.device,
     )
 
-    total_lines = open(args.input_jsonl).readlines()
+    with open(args.input_jsonl) as input_file:
+        total_lines = input_file.readlines()
     total_lines = [json.loads(line.strip()) for line in total_lines]
 
     final_lines = []

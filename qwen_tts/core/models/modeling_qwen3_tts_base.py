@@ -96,7 +96,7 @@ class Qwen3TTSConditionalGenerationBase(
         supported_languages = self.config.talker_config.codec_language_id or {}
         self.supported_speakers = list(supported_speakers.keys())
         self.supported_languages = ["Auto"]
-        for language_id in supported_languages.keys():
+        for language_id in supported_languages:
             if "dialect" not in language_id:
                 self.supported_languages.append(language_id)
 

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -14,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import time
-import torch
+
 import soundfile as sf
+import torch
 
 from qwen_tts import Qwen3TTSCustomVoiceModel
 

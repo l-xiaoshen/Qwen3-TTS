@@ -1,7 +1,5 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
-from typing import Optional
-
 import numpy as np
 import torch
 from torch import nn
@@ -141,7 +139,7 @@ class VectorQuantization(nn.Module):
         self,
         dim: int,
         codebook_size: int,
-        codebook_dim: Optional[int] = None,
+        codebook_dim: int | None = None,
         epsilon: float = 1e-5,
     ):
         super().__init__()
@@ -186,8 +184,8 @@ class ResidualVectorQuantizer(nn.Module):
     def __init__(
         self,
         dimension: int = 128,
-        input_dimension: Optional[int] = None,
-        output_dimension: Optional[int] = None,
+        input_dimension: int | None = None,
+        output_dimension: int | None = None,
         n_q: int = 8,
         q_dropout: bool = False,
         no_quantization_rate: float = 0.0,

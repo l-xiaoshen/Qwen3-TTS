@@ -35,9 +35,9 @@ GenerateConfigValue = (
 
 
 __all__ = [
-    "VoiceClonePrompt",
-    "VoiceClonePromptSingle",
-    "SubTalkerConfiguration",
     "GenerateConfigPrimitive",
     "GenerateConfigValue",
+    "SubTalkerConfiguration",
+    "VoiceClonePrompt",
+    "VoiceClonePromptSingle",
 ]

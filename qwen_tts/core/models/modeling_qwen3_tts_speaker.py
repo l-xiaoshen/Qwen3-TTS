@@ -1,7 +1,5 @@
 """PyTorch Qwen3TTS model."""
 
-from typing import Optional
-
 import torch
 from librosa.filters import mel as librosa_mel_fn
 from torch import nn
@@ -345,7 +343,7 @@ def mel_spectrogram(
     hop_size: int,
     win_size: int,
     fmin: int,
-    fmax: Optional[int] = None,
+    fmax: int | None = None,
     center: bool = False,
 ) -> torch.Tensor:
     """

@@ -1,20 +1,14 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
-from typing import Optional, Protocol, Union, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from ..audio_utils import load_audio_to_np_and_sr, resample_audio
 
-AudioInput = Union[
-    str,
-    np.ndarray,
-    Sequence[str],
-    Sequence[np.ndarray],
-]
+AudioInput = str | np.ndarray | Sequence[str] | Sequence[np.ndarray]
 
 
 @runtime_checkable
@@ -47,7 +41,7 @@ class Qwen3TTSTokenizerAudioMixin:
     def _normalize_audio_inputs(
         self,
         audios: AudioInput,
-        sr: Optional[int],
+        sr: int | None,
     ) -> list[np.ndarray]:
         """
         Normalize all supported input types into a list of 1-D numpy float32 waveforms
@@ -73,9 +67,7 @@ class Qwen3TTSTokenizerAudioMixin:
         target_sr = int(feature_extractor.sampling_rate)
 
         audio_items: list[str | np.ndarray]
-        if isinstance(audios, str):
-            audio_items = [audios]
-        elif isinstance(audios, np.ndarray):
+        if isinstance(audios, (str, np.ndarray)):
             audio_items = [audios]
         else:
             audio_items = list(audios)

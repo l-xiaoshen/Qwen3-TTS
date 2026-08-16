@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -14,19 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from collections.abc import Callable, Mapping, Sequence
-from typing import TypedDict, Union, cast
-from typing_extensions import Self
+from typing import TypedDict, cast
 
 import numpy as np
 import torch
 from transformers import AutoConfig, AutoProcessor
+from typing_extensions import Self
 
 from qwen_tts.core import SpeakerConfiguration, SubTalkerConfiguration
 
 from ..audio_utils import load_audio_to_np_and_sr
 from ..core.models import (
-    Qwen3TTSConfig,
     Qwen3TTSConditionalGenerationBase,
+    Qwen3TTSConfig,
     Qwen3TTSCustomVoiceForConditionalGeneration,
     Qwen3TTSProcessor,
     Qwen3TTSVoiceCloneForConditionalGeneration,
@@ -34,11 +33,11 @@ from ..core.models import (
 )
 from .qwen3_tts_tokenizer import Qwen3TTSTokenizer
 
-AudioLike = Union[
-    str,  # wav path, URL, base64
-    np.ndarray,  # waveform (requires sr)
-    tuple[np.ndarray, int],  # (waveform, sr)
-]
+AudioLike = (
+    str  # wav path, URL, base64
+    | np.ndarray  # waveform (requires sr)
+    | tuple[np.ndarray, int]  # (waveform, sr)
+)
 
 GenerateDefaultValue = bool | int | float | SubTalkerConfiguration
 GenerateDefaults = dict[str, GenerateDefaultValue]
@@ -410,11 +409,7 @@ class Qwen3TTSBaseModel:
         parsed_generate_defaults: GenerateDefaults = {}
         for key, value in generate_defaults.items():
             str_key = str(key)
-            if isinstance(value, bool):
-                parsed_generate_defaults[str_key] = value
-            elif isinstance(value, int):
-                parsed_generate_defaults[str_key] = value
-            elif isinstance(value, float):
+            if isinstance(value, (bool, int, float)):
                 parsed_generate_defaults[str_key] = value
             elif str_key == "subtalker_configuration":
                 if value is None:
@@ -447,11 +442,7 @@ class Qwen3TTSBaseModel:
                         cast(SubTalkerConfiguration, value)
                     )
                 )
-            elif isinstance(value, bool):
-                normalized_generate_defaults[key] = value
-            elif isinstance(value, int):
-                normalized_generate_defaults[key] = value
-            elif isinstance(value, float):
+            elif isinstance(value, (bool, int, float)):
                 normalized_generate_defaults[key] = value
             else:
                 raise TypeError(
@@ -629,9 +620,8 @@ class Qwen3TTSBaseModel:
             elif key == "output_hidden_states":
                 if isinstance(value, bool):
                     merged["output_hidden_states"] = value
-            elif key == "return_dict_in_generate":
-                if isinstance(value, bool):
-                    merged["return_dict_in_generate"] = value
+            elif key == "return_dict_in_generate" and isinstance(value, bool):
+                merged["return_dict_in_generate"] = value
         return merged
 
     def get_supported_speakers(self) -> list[str] | None:

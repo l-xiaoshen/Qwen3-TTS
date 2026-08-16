@@ -1,13 +1,13 @@
 """PyTorch Qwen3TTS model."""
 
-from typing import Optional
+from typing import ClassVar
 
 import torch
 from torch import nn
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
-from transformers.masking_utils import BlockMask
 from transformers.masking_utils import (
+    BlockMask,
     create_causal_mask,
     create_sliding_window_causal_mask,
 )
@@ -81,16 +81,16 @@ class Qwen3TTSTalkerCodePredictorModel(Qwen3TTSPreTrainedModel):
     @can_return_tuple
     def forward(
         self,
-        input_ids: Optional[torch.Tensor] = None,
+        input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | dict[str, CausalMask] | None = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.Tensor] = None,
-        generation_steps: Optional[int] = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.Tensor | None = None,
+        generation_steps: int | None = None,
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         if input_ids is not None:
@@ -114,7 +114,7 @@ class Qwen3TTSTalkerCodePredictorModel(Qwen3TTSPreTrainedModel):
 
         if self.gradient_checkpointing and self.training and use_cache:
             if callable(getattr(logger, "warning_once", None)):
-                getattr(logger, "warning_once")(
+                logger.warning_once(
                     "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
                 )
             else:
@@ -232,9 +232,11 @@ class Qwen3TTSTalkerCodePredictorModel(Qwen3TTSPreTrainedModel):
 class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
     Qwen3TTSPreTrainedModel, GenerationMixin
 ):
-    _tied_weights_keys = ["lm_head.weight"]
-    _tp_plan = {"lm_head": "colwise_rep"}
-    _pp_plan = {"lm_head": (["hidden_states"], ["logits"])}
+    _tied_weights_keys: ClassVar[list[str]] = ["lm_head.weight"]
+    _tp_plan: ClassVar[dict[str, str]] = {"lm_head": "colwise_rep"}
+    _pp_plan: ClassVar[dict[str, tuple[list[str], list[str]]]] = {
+        "lm_head": (["hidden_states"], ["logits"])
+    }
     config_class = Qwen3TTSTalkerCodePredictorConfig
     base_model_prefix = "talker.code_predictor"
 
@@ -283,17 +285,17 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
 
     def forward_finetune(
         self,
-        input_ids: Optional[torch.Tensor] = None,
+        input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | dict[str, CausalMask] | None = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.Tensor] = None,
-        generation_steps: Optional[int] = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.Tensor | None = None,
+        generation_steps: int | None = None,
         **kwargs: Unpack[PredictorForwardKwargs],
     ) -> Qwen3TTSTalkerCodePredictorOutputWithPast:
         output_attentions = (
@@ -364,17 +366,17 @@ class Qwen3TTSTalkerCodePredictorModelForConditionalGeneration(
     @can_return_tuple
     def forward(
         self,
-        input_ids: Optional[torch.Tensor] = None,
+        input_ids: torch.Tensor | None = None,
         attention_mask: torch.Tensor | dict[str, CausalMask] | None = None,
-        position_ids: Optional[torch.Tensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        cache_position: Optional[torch.Tensor] = None,
-        generation_steps: Optional[int] = None,
+        position_ids: torch.Tensor | None = None,
+        past_key_values: Cache | None = None,
+        inputs_embeds: torch.Tensor | None = None,
+        labels: torch.Tensor | None = None,
+        use_cache: bool | None = None,
+        output_attentions: bool | None = None,
+        output_hidden_states: bool | None = None,
+        cache_position: torch.Tensor | None = None,
+        generation_steps: int | None = None,
         **kwargs: Unpack[PredictorForwardKwargs],
     ) -> Qwen3TTSTalkerCodePredictorOutputWithPast:
         r"""

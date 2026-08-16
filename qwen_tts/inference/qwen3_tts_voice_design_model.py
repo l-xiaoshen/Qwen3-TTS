@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -21,7 +20,6 @@ from ..core.models import (
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import GenerateExtraArg, Qwen3TTSBaseModel
-
 
 StringBatchInput = list[str] | tuple[str, ...]
 

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from collections.abc import Sequence
-from typing import Mapping, TypedDict
+from typing import TypedDict
 
 import librosa
 import numpy as np
@@ -160,11 +159,10 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         for i, ((wav, sr), code, rtext, xvec_only) in enumerate(
             zip(normalized, ref_codes, ref_text_list, xvec_list)
         ):
-            if not xvec_only:
-                if rtext == "":
-                    raise ValueError(
-                        f"ref_text is required when x_vector_only_mode=False (ICL mode). Bad index={i}"
-                    )
+            if not xvec_only and rtext == "":
+                raise ValueError(
+                    f"ref_text is required when x_vector_only_mode=False (ICL mode). Bad index={i}"
+                )
 
             spk_emb = self._extract_ref_speaker_embedding(wav=wav, sr=sr)
 

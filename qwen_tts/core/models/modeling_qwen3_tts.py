@@ -12,11 +12,11 @@ from .modeling_qwen3_tts_voice_design import Qwen3TTSVoiceDesignForConditionalGe
 
 __all__ = [
     "Qwen3TTSConditionalGenerationBase",
-    "Qwen3TTSVoiceDesignForConditionalGeneration",
     "Qwen3TTSCustomVoiceForConditionalGeneration",
-    "Qwen3TTSVoiceCloneForConditionalGeneration",
-    "Qwen3TTSTalkerForConditionalGeneration",
     "Qwen3TTSPreTrainedModel",
+    "Qwen3TTSTalkerForConditionalGeneration",
     "Qwen3TTSTalkerModel",
+    "Qwen3TTSVoiceCloneForConditionalGeneration",
+    "Qwen3TTSVoiceDesignForConditionalGeneration",
     "mel_spectrogram",
 ]

@@ -28,9 +28,7 @@ Use the base model to extract a speaker embedding from reference audio.
 ```python
 from qwen_tts import Qwen3TTSVoiceCloneModel
 
-base = Qwen3TTSVoiceCloneModel.from_pretrained(
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-)
+base = Qwen3TTSVoiceCloneModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 embedding = base.extract_speaker_embedding(ref_audio)
 ```
 
@@ -47,9 +45,7 @@ Use a direct speaker embedding or a weighted speaker configuration.
 ```python
 from qwen_tts import Qwen3TTSCustomVoiceModel
 
-tts = Qwen3TTSCustomVoiceModel.from_pretrained(
-    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-)
+tts = Qwen3TTSCustomVoiceModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
 wav, sr = tts.generate_custom_voice(
     text=text,
     speaker=embedding,
@@ -83,9 +79,7 @@ Use `voice_clone` when the flow is fully reference based.
 ```python
 from qwen_tts import Qwen3TTSVoiceCloneModel
 
-clone = Qwen3TTSVoiceCloneModel.from_pretrained(
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
-)
+clone = Qwen3TTSVoiceCloneModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 prompt = clone.create_voice_clone_prompt(
     ref_audio=[ref_audio],
     ref_text=[ref_text],

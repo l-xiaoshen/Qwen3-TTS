@@ -5,7 +5,6 @@ from torch import nn
 from torch.nn import functional as F
 from transformers.utils import logging
 
-
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderBigVGANConfig,
     Qwen3TTSTokenizerV1DecoderDiTConfig,

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 
@@ -125,7 +124,7 @@ def _extract_encoded_fields(
     encoded: object,
 ) -> tuple[object, object | None, object | None]:
     if hasattr(encoded, "audio_codes"):
-        audio_codes = getattr(encoded, "audio_codes")
+        audio_codes = encoded.audio_codes
         xvectors = getattr(encoded, "xvectors", None)
         ref_mels = getattr(encoded, "ref_mels", None)
         return audio_codes, xvectors, ref_mels
