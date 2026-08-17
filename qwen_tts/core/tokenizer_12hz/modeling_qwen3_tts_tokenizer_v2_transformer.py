@@ -2,7 +2,6 @@
 
 import math
 from collections.abc import Callable
-from typing import ClassVar
 
 import torch
 from torch import nn
@@ -22,8 +21,7 @@ from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_u
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import auto_docstring, logging
-from transformers.utils.deprecation import deprecate_kwarg
-from transformers.utils.generic import check_model_inputs
+from transformers.utils.generic import merge_with_config_defaults
 
 from .configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2DecoderConfig,
@@ -31,6 +29,27 @@ from .configuration_qwen3_tts_tokenizer_v2 import (
 
 logger = logging.get_logger(__name__)
 AttentionMask = torch.Tensor | BlockMask | None
+
+
+def _compute_default_rope_parameters(
+    config: Qwen3TTSTokenizerV2DecoderConfig,
+    device: torch.device | None = None,
+    **_: object,
+) -> tuple[torch.Tensor, float]:
+    rope_parameters = config.rope_parameters
+    if not isinstance(rope_parameters, dict):
+        raise TypeError("`config.rope_parameters` must be a dictionary.")
+    rope_theta = rope_parameters.get("rope_theta")
+    if not isinstance(rope_theta, (int, float)):
+        raise TypeError("`config.rope_parameters['rope_theta']` must be numeric.")
+    head_dim = getattr(
+        config, "head_dim", config.hidden_size // config.num_attention_heads
+    )
+    inv_freq = 1.0 / (
+        rope_theta
+        ** (torch.arange(0, head_dim, 2, dtype=torch.float, device=device) / head_dim)
+    )
+    return inv_freq, 1.0
 
 
 # Extracted from modeling_qwen3_tts_tokenizer_v2.py for better navigation.
@@ -222,28 +241,31 @@ class Qwen3TTSTokenizerV2ConvNeXtBlock(nn.Module):
         return hidden_states
 
 
-class Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(nn.Module):
+class Qwen3TTSTokenizerV2DecoderRotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
+    compute_default_rope_parameters = staticmethod(_compute_default_rope_parameters)
 
     def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig, device=None):
         super().__init__()
-        # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
-            self.rope_type = config.rope_scaling.get(
-                "rope_type", config.rope_scaling.get("type")
-            )
-        else:
-            self.rope_type = "default"
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        rope_parameters = config.rope_parameters
+        if not isinstance(rope_parameters, dict):
+            raise TypeError("`config.rope_parameters` must be a dictionary.")
+        rope_type = rope_parameters.get("rope_type")
+        if not isinstance(rope_type, str):
+            raise TypeError("`config.rope_parameters['rope_type']` must be a string.")
+        self.rope_type = rope_type
+        self.rope_init_fn: Callable = _compute_default_rope_parameters
+        if self.rope_type != "default":
+            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
         rope_device = torch.device("cpu") if device is None else device
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        self.inv_freq = nn.Buffer(inv_freq, persistent=False)
+        self.original_inv_freq = nn.Buffer(inv_freq.clone(), persistent=False)
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
@@ -313,14 +335,12 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         self.k_norm = nn.Identity()
         self.sliding_window = config.sliding_window
 
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: AttentionMask,
         past_key_values: Cache | None = None,
-        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
@@ -340,10 +360,8 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         )
 
         if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
+                key_states, value_states, self.layer_idx
             )
 
         attention_interface: Callable = eager_attention_forward
@@ -462,7 +480,6 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
         position_ids: torch.LongTensor | None = None,
         past_key_values: Cache | None = None,
         use_cache: bool | None = False,
-        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> torch.FloatTensor:
         """
@@ -478,8 +495,6 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
                 (see `past_key_values`).
             past_key_values (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-            cache_position (`torch.LongTensor` of shape `(sequence_length)`, *optional*):
-                Indices depicting the position of the input sequence tokens in the sequence
             kwargs (`dict`, *optional*):
                 Arbitrary kwargs to be ignored, used for FSDP and other methods that injects code
                 into the model
@@ -495,7 +510,6 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
-            cache_position=cache_position,
             **kwargs,
         )
         hidden_states = residual + self.self_attn_layer_scale(hidden_states)
@@ -513,7 +527,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
 class Qwen3TTSTokenizerV2DecoderTransformerModel(
     Qwen3TTSTokenizerV2DecoderPreTrainedModel
 ):
-    _can_record_outputs: ClassVar[dict[str, type[nn.Module]]] = {
+    _can_record_outputs: dict[str, type[nn.Module]] = {  # noqa: RUF012
         "hidden_states": Qwen3TTSTokenizerV2DecoderTransformerLayer,
         "attentions": Qwen3TTSTokenizerV2DecoderAttention,
     }
@@ -531,7 +545,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
         self.norm = Qwen3TTSTokenizerV2DecoderRMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        self.rotary_emb = Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(config=config)
+        self.rotary_emb = Qwen3TTSTokenizerV2DecoderRotaryEmbedding(config=config)
         self.gradient_checkpointing = False
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
         self.window_size = config.sliding_window
@@ -542,16 +556,15 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs()
+    @merge_with_config_defaults
     def forward(
         self,
         input_ids: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
+        attention_mask: torch.Tensor | dict[str, AttentionMask] | None = None,
         position_ids: torch.Tensor | None = None,
         past_key_values: Cache | None = None,
         inputs_embeds: torch.Tensor | None = None,
         use_cache: bool | None = None,
-        cache_position: torch.Tensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> BaseModelOutputWithPast:
         if input_ids is not None:
@@ -569,18 +582,15 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
 
-        if cache_position is None:
+        if position_ids is None:
             past_seen_tokens = (
                 past_key_values.get_seq_length() if past_key_values is not None else 0
             )
-            cache_position = torch.arange(
+            position_ids = torch.arange(
                 past_seen_tokens,
                 past_seen_tokens + inputs_embeds.shape[1],
                 device=inputs_embeds.device,
-            )
-
-        if position_ids is None:
-            position_ids = cache_position.unsqueeze(0)
+            ).unsqueeze(0)
 
         # It may already have been prepared by e.g. `generate`
         causal_mask_mapping: dict[str, AttentionMask]
@@ -600,9 +610,8 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
             causal_mask_mapping = {
                 "full_attention": create_causal_mask(
                     config=self.config,
-                    input_embeds=inputs_embeds,
+                    inputs_embeds=inputs_embeds,
                     attention_mask=attention_mask_tensor,
-                    cache_position=cache_position,
                     past_key_values=past_key_values,
                     position_ids=position_ids,
                 ),
@@ -612,9 +621,8 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
                 causal_mask_mapping["sliding_attention"] = (
                     create_sliding_window_causal_mask(
                         config=self.config,
-                        input_embeds=inputs_embeds,
+                        inputs_embeds=inputs_embeds,
                         attention_mask=attention_mask_tensor,
-                        cache_position=cache_position,
                         past_key_values=past_key_values,
                         position_ids=position_ids,
                     )
@@ -632,7 +640,6 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
-                cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 **kwargs,
             )

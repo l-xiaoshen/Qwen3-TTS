@@ -19,6 +19,7 @@ import os
 from collections.abc import Callable
 from functools import cache
 from itertools import accumulate
+from typing import Protocol, cast
 
 import numpy as np
 import torch
@@ -41,6 +42,10 @@ except ImportError:
 
 N_FFT = 400
 HOP_LENGTH = 160
+
+
+class _AudioSyncParameter(Protocol):
+    audio_sync: bool
 
 
 @cache
@@ -377,7 +382,8 @@ class WhisperEncoder(nn.Module):
     def set_audio_sync(self):
         for name, param in self.named_parameters():
             if not name.startswith("blocks"):
-                param.audio_sync = True
+                sync_param = cast(_AudioSyncParameter, param)
+                sync_param.audio_sync = True
 
     def forward(
         self,
@@ -393,7 +399,7 @@ class WhisperEncoder(nn.Module):
 
         positional_embedding = self.positional_embedding
         if not isinstance(positional_embedding, torch.Tensor):
-            raise RuntimeError("`positional_embedding` is not initialized as a tensor.")
+            raise TypeError("`positional_embedding` is not initialized as a tensor.")
         aftercnn_x_list = []
         for each_x in x_list:
             each_x_split_list = each_x.split(self.n_window * 2, dim=1)

@@ -17,7 +17,7 @@ import time
 import soundfile as sf
 import torch
 
-from qwen_tts import Qwen3TTSCustomVoiceModel
+from qwen_tts import Qwen3TTSCustomVoiceModel, SpeakerConfiguration
 
 
 def main():
@@ -58,7 +58,10 @@ def main():
         "She said she would be here by noon.",
     ]
     languages = ["Chinese", "English"]
-    speakers = [{"Vivian": 1.0}, {"Ryan": 1.0}]
+    speakers: list[SpeakerConfiguration | torch.Tensor] = [
+        {"Vivian": 1.0},
+        {"Ryan": 1.0},
+    ]
     instructs = ["", "Very happy."]
 
     torch.cuda.synchronize()

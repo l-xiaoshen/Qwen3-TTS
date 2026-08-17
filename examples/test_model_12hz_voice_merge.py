@@ -17,7 +17,11 @@ import time
 import soundfile as sf
 import torch
 
-from qwen_tts import Qwen3TTSCustomVoiceModel
+from qwen_tts import (
+    Qwen3TTSCustomVoiceModel,
+    SpeakerConfiguration,
+    TTSBatchInput,
+)
 
 
 def main():
@@ -34,11 +38,11 @@ def main():
     text = "其实我真的有发现，我是一个特别善于观察别人情绪的人。"
     language = "Chinese"
 
-    speakers = []
+    speakers: list[SpeakerConfiguration | torch.Tensor] = []
     for ryan_weight in [i * 0.1 for i in range(10)]:
         speakers.append({"Vivian": 1, "Ryan": ryan_weight})
 
-    tts_inputs = [[{"text": text, "instruction": ""}]] * 10
+    tts_inputs: TTSBatchInput = [[{"text": text, "instruction": ""}]] * 10
     languages = [language] * 10
 
     torch.cuda.synchronize()

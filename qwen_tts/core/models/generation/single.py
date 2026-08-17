@@ -104,7 +104,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             dtype=torch.long,
         )
 
-        talker_result = self.talker.generate(
+        # Transformers 5's generation protocol rejects official models too (transformers#44233).
+        talker_result = self.talker.generate(  # ty: ignore[invalid-argument-type, missing-argument]
             inputs_embeds=talker_input_embed,
             attention_mask=talker_attention_mask,
             trailing_text_hidden=trailing_text_hidden,

@@ -1,7 +1,7 @@
 from typing import ClassVar
 
-from transformers.configuration_utils import PretrainedConfig, layer_type_validation
-from transformers.modeling_rope_utils import rope_config_validation
+from transformers.configuration_utils import PretrainedConfig
+from transformers.modeling_rope_utils import RopeParameters
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -162,10 +162,13 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_talker_code_predictor"
+    default_theta = 10_000.0
+    rope_parameters: RopeParameters | dict | None = None
     keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalkerCodePredictor`
     base_model_tp_plan: ClassVar[dict[str, str]] = {
+        "codec_embedding.*": "embedding_rowwise",
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
         "layers.*.self_attn.v_proj": "colwise",
@@ -195,8 +198,8 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         rms_norm_eps=0.000001,
         use_cache=True,
         tie_word_embeddings=False,
-        rope_theta=10000,
-        rope_scaling=None,
+        pad_token_id=None,
+        rope_parameters=None,
         attention_bias=False,
         use_sliding_window=False,
         sliding_window=4096,
@@ -206,10 +209,11 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         num_code_groups=32,
         **kwargs,
     ):
-        super().__init__(
-            tie_word_embeddings=tie_word_embeddings,
-            **kwargs,
-        )
+        # Transformers otherwise injects an `embed_tokens` TP rule, but this model
+        # names its embedding module `codec_embedding` and declares that rule above.
+        self.tie_word_embeddings = False
+        self.pad_token_id = pad_token_id
+        self.rope_parameters = rope_parameters
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
@@ -230,15 +234,8 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
-        self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
-        rope_config_validation(self)
 
         self.layer_types = layer_types
         if self.layer_types is None:
@@ -248,8 +245,10 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
                 else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
-        layer_type_validation(self.layer_types)
         self.num_code_groups = num_code_groups
+        super().__init__(**kwargs)
+        self.tie_word_embeddings = tie_word_embeddings
+        self.validate_layer_type()
 
 
 class Qwen3TTSTalkerConfig(PretrainedConfig):
@@ -344,10 +343,13 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
     """
 
     model_type = "qwen3_tts_talker"
+    default_theta = 10_000.0
+    rope_parameters: RopeParameters | dict | None = None
     keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalker`
     base_model_tp_plan: ClassVar[dict[str, str]] = {
+        "codec_embedding": "embedding_rowwise",
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
         "layers.*.self_attn.v_proj": "colwise",
@@ -374,42 +376,47 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         num_hidden_layers=20,
         num_attention_heads=16,
         num_key_value_heads=2,
+        head_dim=128,
         hidden_act="silu",
         max_position_embeddings=32768,
         initializer_range=0.02,
         rms_norm_eps=0.000001,
         use_cache=True,
         tie_word_embeddings=False,
-        rope_theta=10000,
-        rope_scaling=None,
+        pad_token_id=None,
+        rope_parameters=None,
         attention_bias=False,
         use_sliding_window=False,
         sliding_window=4096,
         attention_dropout=0,
         num_code_groups=32,
         text_hidden_size=2048,
-        codec_eos_token_id=4198,
-        codec_think_id=4202,
-        codec_nothink_id=4203,
-        codec_think_bos_id=4204,
-        codec_think_eos_id=4205,
-        codec_pad_id=4196,
-        codec_bos_id=4197,
+        text_vocab_size=151936,
+        codec_eos_token_id=2150,
+        codec_think_id=2154,
+        codec_nothink_id=2155,
+        codec_think_bos_id=2156,
+        codec_think_eos_id=2157,
+        codec_pad_id=2148,
+        codec_bos_id=2149,
         spk_id=None,
         spk_is_dialect=None,
         codec_language_id=None,
         **kwargs,
     ):
-        super().__init__(
-            tie_word_embeddings=tie_word_embeddings,
-            **kwargs,
-        )
+        # Transformers otherwise injects an `embed_tokens` TP rule, but this model
+        # names its embedding module `codec_embedding` and declares that rule above.
+        self.tie_word_embeddings = False
+        self.pad_token_id = pad_token_id
+        self.ignore_keys_at_rope_validation = {"interleaved", "mrope_section"}
+        self.rope_parameters = rope_parameters
         self.vocab_size = vocab_size
         self.max_position_embeddings = max_position_embeddings
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
+        self.head_dim = head_dim
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window if use_sliding_window else None
 
@@ -418,14 +425,8 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
-        self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
-        # Validate the correctness of rotary position embeddings parameters
-        # BC: if there is a 'type' field, move it to 'rope_type'.
-        if self.rope_scaling is not None and "type" in self.rope_scaling:
-            self.rope_scaling["rope_type"] = self.rope_scaling["type"]
 
         if code_predictor_config is None:
             code_predictor_config = {}
@@ -441,6 +442,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
             )
         self.num_code_groups = num_code_groups
         self.text_hidden_size = text_hidden_size
+        self.text_vocab_size = text_vocab_size
         self.codec_eos_token_id = codec_eos_token_id
         self.codec_think_id = codec_think_id
         self.codec_language_id = codec_language_id
@@ -451,6 +453,24 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         self.codec_bos_id = codec_bos_id
         self.spk_id = spk_id
         self.spk_is_dialect = spk_is_dialect
+        super().__init__(**kwargs)
+        self.tie_word_embeddings = tie_word_embeddings
+
+        if not isinstance(self.rope_parameters, dict):
+            raise TypeError("`rope_parameters` must be a dictionary.")
+        self.rope_parameters.setdefault("mrope_section", [24, 20, 20])
+        self.rope_parameters.setdefault("interleaved", True)
+        mrope_section = self.rope_parameters["mrope_section"]
+        if not isinstance(mrope_section, list) or not all(
+            isinstance(section, int) for section in mrope_section
+        ):
+            raise TypeError(
+                "`rope_parameters['mrope_section']` must be a list of integers."
+            )
+        if sum(mrope_section) * 2 != self.head_dim:
+            raise ValueError(
+                "Twice the sum of `rope_parameters['mrope_section']` must equal `head_dim`."
+            )
 
 
 class Qwen3TTSConfig(PretrainedConfig):

@@ -661,8 +661,8 @@ class Qwen3TTSBaseModel:
             "subtalker_configuration"
         )
         if isinstance(generate_default_subtalker_configuration_value, dict):
-            generate_default_subtalker_configuration = cast(
-                SubTalkerConfiguration, generate_default_subtalker_configuration_value
+            generate_default_subtalker_configuration = (
+                generate_default_subtalker_configuration_value
             )
         else:
             generate_default_subtalker_configuration = SubTalkerConfiguration()

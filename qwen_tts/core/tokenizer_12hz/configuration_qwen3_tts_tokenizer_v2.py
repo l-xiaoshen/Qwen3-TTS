@@ -4,6 +4,7 @@ from typing import ClassVar
 
 from transformers import MimiConfig
 from transformers.configuration_utils import PretrainedConfig
+from transformers.modeling_rope_utils import RopeParameters
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
@@ -55,13 +56,16 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
             Dropout probability applied to attention weights in the decoder.
     """
 
+    default_theta = 10_000.0
+    rope_parameters: RopeParameters | dict | None = None
+
     def __init__(
         self,
         codebook_size=2048,
         hidden_size=1024,
         latent_dim=1024,
         max_position_embeddings=8000,
-        rope_theta=10000,
+        rope_parameters=None,
         num_attention_heads=16,
         num_key_value_heads=16,
         attention_bias=False,
@@ -76,14 +80,14 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
         upsampling_ratios=(2, 2),
         decoder_dim=1536,
         attention_dropout=0.0,
+        use_cache=True,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        self.rope_parameters = rope_parameters
         self.codebook_size = codebook_size
         self.hidden_size = hidden_size
         self.latent_dim = latent_dim
         self.max_position_embeddings = max_position_embeddings
-        self.rope_theta = rope_theta
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self.attention_bias = attention_bias
@@ -98,6 +102,8 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
         self.upsampling_ratios = upsampling_ratios
         self.decoder_dim = decoder_dim
         self.attention_dropout = attention_dropout
+        self.use_cache = use_cache
+        super().__init__(**kwargs)
 
     @property
     def layer_types(self):

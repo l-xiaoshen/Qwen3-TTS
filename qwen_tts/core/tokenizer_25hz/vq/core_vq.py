@@ -434,13 +434,13 @@ class DistributedResidualVectorQuantization(nn.Module):
         embed = self.embed
         embed_avg = self.embed_avg
         if not isinstance(inited, torch.Tensor):
-            raise RuntimeError("`inited` buffer is not a tensor.")
+            raise TypeError("`inited` buffer is not a tensor.")
         if not isinstance(cluster_size, torch.Tensor):
-            raise RuntimeError("`cluster_size` buffer is not a tensor.")
+            raise TypeError("`cluster_size` buffer is not a tensor.")
         if not isinstance(embed, torch.Tensor):
-            raise RuntimeError("`embed` buffer is not a tensor.")
+            raise TypeError("`embed` buffer is not a tensor.")
         if not isinstance(embed_avg, torch.Tensor):
-            raise RuntimeError("`embed_avg` buffer is not a tensor.")
+            raise TypeError("`embed_avg` buffer is not a tensor.")
         return inited, cluster_size, embed, embed_avg
 
     def forward(self, x, n_q: int | None = None):
@@ -626,14 +626,20 @@ class DistributedGroupResidualVectorQuantization(nn.Module):
     def encode(self, x: torch.Tensor, n_q: int | None = None) -> torch.Tensor:
         x_lst = torch.chunk(x, chunks=self.num_groups, dim=1)
         return torch.stack(
-            [mod.encode(item, n_q) for mod, item in zip(self.rvqs, x_lst)], dim=1
+            [
+                tp.cast(DistributedResidualVectorQuantization, mod).encode(item, n_q)
+                for mod, item in zip(self.rvqs, x_lst)
+            ],
+            dim=1,
         )
 
     def decode(self, q_indices: torch.Tensor) -> torch.Tensor:
         q_indices_lst = torch.chunk(q_indices, chunks=self.num_groups, dim=1)
         return torch.cat(
             [
-                mod.decode(item.squeeze(1))
+                tp.cast(DistributedResidualVectorQuantization, mod).decode(
+                    item.squeeze(1)
+                )
                 for mod, item in zip(self.rvqs, q_indices_lst)
             ],
             dim=1,

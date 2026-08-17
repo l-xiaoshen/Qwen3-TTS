@@ -1,8 +1,7 @@
 """PyTorch Qwen3TTS model."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import ClassVar
 
 import torch
 from torch import nn
@@ -28,6 +27,30 @@ from .configuration_qwen3_tts import (
 
 logger = logging.get_logger(__name__)
 AttentionMask = torch.Tensor | BlockMask | None
+RotaryConfig = Qwen3TTSTalkerConfig | Qwen3TTSTalkerCodePredictorConfig
+
+
+def _get_rope_parameters(config: RotaryConfig) -> Mapping[str, object]:
+    rope_parameters = config.rope_parameters
+    if not isinstance(rope_parameters, dict):
+        raise TypeError("`config.rope_parameters` must be a dictionary.")
+    return rope_parameters
+
+
+def _compute_default_rope_parameters(
+    config: RotaryConfig,
+    device: torch.device | None = None,
+    **_: object,
+) -> tuple[torch.Tensor, float]:
+    rope_theta = _get_rope_parameters(config).get("rope_theta")
+    if not isinstance(rope_theta, (int, float)):
+        raise TypeError("`config.rope_parameters['rope_theta']` must be numeric.")
+    head_dim = config.head_dim
+    inv_freq = 1.0 / (
+        rope_theta
+        ** (torch.arange(0, head_dim, 2, dtype=torch.float, device=device) / head_dim)
+    )
+    return inv_freq, 1.0
 
 
 # Extracted from modeling_qwen3_tts.py for better navigation.
@@ -40,7 +63,7 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
     config_class = Qwen3TTSConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules: ClassVar[list[str]] = ["Qwen3TTSDecoderLayer"]
+    _no_split_modules: list[str] = ["Qwen3TTSDecoderLayer"]  # noqa: RUF012
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn = True
     _supports_sdpa = True
@@ -70,13 +93,15 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
                 module.weight.data.fill_(1.0)
             if module.bias is not None:
                 module.bias.data.zero_()
+        else:
+            super()._init_weights(module)
 
 
 class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _no_split_modules: ClassVar[list[str]] = []
-    _skip_keys_device_placement: ClassVar[list[str]] = ["past_key_values"]
+    _no_split_modules: list[str] = []  # noqa: RUF012
+    _skip_keys_device_placement: list[str] = ["past_key_values"]  # noqa: RUF012
     _supports_flash_attn = True
     _supports_sdpa = True
     _supports_flex_attn = True
@@ -97,28 +122,31 @@ class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, Qwen3TTSRMSNorm):
             module.weight.data.fill_(1.0)
+        else:
+            super()._init_weights(module)
 
 
 class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
+    compute_default_rope_parameters = staticmethod(_compute_default_rope_parameters)
+
     def __init__(self, config: Qwen3TTSTalkerConfig, device=None):
         super().__init__()
-        # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
-            self.rope_type = config.rope_scaling.get(
-                "rope_type", config.rope_scaling.get("type")
-            )
-        else:
-            self.rope_type = "default"
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        rope_type = _get_rope_parameters(config).get("rope_type")
+        if not isinstance(rope_type, str):
+            raise TypeError("`config.rope_parameters['rope_type']` must be a string.")
+        self.rope_type = rope_type
+        self.rope_init_fn: Callable = _compute_default_rope_parameters
+        if self.rope_type != "default":
+            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
         rope_device = torch.device("cpu") if device is None else device
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        self.inv_freq = nn.Buffer(inv_freq, persistent=False)
+        self.original_inv_freq = nn.Buffer(inv_freq.clone(), persistent=False)
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
@@ -127,7 +155,7 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
         # So we expand the inv_freq to shape (3, ...)
         inv_freq = self.inv_freq
         if not isinstance(inv_freq, torch.Tensor):
-            raise RuntimeError("`inv_freq` is not initialized as a tensor.")
+            raise TypeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
             inv_freq[None, None, :, None]
             .float()
@@ -154,34 +182,33 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
 
 
 class Qwen3TTSRotaryEmbedding(nn.Module):
-    def __init__(
-        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, device=None
-    ):
+    compute_default_rope_parameters = staticmethod(_compute_default_rope_parameters)
+
+    def __init__(self, config: Qwen3TTSTalkerCodePredictorConfig, device=None):
         super().__init__()
-        # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
-            self.rope_type = config.rope_scaling.get(
-                "rope_type", config.rope_scaling.get("type")
-            )
-        else:
-            self.rope_type = "default"
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        rope_type = _get_rope_parameters(config).get("rope_type")
+        if not isinstance(rope_type, str):
+            raise TypeError("`config.rope_parameters['rope_type']` must be a string.")
+        self.rope_type = rope_type
+        self.rope_init_fn: Callable = _compute_default_rope_parameters
+        if self.rope_type != "default":
+            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
         rope_device = torch.device("cpu") if device is None else device
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        self.inv_freq = nn.Buffer(inv_freq, persistent=False)
+        self.original_inv_freq = nn.Buffer(inv_freq.clone(), persistent=False)
 
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
         inv_freq = self.inv_freq
         if not isinstance(inv_freq, torch.Tensor):
-            raise RuntimeError("`inv_freq` is not initialized as a tensor.")
+            raise TypeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
             inv_freq[None, :, None]
             .float()
@@ -393,7 +420,19 @@ class Qwen3TTSTalkerAttention(nn.Module):
             self.head_dim, eps=config.rms_norm_eps
         )  # thus post q_norm does not need reshape
         self.sliding_window = getattr(config, "sliding_window", None)
-        self.rope_scaling = config.rope_scaling
+        rope_parameters = _get_rope_parameters(config)
+        mrope_section = rope_parameters.get("mrope_section")
+        interleaved = rope_parameters.get("interleaved")
+        if not isinstance(mrope_section, list) or not all(
+            isinstance(section, int) for section in mrope_section
+        ):
+            raise TypeError(
+                "`rope_parameters['mrope_section']` must be a list of integers."
+            )
+        if not isinstance(interleaved, bool):
+            raise TypeError("`rope_parameters['interleaved']` must be a boolean.")
+        self.mrope_section = mrope_section
+        self.rope_interleaved = interleaved
 
     def forward(
         self,
@@ -401,7 +440,6 @@ class Qwen3TTSTalkerAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: AttentionMask,
         past_key_values: Cache | None = None,
-        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
@@ -421,15 +459,13 @@ class Qwen3TTSTalkerAttention(nn.Module):
             key_states,
             cos,
             sin,
-            self.rope_scaling["mrope_section"],
-            self.rope_scaling["interleaved"],
+            self.mrope_section,
+            self.rope_interleaved,
         )
 
         if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
+                key_states, value_states, self.layer_idx
             )
 
         attention_interface: Callable = eager_attention_forward
@@ -619,7 +655,6 @@ class Qwen3TTSAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attention_mask: AttentionMask,
         past_key_values: Cache | None = None,
-        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
@@ -639,10 +674,8 @@ class Qwen3TTSAttention(nn.Module):
         )
 
         if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
             key_states, value_states = past_key_values.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
+                key_states, value_states, self.layer_idx
             )
 
         attention_interface: Callable = eager_attention_forward
@@ -713,7 +746,6 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
         past_key_values: Cache | None = None,
         output_attentions: bool | None = False,
         use_cache: bool | None = False,
-        cache_position: torch.LongTensor | None = None,
         position_embeddings: tuple[torch.Tensor, torch.Tensor]
         | None = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -729,7 +761,6 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
             past_key_values=past_key_values,
             output_attentions=output_attentions,
             use_cache=use_cache,
-            cache_position=cache_position,
             position_embeddings=position_embeddings,
             **kwargs,
         )

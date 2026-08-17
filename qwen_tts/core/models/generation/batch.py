@@ -174,7 +174,8 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         padded_hiddens[padding_mask] = pad_embedding_vector
         trailing_text_hiddens_tensor = padded_hiddens
 
-        talker_result = self.talker.generate(
+        # Transformers 5's generation protocol rejects official models too (transformers#44233).
+        talker_result = self.talker.generate(  # ty: ignore[invalid-argument-type, missing-argument]
             inputs_embeds=talker_input_embeds_tensor,
             attention_mask=talker_attention_mask,
             trailing_text_hidden=trailing_text_hiddens_tensor,

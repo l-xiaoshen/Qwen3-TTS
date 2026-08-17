@@ -63,9 +63,9 @@ TokenizerEncoderOutput = (
 TokenizerEncoderTuple = (
     tuple[list[torch.LongTensor]]
     | tuple[
-        list[torch.LongTensor],
-        list[torch.FloatTensor],
-        list[torch.FloatTensor],
+        list[torch.Tensor],
+        list[torch.Tensor],
+        list[torch.Tensor],
     ]
 )
 

@@ -19,7 +19,13 @@ from typing import TypedDict
 import soundfile as sf
 import torch
 
-from qwen_tts import Qwen3TTSVoiceCloneModel, SubTalkerConfiguration
+from qwen_tts import (
+    AudioLike,
+    Qwen3TTSVoiceCloneModel,
+    SubTalkerConfiguration,
+    TTSBatchInput,
+    TTSInput,
+)
 
 
 class VoiceCloneGenKwargs(TypedDict):
@@ -76,7 +82,7 @@ def main():
     )
 
     ref_audio_single = ref_audio_path_1
-    ref_audio_batch = [ref_audio_path_1, ref_audio_path_2]
+    ref_audio_batch: list[AudioLike] = [ref_audio_path_1, ref_audio_path_2]
 
     ref_text_single = "Okay. Yeah. I resent you. I love you. I respect you. But you know what? You blew it! And thanks to you."
     ref_text_batch = [
@@ -89,14 +95,16 @@ def main():
         "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye."
     )
     syn_lang_single = "Auto"
-    syn_input_single = [{"text": syn_text_single, "instruction": ""}]
+    syn_input_single: TTSInput = [{"text": syn_text_single, "instruction": ""}]
 
     syn_text_batch = [
         "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye.",
         "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
     ]
     syn_lang_batch = ["Chinese", "English"]
-    syn_input_batch = [[{"text": text, "instruction": ""}] for text in syn_text_batch]
+    syn_input_batch: TTSBatchInput = [
+        [{"text": text, "instruction": ""}] for text in syn_text_batch
+    ]
 
     common_gen_kwargs: VoiceCloneGenKwargs = {
         "max_new_tokens": 2048,

@@ -1,7 +1,6 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
 import itertools
-from typing import ClassVar
 
 import torch
 from torch import nn
@@ -37,7 +36,7 @@ logger = logging.get_logger(__name__)
 @auto_docstring
 class Qwen3TTSTokenizerV1DecoderDiTModel(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
     config: Qwen3TTSTokenizerV1DecoderDiTConfig
-    _no_split_modules: ClassVar[list[str]] = ["DiTDecoderLayer"]
+    _no_split_modules: list[str] = ["DiTDecoderLayer"]  # noqa: RUF012
 
     def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
         super().__init__(config)

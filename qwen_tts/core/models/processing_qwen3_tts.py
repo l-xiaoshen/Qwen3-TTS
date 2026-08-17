@@ -39,7 +39,7 @@ class Qwen3TTSProcessor(ProcessorMixin):
     def _require_tokenizer(self) -> _TokenizerProtocol:
         tokenizer = getattr(self, "tokenizer", None)
         if not isinstance(tokenizer, _TokenizerProtocol):
-            raise RuntimeError("Tokenizer is not initialized.")
+            raise TypeError("Tokenizer is not initialized.")
         return tokenizer
 
     def __call__(self, *args: object, **kwargs: object) -> BatchFeature:
@@ -64,14 +64,14 @@ class Qwen3TTSProcessor(ProcessorMixin):
 
         merge_kwargs_fn = getattr(self, "_merge_kwargs", None)
         if not callable(merge_kwargs_fn):
-            raise RuntimeError("Processor kwargs merge helper is not available.")
+            raise TypeError("Processor kwargs merge helper is not available.")
         output_kwargs_raw = merge_kwargs_fn(
             ProcessingKwargs,
             tokenizer_init_kwargs=dict(tokenizer.init_kwargs),
             **kwargs,
         )
         if not isinstance(output_kwargs_raw, dict):
-            raise RuntimeError("Processor kwargs merge returned an invalid structure.")
+            raise TypeError("Processor kwargs merge returned an invalid structure.")
 
         text_kwargs: dict[str, object] = {"padding": False, "padding_side": "left"}
         text_kwargs_raw = output_kwargs_raw.get("text_kwargs", {})
@@ -109,11 +109,6 @@ class Qwen3TTSProcessor(ProcessorMixin):
         """
         tokenizer = self._require_tokenizer()
         return tokenizer.decode(*args, **kwargs)
-
-    def apply_chat_template(self, conversations, chat_template=None, **kwargs):
-        if isinstance(conversations[0], dict):
-            conversations = [conversations]
-        return super().apply_chat_template(conversations, chat_template, **kwargs)
 
     @property
     def model_input_names(self):
