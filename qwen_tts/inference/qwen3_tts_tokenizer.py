@@ -12,12 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Literal, Protocol, overload
+from collections.abc import Callable
+from typing import Literal, Protocol, cast, overload, runtime_checkable
 
 import numpy as np
 import torch
-from transformers import AutoConfig, AutoFeatureExtractor, AutoModel
 from transformers.feature_extraction_utils import BatchFeature
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.feature_extraction_auto import AutoFeatureExtractor
+from transformers.models.auto.modeling_auto import AutoModel
+from typing_extensions import Self
 
 from ..core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Config,
@@ -44,6 +48,7 @@ AudioInput = (
 )
 
 
+@runtime_checkable
 class _TokenizerFeatureExtractor(Protocol):
     sampling_rate: int | float
 
@@ -83,7 +88,7 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
     - Returned audio is float32 numpy arrays and the output sample rate.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.model: TokenizerModel | None = None
         self.feature_extractor: _TokenizerFeatureExtractor | None = None
         self.config: Qwen3TTSTokenizerV1Config | Qwen3TTSTokenizerV2Config | None = None
@@ -102,8 +107,8 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
 
     @classmethod
     def from_pretrained(
-        cls, pretrained_model_name_or_path: str, **kwargs
-    ) -> "Qwen3TTSTokenizer":
+        cls, pretrained_model_name_or_path: str, **kwargs: object
+    ) -> Self:
         """
         Initialize tokenizer with HuggingFace `from_pretrained` style.
 
@@ -126,20 +131,39 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
         AutoConfig.register("qwen3_tts_tokenizer_12hz", Qwen3TTSTokenizerV2Config)
         AutoModel.register(Qwen3TTSTokenizerV2Config, Qwen3TTSTokenizerV2Model)
 
-        inst.feature_extractor = AutoFeatureExtractor.from_pretrained(
-            pretrained_model_name_or_path
+        feature_extractor_loader = cast(
+            Callable[..., object], AutoFeatureExtractor.from_pretrained
         )
-        model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if not isinstance(model, (Qwen3TTSTokenizerV1Model, Qwen3TTSTokenizerV2Model)):
+        feature_extractor_raw = feature_extractor_loader(pretrained_model_name_or_path)
+        if not isinstance(feature_extractor_raw, _TokenizerFeatureExtractor):
+            raise TypeError(
+                "AutoFeatureExtractor returned an incompatible feature extractor."
+            )
+        if not isinstance(feature_extractor_raw.sampling_rate, (int, float)):
+            raise TypeError("Feature extractor `sampling_rate` must be numeric.")
+        inst.feature_extractor = feature_extractor_raw
+
+        model_loader = cast(Callable[..., object], AutoModel.from_pretrained)
+        model_raw = model_loader(pretrained_model_name_or_path, **kwargs)
+        if not isinstance(
+            model_raw, (Qwen3TTSTokenizerV1Model, Qwen3TTSTokenizerV2Model)
+        ):
             raise TypeError(
                 "AutoModel returned unexpected tokenizer model type: "
-                f"{type(model).__name__}"
+                f"{type(model_raw).__name__}"
             )
+        model = model_raw
+        if not isinstance(
+            model.config, (Qwen3TTSTokenizerV1Config, Qwen3TTSTokenizerV2Config)
+        ):
+            raise TypeError("Tokenizer model returned an incompatible config.")
         inst.model = model
         inst.config = model.config
 
-        inst.device = getattr(model, "device", None)
-        if inst.device is None:
+        model_device: object = getattr(model, "device", None)
+        if isinstance(model_device, torch.device):
+            inst.device = model_device
+        else:
             # fallback: infer from first parameter device
             try:
                 inst.device = next(model.parameters()).device
@@ -203,18 +227,43 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
         model, feature_extractor, device = self._require_initialized()
         wavs = self._normalize_audio_inputs(audios, sr=sr)
 
-        inputs = feature_extractor(
+        inputs_raw: object = feature_extractor(
             raw_audio=wavs,
             sampling_rate=int(feature_extractor.sampling_rate),
             return_tensors="pt",
         )
-        inputs = inputs.to(device).to(model.dtype)
+        if not isinstance(inputs_raw, BatchFeature):
+            raise TypeError("Feature extractor output must be a BatchFeature.")
+        inputs_converted: object = inputs_raw.to(device).to(model.dtype)
+        if not isinstance(inputs_converted, BatchFeature):
+            raise TypeError(
+                "Converted feature extractor output must be a BatchFeature."
+            )
+
+        input_values_raw: object = inputs_converted.get("input_values")
+        padding_mask_raw: object = inputs_converted.get("padding_mask")
+        if not isinstance(input_values_raw, torch.Tensor):
+            raise TypeError("BatchFeature `input_values` must be a tensor.")
+        if not isinstance(padding_mask_raw, torch.Tensor):
+            raise TypeError("BatchFeature `padding_mask` must be a tensor.")
+        if input_values_raw.dim() not in (2, 3):
+            raise ValueError("BatchFeature `input_values` must be 2-D or 3-D.")
+        if padding_mask_raw.dim() not in (2, 3):
+            raise ValueError("BatchFeature `padding_mask` must be 2-D or 3-D.")
+        input_values = input_values_raw.squeeze(1)
+        padding_mask = padding_mask_raw.squeeze(1)
+        if input_values.dim() != 2 or padding_mask.dim() != 2:
+            raise ValueError("BatchFeature audio tensors must have one channel.")
+        if input_values.shape != padding_mask.shape:
+            raise ValueError(
+                "BatchFeature `input_values` and `padding_mask` shapes must match."
+            )
 
         with torch.inference_mode():
             # model.encode expects (B, T) and (B, T)
             enc = model.encode(
-                inputs["input_values"].squeeze(1),
-                inputs["padding_mask"].squeeze(1),
+                input_values,
+                padding_mask,
                 return_dict=return_dict,
             )
         return enc

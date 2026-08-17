@@ -1,13 +1,31 @@
 """Qwen3TTSTokenizerV2 model configuration"""
 
-from typing import ClassVar
+from collections.abc import Mapping, Sequence
+from typing import ClassVar, Protocol, TypeVar, cast
 
-from transformers import MimiConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
+from transformers.models.mimi.configuration_mimi import MimiConfig
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+_ConfigT = TypeVar("_ConfigT", bound=PretrainedConfig)
+_ConfigT_co = TypeVar("_ConfigT_co", bound=PretrainedConfig, covariant=True)
+
+
+class _ConfigFactory(Protocol[_ConfigT_co]):
+    def __call__(self, **kwargs: object) -> _ConfigT_co: ...
+
+
+class _ConfigInitializer(Protocol):
+    def __call__(self, **kwargs: object) -> None: ...
+
+
+def _config_from_mapping(
+    config_type: type[_ConfigT], config_data: Mapping[str, object]
+) -> _ConfigT:
+    factory = cast(_ConfigFactory[_ConfigT], config_type)
+    return factory(**config_data)
 
 
 class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
@@ -22,14 +40,20 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
             Number of entries in each residual codebook used for acoustic token quantization.
         hidden_size (`int`, *optional*, defaults to 1024):
             Dimensionality of the hidden states and embeddings in the autoregressive transformer decoder.
+        latent_dim (`int`, *optional*, defaults to 1024):
+            Dimensionality used by the convolutional and transformer decoder bridge.
+        codebook_dim (`int`, *optional*, defaults to 512):
+            Dimensionality of the checkpoint's quantized codebook representation.
         max_position_embeddings (`int`, *optional*, defaults to 8000):
             Maximum sequence length that the autoregressive decoder can handle. Determines positional embedding size.
-        rope_theta (`float`, *optional*, defaults to 10000.0):
-            The base period for rotary position embeddings (RoPE) applied to attention layers.
+        rope_parameters (`Mapping[str, object]`, *optional*):
+            Rotary position embedding parameters. Transformers supplies the default values when omitted.
         num_attention_heads (`int`, *optional*, defaults to 16):
             Number of attention heads for each attention layer in the decoder.
         num_key_value_heads (`int`, *optional*, defaults to 16):
             Number of key and value attention heads used in grouped-query attention (if applicable).
+        head_dim (`int`, *optional*):
+            Dimension of each attention head. Derived from `hidden_size` when omitted.
         attention_bias (`bool`, *optional*, defaults to `False`):
             Whether to use bias in the attention projection layers.
         sliding_window (`int`, *optional*, defaults to 72):
@@ -46,9 +70,9 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
             Number of transformer blocks in the autoregressive decoder.
         num_quantizers (`int`, *optional*, defaults to 16):
             Number of residual vector quantizers used in the vocoder for fine-grained audio reconstruction.
-        upsample_rates (`Tuple[int]`, *optional*, defaults to `(8, 5, 4, 3)`):
+        upsample_rates (`Sequence[int]`, *optional*, defaults to `(8, 5, 4, 3)`):
             Rate at which features are upsampled in the final waveform synthesis stage.
-        upsampling_ratios (`Tuple[int]`, *optional*, defaults to `(2, 2)`):
+        upsampling_ratios (`Sequence[int]`, *optional*, defaults to `(2, 2)`):
             Ratios used in transposed convolutional layers to progressively upsample feature maps to waveform.
         decoder_dim (`int`, *optional*, defaults to 1536):
             Final dimensionality of the decoder's output before waveform generation.
@@ -57,39 +81,45 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
     """
 
     default_theta = 10_000.0
-    rope_parameters: RopeParameters | dict | None = None
+    rope_parameters: RopeParameters | dict[str, object] | None = None
 
     def __init__(
         self,
-        codebook_size=2048,
-        hidden_size=1024,
-        latent_dim=1024,
-        max_position_embeddings=8000,
-        rope_parameters=None,
-        num_attention_heads=16,
-        num_key_value_heads=16,
-        attention_bias=False,
-        sliding_window=72,
-        intermediate_size=3072,
-        hidden_act="silu",
-        layer_scale_initial_scale=0.01,
-        rms_norm_eps=1e-5,
-        num_hidden_layers=8,
-        num_quantizers=16,
-        upsample_rates=(8, 5, 4, 3),
-        upsampling_ratios=(2, 2),
-        decoder_dim=1536,
-        attention_dropout=0.0,
-        use_cache=True,
-        **kwargs,
-    ):
+        codebook_size: int = 2048,
+        hidden_size: int = 1024,
+        latent_dim: int = 1024,
+        max_position_embeddings: int = 8000,
+        rope_parameters: RopeParameters | dict[str, object] | None = None,
+        num_attention_heads: int = 16,
+        num_key_value_heads: int = 16,
+        attention_bias: bool = False,
+        sliding_window: int = 72,
+        intermediate_size: int = 3072,
+        hidden_act: str = "silu",
+        layer_scale_initial_scale: float = 0.01,
+        rms_norm_eps: float = 1e-5,
+        num_hidden_layers: int = 8,
+        num_quantizers: int = 16,
+        upsample_rates: Sequence[int] = (8, 5, 4, 3),
+        upsampling_ratios: Sequence[int] = (2, 2),
+        decoder_dim: int = 1536,
+        attention_dropout: float = 0.0,
+        use_cache: bool = True,
+        head_dim: int | None = None,
+        codebook_dim: int = 512,
+        **kwargs: object,
+    ) -> None:
         self.rope_parameters = rope_parameters
         self.codebook_size = codebook_size
         self.hidden_size = hidden_size
         self.latent_dim = latent_dim
+        self.codebook_dim = codebook_dim
         self.max_position_embeddings = max_position_embeddings
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
+        self.head_dim = (
+            hidden_size // num_attention_heads if head_dim is None else head_dim
+        )
         self.attention_bias = attention_bias
         self.sliding_window = sliding_window
         self.intermediate_size = intermediate_size
@@ -103,10 +133,10 @@ class Qwen3TTSTokenizerV2DecoderConfig(PretrainedConfig):
         self.decoder_dim = decoder_dim
         self.attention_dropout = attention_dropout
         self.use_cache = use_cache
-        super().__init__(**kwargs)
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
 
     @property
-    def layer_types(self):
+    def layer_types(self) -> list[str]:
         """
         All layer in code2wav should be sliding attention
         """
@@ -126,7 +156,7 @@ class Qwen3TTSTokenizerV2Config(PretrainedConfig):
         decoder_config (`dict`, *optional*): Configuration of the underlying decoder sub-model.
     """
 
-    model_type = "qwen3_tts_tokenizer_12hz"
+    model_type: ClassVar[str] = "qwen3_tts_tokenizer_12hz"
     sub_configs: ClassVar[dict[str, type[PretrainedConfig]]] = {
         "encoder_config": MimiConfig,
         "decoder_config": Qwen3TTSTokenizerV2DecoderConfig,
@@ -134,16 +164,16 @@ class Qwen3TTSTokenizerV2Config(PretrainedConfig):
 
     def __init__(
         self,
-        encoder_config=None,
-        decoder_config=None,
-        encoder_valid_num_quantizers=16,
-        input_sample_rate=24000,
-        output_sample_rate=24000,
-        decode_upsample_rate=1920,
-        encode_downsample_rate=1920,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
+        encoder_config: Mapping[str, object] | None = None,
+        decoder_config: Mapping[str, object] | None = None,
+        encoder_valid_num_quantizers: int = 16,
+        input_sample_rate: int = 24000,
+        output_sample_rate: int = 24000,
+        decode_upsample_rate: int = 1920,
+        encode_downsample_rate: int = 1920,
+        **kwargs: object,
+    ) -> None:
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
         if encoder_config is None:
             encoder_config = {}
             logger.info(
@@ -155,8 +185,10 @@ class Qwen3TTSTokenizerV2Config(PretrainedConfig):
                 "decoder_config is None. Initializing decoder with default values"
             )
 
-        self.encoder_config = MimiConfig(**encoder_config)
-        self.decoder_config = Qwen3TTSTokenizerV2DecoderConfig(**decoder_config)
+        self.encoder_config = _config_from_mapping(MimiConfig, encoder_config)
+        self.decoder_config = _config_from_mapping(
+            Qwen3TTSTokenizerV2DecoderConfig, decoder_config
+        )
 
         self.encoder_valid_num_quantizers = encoder_valid_num_quantizers
         self.input_sample_rate = input_sample_rate

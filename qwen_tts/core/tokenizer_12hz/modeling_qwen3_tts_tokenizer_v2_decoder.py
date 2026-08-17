@@ -1,12 +1,17 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
+from typing import cast
+
 import numpy as np
 import torch
 from torch import nn
 from torch.nn import Parameter
 from torch.nn import functional as F
-from transformers import MimiConfig, MimiModel
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.models.mimi.configuration_mimi import MimiConfig
+from transformers.models.mimi.modeling_mimi import MimiModel
 from transformers.utils import logging
+from typing_extensions import override
 
 from .configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2DecoderConfig,
@@ -17,6 +22,7 @@ from .modeling_qwen3_tts_tokenizer_v2_transformer import (
     Qwen3TTSTokenizerV2ConvNeXtBlock,
     Qwen3TTSTokenizerV2DecoderPreTrainedModel,
     Qwen3TTSTokenizerV2DecoderTransformerModel,
+    _call_tensor_module,
 )
 
 logger = logging.get_logger(__name__)
@@ -36,7 +42,7 @@ class SnakeBeta(nn.Module):
         https://huggingface.co/papers/2006.08195
     """
 
-    def __init__(self, in_features, alpha=1.0):
+    def __init__(self, in_features: int, alpha: float = 1.0) -> None:
         super().__init__()
         self.in_features = in_features
 
@@ -46,7 +52,8 @@ class SnakeBeta(nn.Module):
 
         self.no_div_by_zero = 0.000000001
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the function.
         Applies the function to the input elementwise.
@@ -64,7 +71,7 @@ class SnakeBeta(nn.Module):
 
 
 class Qwen3TTSTokenizerV2DecoderDecoderResidualUnit(nn.Module):
-    def __init__(self, dim: int = 16, dilation: int = 1):
+    def __init__(self, dim: int = 16, dilation: int = 1) -> None:
         super().__init__()
 
         self.act1 = SnakeBeta(dim)
@@ -74,18 +81,21 @@ class Qwen3TTSTokenizerV2DecoderDecoderResidualUnit(nn.Module):
         self.act2 = SnakeBeta(dim)
         self.conv2 = Qwen3TTSTokenizerV2CausalConvNet(dim, dim, kernel_size=1)
 
-    def forward(self, hidden_state):
+    @override
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         residual = hidden_state
 
-        hidden_state = self.act1(hidden_state)
-        hidden_state = self.conv1(hidden_state)
-        hidden_state = self.act2(hidden_state)
-        hidden_state = self.conv2(hidden_state)
+        hidden_state = _call_tensor_module(self.act1, hidden_state)
+        hidden_state = _call_tensor_module(self.conv1, hidden_state)
+        hidden_state = _call_tensor_module(self.act2, hidden_state)
+        hidden_state = _call_tensor_module(self.conv2, hidden_state)
         return hidden_state + residual
 
 
 class Qwen3TTSTokenizerV2DecoderDecoderBlock(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
-    def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig, layer_idx):
+    def __init__(
+        self, config: Qwen3TTSTokenizerV2DecoderConfig, layer_idx: int
+    ) -> None:
         super().__init__(config)
         in_dim = config.decoder_dim // 2**layer_idx
         out_dim = config.decoder_dim // 2 ** (layer_idx + 1)
@@ -105,9 +115,10 @@ class Qwen3TTSTokenizerV2DecoderDecoderBlock(Qwen3TTSTokenizerV2DecoderPreTraine
 
         self.block = nn.ModuleList(block)
 
-    def forward(self, hidden):
+    @override
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
         for block in self.block:
-            hidden = block(hidden)
+            hidden = _call_tensor_module(block, hidden)
         return hidden
 
 
@@ -117,7 +128,7 @@ class EuclideanCodebook(nn.Module):
         dim: int,
         codebook_size: int,
         epsilon: float = 1e-5,
-    ):
+    ) -> None:
         super().__init__()
         self.dim = dim
         self.codebook_size = codebook_size
@@ -141,7 +152,7 @@ class VectorQuantization(nn.Module):
         codebook_size: int,
         codebook_dim: int | None = None,
         epsilon: float = 1e-5,
-    ):
+    ) -> None:
         super().__init__()
         if codebook_dim is None:
             codebook_dim = dim
@@ -159,23 +170,38 @@ class VectorQuantization(nn.Module):
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         quantized = self._codebook.decode(codes)
-        quantized = self.project_out(quantized)
+        quantized = _call_tensor_module(self.project_out, quantized)
         quantized = quantized.transpose(1, 2)
         return quantized
 
 
 class ResidualVectorQuantization(nn.Module):
-    def __init__(self, *, num_quantizers: int, **kwargs):
+    def __init__(
+        self,
+        *,
+        num_quantizers: int,
+        dim: int,
+        codebook_size: int,
+        codebook_dim: int | None = None,
+        epsilon: float = 1e-5,
+    ) -> None:
         super().__init__()
         self.layers = nn.ModuleList(
-            [VectorQuantization(**kwargs) for _ in range(num_quantizers)]
+            [
+                VectorQuantization(
+                    dim=dim,
+                    codebook_size=codebook_size,
+                    codebook_dim=codebook_dim,
+                    epsilon=epsilon,
+                )
+                for _ in range(num_quantizers)
+            ]
         )
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         quantized = torch.zeros([1], device=codes.device)[0]
         for idx, layer_codes in enumerate(codes):
-            layer = self.layers[idx]
-            assert isinstance(layer, VectorQuantization)
+            layer = cast(VectorQuantization, self.layers[idx])
             quantized = quantized + layer.decode(layer_codes)
         return quantized
 
@@ -192,7 +218,7 @@ class ResidualVectorQuantizer(nn.Module):
         bins: int = 1024,
         decay: float = 0.99,
         force_projection: bool = False,
-    ):
+    ) -> None:
         super().__init__()
         self.max_n_q = n_q
         self.n_q = n_q
@@ -224,7 +250,7 @@ class ResidualVectorQuantizer(nn.Module):
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
         codes = codes.transpose(0, 1)
         quantized = self.vq.decode(codes)
-        quantized = self.output_proj(quantized)
+        quantized = _call_tensor_module(self.output_proj, quantized)
         return quantized
 
 
@@ -242,25 +268,44 @@ class SplitResidualVectorQuantizer(nn.Module):
         *,
         n_q: int = 8,
         n_q_semantic: int = 1,
-        **kwargs,
-    ):
+        dimension: int = 128,
+        input_dimension: int | None = None,
+        output_dimension: int | None = None,
+        q_dropout: bool = False,
+        no_quantization_rate: float = 0.0,
+        bins: int = 1024,
+        decay: float = 0.99,
+    ) -> None:
         super().__init__()
-        assert n_q > n_q_semantic, (
-            f"Number of quantizers {n_q} must be larger "
-            f"than the number of semantic quantizers {n_q_semantic}."
-        )
+        if n_q <= n_q_semantic:
+            raise ValueError(
+                f"Number of quantizers {n_q} must be larger "
+                f"than the number of semantic quantizers {n_q_semantic}."
+            )
         self.max_n_q = n_q
         self.n_q_semantic = n_q_semantic
         self.n_q_acoustic = n_q - n_q_semantic
-        q_dropout = kwargs.pop("q_dropout", False)
         self.rvq_first = ResidualVectorQuantizer(
-            n_q=n_q_semantic, force_projection=True, q_dropout=False, **kwargs
+            dimension=dimension,
+            input_dimension=input_dimension,
+            output_dimension=output_dimension,
+            n_q=n_q_semantic,
+            q_dropout=False,
+            no_quantization_rate=no_quantization_rate,
+            bins=bins,
+            decay=decay,
+            force_projection=True,
         )
         self.rvq_rest = ResidualVectorQuantizer(
+            dimension=dimension,
+            input_dimension=input_dimension,
+            output_dimension=output_dimension,
             n_q=n_q - n_q_semantic,
-            force_projection=True,
             q_dropout=q_dropout,
-            **kwargs,
+            no_quantization_rate=no_quantization_rate,
+            bins=bins,
+            decay=decay,
+            force_projection=True,
         )
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -273,9 +318,11 @@ class SplitResidualVectorQuantizer(nn.Module):
 
 
 class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
-    def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig) -> None:
         super().__init__(config)
-        self.total_upsample = np.prod(config.upsample_rates + config.upsampling_ratios)
+        self.total_upsample = int(
+            np.prod((*config.upsample_rates, *config.upsampling_ratios))
+        )
         self.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel._from_config(
             config
         )
@@ -323,29 +370,38 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
 
         self.post_init()
 
-    def forward(self, codes):
+    @override
+    def forward(self, codes: torch.Tensor) -> torch.Tensor:
         if codes.shape[1] != self.config.num_quantizers:
             raise ValueError(
                 f"Expected {self.config.num_quantizers} layer of codes, got {codes.shape[1]}"
             )
 
         hidden = self.quantizer.decode(codes)
-        hidden = self.pre_conv(hidden).transpose(1, 2)
+        hidden = _call_tensor_module(self.pre_conv, hidden).transpose(1, 2)
 
-        hidden = self.pre_transformer(inputs_embeds=hidden).last_hidden_state
+        transformer_output = cast(
+            BaseModelOutputWithPast, self.pre_transformer(inputs_embeds=hidden)
+        )
+        hidden = transformer_output.last_hidden_state
+        if hidden is None:
+            raise RuntimeError("Decoder transformer did not return hidden states.")
         hidden = hidden.permute(0, 2, 1)
         for blocks_module in self.upsample:
-            if not isinstance(blocks_module, nn.ModuleList):
-                raise TypeError("Unexpected upsample module container type.")
-            for block in blocks_module:
-                hidden = block(hidden)
+            for block in cast(nn.ModuleList, blocks_module):
+                hidden = _call_tensor_module(block, hidden)
         wav = hidden
         for block in self.decoder:
-            wav = block(wav)
+            wav = _call_tensor_module(block, wav)
         return wav.clamp(min=-1, max=1)
 
-    def chunked_decode(self, codes, chunk_size=300, left_context_size=25):
-        wavs = []
+    def chunked_decode(
+        self,
+        codes: torch.Tensor,
+        chunk_size: int = 300,
+        left_context_size: int = 25,
+    ) -> torch.Tensor:
+        wavs: list[torch.Tensor] = []
         start_index = 0
         while start_index < codes.shape[-1]:
             end_index = min(start_index + chunk_size, codes.shape[-1])
@@ -362,7 +418,7 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
 
 
 class Qwen3TTSTokenizerV2Encoder(MimiModel):
-    def __init__(self, config: MimiConfig):
+    def __init__(self, config: MimiConfig) -> None:
         super().__init__(config)
         self.config = config
 

@@ -14,6 +14,8 @@
 # limitations under the License.
 """Core generation helpers independent from batch orchestration."""
 
+from typing import cast
+
 import torch
 
 from ...config import SpeakerConfiguration
@@ -43,17 +45,25 @@ class Qwen3TTSGenerationCoreMixin:
         text_embed = torch.cat([text_embed, tts_eos_embed], dim=1)
 
         # codec embed (codec bos + codec) 1 T2 D
-        codec_embed = []
+        codec_embedding_parts: list[torch.Tensor] = []
         for i in range(self.talker.config.num_code_groups):
             if i == 0:
-                codec_embed.append(self.talker.get_input_embeddings()(ref_code[:, :1]))
-            else:
-                codec_embed.append(
-                    self.talker.code_predictor.get_input_embeddings()[i - 1](
-                        ref_code[:, i : i + 1]
+                codec_embedding_parts.append(
+                    cast(
+                        torch.Tensor,
+                        self.talker.get_input_embeddings()(ref_code[:, :1]),
                     )
                 )
-        codec_embed = torch.cat(codec_embed, dim=1).sum(1).unsqueeze(0)
+            else:
+                codec_embedding_parts.append(
+                    cast(
+                        torch.Tensor,
+                        self.talker.code_predictor.get_input_embedding(i - 1)(
+                            ref_code[:, i : i + 1]
+                        ),
+                    )
+                )
+        codec_embed = torch.cat(codec_embedding_parts, dim=1).sum(1).unsqueeze(0)
         codec_embed = torch.cat(
             [
                 self.talker.get_input_embeddings()(
@@ -99,7 +109,8 @@ class Qwen3TTSGenerationCoreMixin:
         speaker_embed: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         codec_token_ids = self.talker.codec_special_token_ids
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = self.talker.text_projection(
+        text_special_tokens = cast(
+            torch.Tensor,
             self.talker.get_text_embeddings()(
                 torch.tensor(
                     [
@@ -112,8 +123,14 @@ class Qwen3TTSGenerationCoreMixin:
                     device=self.talker.device,
                     dtype=input_id.dtype,
                 )
-            )
-        ).chunk(3, dim=1)
+            ),
+        )
+        projected_special_tokens = cast(
+            torch.Tensor, self.talker.text_projection(text_special_tokens)
+        )
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = projected_special_tokens.chunk(
+            3, dim=1
+        )
 
         if language_id is None:
             codec_prefill_list = [
@@ -386,10 +403,18 @@ class Qwen3TTSGenerationCoreMixin:
                 "Generated code-group count does not match the talker config."
             )
 
-        codec_embeddings = [self.talker.get_input_embeddings()(talker_codes[:, :1])]
+        codec_embeddings = [
+            cast(
+                torch.Tensor,
+                self.talker.get_input_embeddings()(talker_codes[:, :1]),
+            )
+        ]
         codec_embeddings.extend(
-            self.talker.code_predictor.get_input_embeddings()[index - 1](
-                talker_codes[:, index : index + 1]
+            cast(
+                torch.Tensor,
+                self.talker.code_predictor.get_input_embedding(index - 1)(
+                    talker_codes[:, index : index + 1]
+                ),
             )
             for index in range(1, self.talker.config.num_code_groups)
         )
@@ -416,13 +441,17 @@ class Qwen3TTSGenerationCoreMixin:
             text_embedding = trailing_text_hidden[
                 :, generated_length : generated_length + 1
             ]
-        return text_embedding + self.talker.get_input_embeddings()(
-            torch.tensor(
-                [[eos_token_id]],
-                device=self.talker.device,
-                dtype=input_dtype,
-            )
+        codec_embedding = cast(
+            torch.Tensor,
+            self.talker.get_input_embeddings()(
+                torch.tensor(
+                    [[eos_token_id]],
+                    device=self.talker.device,
+                    dtype=input_dtype,
+                )
+            ),
         )
+        return text_embedding + codec_embedding
 
     def _build_talker_suppress_tokens(
         self, eos_token_id: int | None = None
@@ -460,12 +489,15 @@ class Qwen3TTSGenerationCoreMixin:
                     f"Unsupported speaker: {speaker_name}. Supported speakers: {supported}"
                 )
 
-            speaker_embed = self.talker.get_input_embeddings()(
-                torch.tensor(
-                    spk_id_map[speaker_lower],
-                    device=self.talker.device,
-                    dtype=input_dtype,
-                )
+            speaker_embed = cast(
+                torch.Tensor,
+                self.talker.get_input_embeddings()(
+                    torch.tensor(
+                        spk_id_map[speaker_lower],
+                        device=self.talker.device,
+                        dtype=input_dtype,
+                    )
+                ),
             )
             weighted_embed = speaker_embed * speaker_embed.new_tensor(float(weight))
             mixed_embed = (

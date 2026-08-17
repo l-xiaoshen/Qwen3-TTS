@@ -1,7 +1,7 @@
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -11,7 +11,12 @@ from torch.nn.utils.rnn import pad_sequence
 
 @runtime_checkable
 class _TokenizerDecodeOutput(Protocol):
-    audio_values: torch.Tensor | Sequence[torch.Tensor]
+    audio_values: object
+
+
+@runtime_checkable
+class _TokenizerEncodeOutput(Protocol):
+    audio_codes: object
 
 
 @runtime_checkable
@@ -23,7 +28,7 @@ class _TokenizerDecodeModel(Protocol):
     def get_output_sample_rate(self) -> int: ...
     def get_encode_downsample_rate(self) -> int: ...
     def get_decode_upsample_rate(self) -> int: ...
-    def decode(self, *args: object, **kwargs: object) -> _TokenizerDecodeOutput: ...
+    def decode(self, *args: object, **kwargs: object) -> object: ...
 
 
 def _to_tensor(value: object, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -43,14 +48,21 @@ def _prepare_audio_codes_batch(value: object, device: torch.device) -> torch.Ten
         audio_codes = _to_tensor(value, dtype=torch.long)
         if audio_codes.dim() in (1, 2):
             audio_codes = audio_codes.unsqueeze(0)
+        elif audio_codes.dim() != 3:
+            raise ValueError("`audio_codes` must be 1-D, 2-D, or 3-D.")
         return audio_codes.to(device)
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         audio_code_list: list[torch.Tensor] = []
         for item in value:
-            audio_code_list.append(_to_tensor(item, dtype=torch.long))
+            audio_code = _to_tensor(item, dtype=torch.long)
+            if audio_code.dim() not in (1, 2):
+                raise ValueError("Each `audio_codes` item must be 1-D or 2-D.")
+            audio_code_list.append(audio_code)
         if len(audio_code_list) == 0:
             raise ValueError("`audio_codes` list is empty.")
+        if len({audio_code.dim() for audio_code in audio_code_list}) != 1:
+            raise ValueError("All `audio_codes` items must have the same rank.")
         return pad_sequence(audio_code_list, batch_first=True, padding_value=-1).to(
             device
         )
@@ -67,6 +79,8 @@ def _prepare_xvectors_batch(
         xvectors = _to_tensor(value, dtype=torch.float32)
         if xvectors.dim() == 1:
             xvectors = xvectors.unsqueeze(0)
+        elif xvectors.dim() != 2:
+            raise ValueError("`xvectors` must be 1-D or 2-D.")
         return xvectors.to(device).to(model_dtype)
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
@@ -94,6 +108,8 @@ def _prepare_ref_mels_batch(
         ref_mels = _to_tensor(value, dtype=torch.float32)
         if ref_mels.dim() == 2:
             ref_mels = ref_mels.unsqueeze(0)
+        elif ref_mels.dim() != 3:
+            raise ValueError("`ref_mels` must be 2-D or 3-D.")
         return ref_mels.to(device).to(model_dtype)
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
@@ -123,13 +139,13 @@ def _prepare_ref_mels_batch(
 def _extract_encoded_fields(
     encoded: object,
 ) -> tuple[object, object | None, object | None]:
-    if hasattr(encoded, "audio_codes"):
+    if isinstance(encoded, _TokenizerEncodeOutput):
         audio_codes = encoded.audio_codes
-        xvectors = getattr(encoded, "xvectors", None)
-        ref_mels = getattr(encoded, "ref_mels", None)
+        xvectors: object = getattr(encoded, "xvectors", None)
+        ref_mels: object = getattr(encoded, "ref_mels", None)
         return audio_codes, xvectors, ref_mels
 
-    if isinstance(encoded, dict):
+    if isinstance(encoded, Mapping):
         encoded_map: dict[str, object] = {}
         for key, value in encoded.items():
             encoded_map[str(key)] = value
@@ -146,11 +162,13 @@ def _extract_encoded_fields(
             raise ValueError("`encoded` list is empty.")
         mapping_items: list[dict[str, object]] = []
         for item in encoded_items:
-            if not isinstance(item, dict):
+            if not isinstance(item, Mapping):
                 raise TypeError("`encoded` list elements must be mapping-like objects.")
             normalized_item: dict[str, object] = {}
             for key, value in item.items():
                 normalized_item[str(key)] = value
+            if "audio_codes" not in normalized_item:
+                raise KeyError("Each `encoded` mapping must contain key `audio_codes`.")
             mapping_items.append(normalized_item)
         audio_codes = [item["audio_codes"] for item in mapping_items]
         xvectors = None
@@ -170,6 +188,8 @@ def _audio_values_to_tensors(value: object) -> list[torch.Tensor]:
     if isinstance(value, torch.Tensor):
         if value.dim() == 1:
             return [value]
+        if value.dim() != 2:
+            raise ValueError("Decoded audio tensor must be 1-D or 2-D.")
         return [value[i] for i in range(value.shape[0])]
 
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
@@ -179,6 +199,8 @@ def _audio_values_to_tensors(value: object) -> list[torch.Tensor]:
                 raise TypeError(
                     f"Decoded audio contains unsupported item type: {type(item)}"
                 )
+            if item.dim() != 1:
+                raise ValueError("Each decoded waveform must be 1-D.")
             wav_tensors.append(item)
         return wav_tensors
 
@@ -186,6 +208,22 @@ def _audio_values_to_tensors(value: object) -> list[torch.Tensor]:
 
 
 class Qwen3TTSTokenizerDecodeMixin:
+    def _require_decode_state(
+        self,
+    ) -> tuple[_TokenizerDecodeModel, torch.device]:
+        model: object = getattr(self, "model", None)
+        if model is None:
+            raise RuntimeError("Tokenizer model is not initialized.")
+        if not isinstance(model, _TokenizerDecodeModel):
+            raise TypeError("Tokenizer model does not implement the decode interface.")
+
+        device: object = getattr(self, "device", None)
+        if device is None:
+            raise RuntimeError("Tokenizer device is not initialized.")
+        if not isinstance(device, torch.device):
+            raise TypeError("Tokenizer device must be a torch.device.")
+        return model, device
+
     def decode(
         self,
         encoded: object,
@@ -213,12 +251,7 @@ class Qwen3TTSTokenizerDecodeMixin:
                 - wavs: list of 1-D float32 numpy arrays
                 - sample_rate: int, model output sampling rate
         """
-        model = getattr(self, "model", None)
-        device = getattr(self, "device", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
-        if not isinstance(device, torch.device):
-            raise RuntimeError("Tokenizer device is not initialized.")
+        model, device = self._require_decode_state()
         model_type = model.get_model_type()
         audio_codes_raw, xvectors_raw, ref_mels_raw = _extract_encoded_fields(encoded)
         audio_codes_padded = _prepare_audio_codes_batch(audio_codes_raw, device)
@@ -234,18 +267,20 @@ class Qwen3TTSTokenizerDecodeMixin:
                     ref_mels_raw, device, model.dtype
                 )
 
-                dec = model.decode(
+                dec_raw = model.decode(
                     audio_codes_padded,
                     xvectors_batch,
                     ref_mels_padded,
                     return_dict=True,
                 )
             elif model_type == "qwen3_tts_tokenizer_12hz":
-                dec = model.decode(audio_codes_padded, return_dict=True)
+                dec_raw = model.decode(audio_codes_padded, return_dict=True)
             else:
                 raise ValueError(f"Unknown model type: {model_type}")
 
-        wav_tensors = _audio_values_to_tensors(dec.audio_values)
+        if not isinstance(dec_raw, _TokenizerDecodeOutput):
+            raise TypeError("Tokenizer decode output has no `audio_values` field.")
+        wav_tensors = _audio_values_to_tensors(dec_raw.audio_values)
         wavs = [w.to(torch.float32).detach().cpu().numpy() for w in wav_tensors]
         return wavs, int(model.get_output_sample_rate())
 
@@ -257,9 +292,7 @@ class Qwen3TTSTokenizerDecodeMixin:
             str: Model type string from `self.model.config.model_type`
                 (e.g. "qwen3_tts_tokenizer_25hz" / "qwen3_tts_tokenizer_12hz").
         """
-        model = getattr(self, "model", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
+        model, _ = self._require_decode_state()
         return model.get_model_type()
 
     def get_input_sample_rate(self) -> int:
@@ -269,9 +302,7 @@ class Qwen3TTSTokenizerDecodeMixin:
         Returns:
             int: Input sample rate (Hz).
         """
-        model = getattr(self, "model", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
+        model, _ = self._require_decode_state()
         return int(model.get_input_sample_rate())
 
     def get_output_sample_rate(self) -> int:
@@ -281,9 +312,7 @@ class Qwen3TTSTokenizerDecodeMixin:
         Returns:
             int: Output sample rate (Hz).
         """
-        model = getattr(self, "model", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
+        model, _ = self._require_decode_state()
         return int(model.get_output_sample_rate())
 
     def get_encode_downsample_rate(self) -> int:
@@ -293,9 +322,7 @@ class Qwen3TTSTokenizerDecodeMixin:
         Returns:
             int: Encode downsample rate.
         """
-        model = getattr(self, "model", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
+        model, _ = self._require_decode_state()
         return int(model.get_encode_downsample_rate())
 
     def get_decode_upsample_rate(self) -> int:
@@ -305,7 +332,5 @@ class Qwen3TTSTokenizerDecodeMixin:
         Returns:
             int: Decode upsample rate.
         """
-        model = getattr(self, "model", None)
-        if not isinstance(model, _TokenizerDecodeModel):
-            raise RuntimeError("Tokenizer model is not initialized.")
+        model, _ = self._require_decode_state()
         return int(model.get_decode_upsample_rate())

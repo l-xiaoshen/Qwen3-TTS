@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Protocol, cast
 
 import torch
 from torch import nn
@@ -18,6 +19,7 @@ from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_u
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
 from transformers.utils import logging
+from typing_extensions import override
 
 from .configuration_qwen3_tts import (
     Qwen3TTSConfig,
@@ -28,6 +30,39 @@ from .configuration_qwen3_tts import (
 logger = logging.get_logger(__name__)
 AttentionMask = torch.Tensor | BlockMask | None
 RotaryConfig = Qwen3TTSTalkerConfig | Qwen3TTSTalkerCodePredictorConfig
+DecoderLayerOutput = tuple[torch.Tensor] | tuple[torch.Tensor, torch.Tensor | None]
+TensorActivation = Callable[[torch.Tensor], torch.Tensor]
+
+
+def _apply_tensor_module(
+    module: nn.Module, hidden_states: torch.Tensor
+) -> torch.Tensor:
+    return cast(torch.Tensor, module(hidden_states))
+
+
+class RopeInitFunction(Protocol):
+    def __call__(
+        self,
+        config: RotaryConfig,
+        device: torch.device | None = None,
+        **kwargs: object,
+    ) -> tuple[torch.Tensor, float]: ...
+
+
+class AttentionFunction(Protocol):
+    def __call__(
+        self,
+        module: "Qwen3TTSAttention | Qwen3TTSTalkerAttention",
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attention_mask: AttentionMask,
+        *,
+        dropout: float = 0.0,
+        scaling: float | None = None,
+        sliding_window: int | None = None,
+        **kwargs: object,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]: ...
 
 
 def _get_rope_parameters(config: RotaryConfig) -> Mapping[str, object]:
@@ -71,7 +106,8 @@ class Qwen3TTSPreTrainedModel(PreTrainedModel):
     _supports_static_cache = False
     _supports_attention_backend = True
 
-    def _init_weights(self, module):
+    @override
+    def _init_weights(self, module: nn.Module) -> None:
         # important: this ported version of Qwen2.5OmniThinker isn't meant for training from scratch - only
         # inference and fine-tuning - so the proper init weights code has been removed
         std = (
@@ -110,7 +146,8 @@ class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
     _supports_static_cache = False
     _supports_attention_backend = True
 
-    def _init_weights(self, module):
+    @override
+    def _init_weights(self, module: nn.Module) -> None:
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
             module.weight.data.normal_(mean=0.0, std=std)
@@ -129,7 +166,9 @@ class Qwen3TTSTalkerTextPreTrainedModel(PreTrainedModel):
 class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
     compute_default_rope_parameters = staticmethod(_compute_default_rope_parameters)
 
-    def __init__(self, config: Qwen3TTSTalkerConfig, device=None):
+    def __init__(
+        self, config: Qwen3TTSTalkerConfig, device: torch.device | None = None
+    ) -> None:
         super().__init__()
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
@@ -139,23 +178,26 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
         if not isinstance(rope_type, str):
             raise TypeError("`config.rope_parameters['rope_type']` must be a string.")
         self.rope_type = rope_type
-        self.rope_init_fn: Callable = _compute_default_rope_parameters
+        self.rope_init_fn: RopeInitFunction = _compute_default_rope_parameters
         if self.rope_type != "default":
-            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+            self.rope_init_fn = cast(
+                RopeInitFunction, ROPE_INIT_FUNCTIONS[self.rope_type]
+            )
 
         rope_device = torch.device("cpu") if device is None else device
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
         self.inv_freq = nn.Buffer(inv_freq, persistent=False)
         self.original_inv_freq = nn.Buffer(inv_freq.clone(), persistent=False)
 
+    @override
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
+    def forward(
+        self, x: torch.Tensor, position_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # In contrast to other models, Qwen3TTSThinkerText has different position ids for the grids
         # So we expand the inv_freq to shape (3, ...)
         inv_freq = self.inv_freq
-        if not isinstance(inv_freq, torch.Tensor):
-            raise TypeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
             inv_freq[None, None, :, None]
             .float()
@@ -165,11 +207,7 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
             :, :, None, :
         ].float()  # shape (3, bs, 1, positions)
 
-        device_type = (
-            x.device.type
-            if isinstance(x.device.type, str) and x.device.type != "mps"
-            else "cpu"
-        )
+        device_type = x.device.type if x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):  # Force float32
             freqs = (
                 inv_freq_expanded.float() @ position_ids_expanded.float()
@@ -184,7 +222,11 @@ class Qwen3TTSTalkerRotaryEmbedding(nn.Module):
 class Qwen3TTSRotaryEmbedding(nn.Module):
     compute_default_rope_parameters = staticmethod(_compute_default_rope_parameters)
 
-    def __init__(self, config: Qwen3TTSTalkerCodePredictorConfig, device=None):
+    def __init__(
+        self,
+        config: Qwen3TTSTalkerCodePredictorConfig,
+        device: torch.device | None = None,
+    ) -> None:
         super().__init__()
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
@@ -194,21 +236,24 @@ class Qwen3TTSRotaryEmbedding(nn.Module):
         if not isinstance(rope_type, str):
             raise TypeError("`config.rope_parameters['rope_type']` must be a string.")
         self.rope_type = rope_type
-        self.rope_init_fn: Callable = _compute_default_rope_parameters
+        self.rope_init_fn: RopeInitFunction = _compute_default_rope_parameters
         if self.rope_type != "default":
-            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+            self.rope_init_fn = cast(
+                RopeInitFunction, ROPE_INIT_FUNCTIONS[self.rope_type]
+            )
 
         rope_device = torch.device("cpu") if device is None else device
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, rope_device)
         self.inv_freq = nn.Buffer(inv_freq, persistent=False)
         self.original_inv_freq = nn.Buffer(inv_freq.clone(), persistent=False)
 
+    @override
     @torch.no_grad()
     @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
-    def forward(self, x, position_ids):
+    def forward(
+        self, x: torch.Tensor, position_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         inv_freq = self.inv_freq
-        if not isinstance(inv_freq, torch.Tensor):
-            raise TypeError("`inv_freq` is not initialized as a tensor.")
         inv_freq_expanded = (
             inv_freq[None, :, None]
             .float()
@@ -217,11 +262,7 @@ class Qwen3TTSRotaryEmbedding(nn.Module):
         )
         position_ids_expanded = position_ids[:, None, :].float()
 
-        device_type = (
-            x.device.type
-            if isinstance(x.device.type, str) and x.device.type != "mps"
-            else "cpu"
-        )
+        device_type = x.device.type if x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):  # Force float32
             freqs = (
                 inv_freq_expanded.float() @ position_ids_expanded.float()
@@ -235,7 +276,7 @@ class Qwen3TTSRotaryEmbedding(nn.Module):
 
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3TTSRMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
         """
         Qwen3TTSRMSNorm is equivalent to T5LayerNorm
         """
@@ -243,18 +284,20 @@ class Qwen3TTSRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * hidden_states.to(input_dtype)
 
-    def extra_repr(self):
+    @override
+    def extra_repr(self) -> str:
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-def rotate_half(x):
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
@@ -283,8 +326,8 @@ def eager_attention_forward(
     attention_mask: torch.Tensor | None,
     scaling: float,
     dropout: float = 0.0,
-    **kwargs,
-):
+    **kwargs: object,
+) -> tuple[torch.Tensor, torch.Tensor]:
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
@@ -306,8 +349,14 @@ def eager_attention_forward(
 
 
 def apply_multimodal_rotary_pos_emb(
-    q, k, cos, sin, mrope_section, mrope_interleaved=False, unsqueeze_dim=1
-):
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    mrope_section: list[int],
+    mrope_interleaved: bool = False,
+    unsqueeze_dim: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Applies Rotary Position Embedding with Multimodal Sections to the query and key tensors (https://qwenlm.github.io/blog/qwen2-vl/).
 
     Explanation:
@@ -341,7 +390,7 @@ def apply_multimodal_rotary_pos_emb(
     """
     if mrope_interleaved:
 
-        def apply_interleaved_rope(x, modality_num):
+        def apply_interleaved_rope(x: torch.Tensor, modality_num: int) -> torch.Tensor:
             x_t = x[0].clone()
             index_ranges = []
             for i, n in enumerate(mrope_section[1:], 1):
@@ -379,13 +428,11 @@ def apply_multimodal_rotary_pos_emb(
 class Qwen3TTSTalkerAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config, layer_idx):
+    def __init__(self, config: Qwen3TTSTalkerConfig, layer_idx: int) -> None:
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.head_dim = getattr(
-            config, "head_dim", config.hidden_size // config.num_attention_heads
-        )
+        self.head_dim = config.head_dim
         self.num_key_value_groups = (
             config.num_attention_heads // config.num_key_value_heads
         )
@@ -419,21 +466,12 @@ class Qwen3TTSTalkerAttention(nn.Module):
         self.k_norm = Qwen3TTSRMSNorm(
             self.head_dim, eps=config.rms_norm_eps
         )  # thus post q_norm does not need reshape
-        self.sliding_window = getattr(config, "sliding_window", None)
+        self.sliding_window = config.sliding_window
         rope_parameters = _get_rope_parameters(config)
-        mrope_section = rope_parameters.get("mrope_section")
-        interleaved = rope_parameters.get("interleaved")
-        if not isinstance(mrope_section, list) or not all(
-            isinstance(section, int) for section in mrope_section
-        ):
-            raise TypeError(
-                "`rope_parameters['mrope_section']` must be a list of integers."
-            )
-        if not isinstance(interleaved, bool):
-            raise TypeError("`rope_parameters['interleaved']` must be a boolean.")
-        self.mrope_section = mrope_section
-        self.rope_interleaved = interleaved
+        self.mrope_section = cast(list[int], rope_parameters["mrope_section"])
+        self.rope_interleaved = cast(bool, rope_parameters["interleaved"])
 
+    @override
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -445,13 +483,14 @@ class Qwen3TTSTalkerAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(
-            self.q_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
-        key_states = self.k_norm(
-            self.k_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        query_states = _apply_tensor_module(self.q_proj, hidden_states).view(
+            hidden_shape
+        )
+        query_states = _apply_tensor_module(self.q_norm, query_states).transpose(1, 2)
+        key_states = _apply_tensor_module(self.k_proj, hidden_states).view(hidden_shape)
+        key_states = _apply_tensor_module(self.k_norm, key_states).transpose(1, 2)
+        value_states = _apply_tensor_module(self.v_proj, hidden_states)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_multimodal_rotary_pos_emb(
@@ -468,17 +507,11 @@ class Qwen3TTSTalkerAttention(nn.Module):
                 key_states, value_states, self.layer_idx
             )
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
-
-        if attention_interface is eager_attention_forward:
+        if self.config._attn_implementation == "eager":
             eager_attention_mask = (
                 attention_mask if isinstance(attention_mask, torch.Tensor) else None
             )
-            attn_output, attn_weights = attention_interface(
+            attn_output, attn_weights = eager_attention_forward(
                 self,
                 query_states,
                 key_states,
@@ -490,6 +523,10 @@ class Qwen3TTSTalkerAttention(nn.Module):
                 **kwargs,
             )
         else:
+            attention_interface = cast(
+                AttentionFunction,
+                ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation],
+            )
             attn_output, attn_weights = attention_interface(
                 self,
                 query_states,
@@ -503,7 +540,7 @@ class Qwen3TTSTalkerAttention(nn.Module):
             )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
+        attn_output = _apply_tensor_module(self.o_proj, attn_output)
         return attn_output, attn_weights
 
 
@@ -514,15 +551,18 @@ class Qwen3TTSTalkerResizeMLP(nn.Module):
         intermediate_size: int,
         output_size: int,
         act: str,
-        bias=False,
-    ):
+        bias: bool = False,
+    ) -> None:
         super().__init__()
         self.linear_fc1 = nn.Linear(input_size, intermediate_size, bias=bias)
         self.linear_fc2 = nn.Linear(intermediate_size, output_size, bias=bias)
-        self.act_fn = ACT2FN[act]
+        self.act_fn = cast(TensorActivation, ACT2FN[act])
 
-    def forward(self, hidden_state):
-        return self.linear_fc2(self.act_fn(self.linear_fc1(hidden_state)))
+    @override
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
+        hidden_state = _apply_tensor_module(self.linear_fc1, hidden_state)
+        hidden_state = self.act_fn(hidden_state)
+        return _apply_tensor_module(self.linear_fc2, hidden_state)
 
 
 @dataclass
@@ -549,7 +589,9 @@ class Qwen3TTSTalkerCodePredictorOutputWithPast(ModelOutput):
 
 
 class Qwen3TTSTalkerTextMLP(nn.Module):
-    def __init__(self, config, intermediate_size=None):
+    def __init__(
+        self, config: RotaryConfig, intermediate_size: int | None = None
+    ) -> None:
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -561,14 +603,23 @@ class Qwen3TTSTalkerTextMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
+        self.act_fn = cast(TensorActivation, ACT2FN[config.hidden_act])
 
-    def forward(self, x):
-        down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
+    @override
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gate = self.act_fn(_apply_tensor_module(self.gate_proj, x))
+        up = _apply_tensor_module(self.up_proj, x)
+        return _apply_tensor_module(self.down_proj, gate * up)
 
 
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor | None = None,
+    unsqueeze_dim: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -599,14 +650,12 @@ class Qwen3TTSAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
     def __init__(
-        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
-    ):
+        self, config: Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
+    ) -> None:
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.head_dim = getattr(
-            config, "head_dim", config.hidden_size // config.num_attention_heads
-        )
+        self.head_dim = config.head_dim
         self.num_key_value_groups = (
             config.num_attention_heads // config.num_key_value_heads
         )
@@ -641,14 +690,13 @@ class Qwen3TTSAttention(nn.Module):
             self.head_dim, eps=config.rms_norm_eps
         )  # thus post q_norm does not need reshape
         layer_types = config.layer_types
-        if layer_types is None:
-            raise TypeError("`config.layer_types` must be initialized.")
         self.sliding_window = (
             config.sliding_window
             if layer_types[layer_idx] == "sliding_attention"
             else None
         )
 
+    @override
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -660,13 +708,14 @@ class Qwen3TTSAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(
-            self.q_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
-        key_states = self.k_norm(
-            self.k_proj(hidden_states).view(hidden_shape)
-        ).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        query_states = _apply_tensor_module(self.q_proj, hidden_states).view(
+            hidden_shape
+        )
+        query_states = _apply_tensor_module(self.q_norm, query_states).transpose(1, 2)
+        key_states = _apply_tensor_module(self.k_proj, hidden_states).view(hidden_shape)
+        key_states = _apply_tensor_module(self.k_norm, key_states).transpose(1, 2)
+        value_states = _apply_tensor_module(self.v_proj, hidden_states)
+        value_states = value_states.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(
@@ -678,17 +727,11 @@ class Qwen3TTSAttention(nn.Module):
                 key_states, value_states, self.layer_idx
             )
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[
-                self.config._attn_implementation
-            ]
-
-        if attention_interface is eager_attention_forward:
+        if self.config._attn_implementation == "eager":
             eager_attention_mask = (
                 attention_mask if isinstance(attention_mask, torch.Tensor) else None
             )
-            attn_output, attn_weights = attention_interface(
+            attn_output, attn_weights = eager_attention_forward(
                 self,
                 query_states,
                 key_states,
@@ -700,6 +743,10 @@ class Qwen3TTSAttention(nn.Module):
                 **kwargs,
             )
         else:
+            attention_interface = cast(
+                AttentionFunction,
+                ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation],
+            )
             attn_output, attn_weights = attention_interface(
                 self,
                 query_states,
@@ -713,14 +760,14 @@ class Qwen3TTSAttention(nn.Module):
             )
 
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
-        attn_output = self.o_proj(attn_output)
+        attn_output = _apply_tensor_module(self.o_proj, attn_output)
         return attn_output, attn_weights
 
 
 class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
     def __init__(
-        self, config: Qwen3TTSConfig | Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
-    ):
+        self, config: Qwen3TTSTalkerCodePredictorConfig, layer_idx: int
+    ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
 
@@ -734,10 +781,9 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
             config.hidden_size, eps=config.rms_norm_eps
         )
         layer_types = config.layer_types
-        if layer_types is None:
-            raise TypeError("`config.layer_types` must be initialized.")
         self.attention_type = layer_types[layer_idx]
 
+    @override
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -749,31 +795,34 @@ class Qwen3TTSDecoderLayer(GradientCheckpointingLayer):
         position_embeddings: tuple[torch.Tensor, torch.Tensor]
         | None = None,  # necessary, but kept here for BC
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.FloatTensor, torch.FloatTensor | None]:
+    ) -> DecoderLayerOutput:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states = _apply_tensor_module(self.input_layernorm, hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            position_embeddings=position_embeddings,
-            **kwargs,
+        hidden_states, self_attn_weights = cast(
+            tuple[torch.Tensor, torch.Tensor | None],
+            self.self_attn(
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                position_embeddings=position_embeddings,
+                **kwargs,
+            ),
         )
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = _apply_tensor_module(
+            self.post_attention_layernorm, hidden_states
+        )
+        hidden_states = _apply_tensor_module(self.mlp, hidden_states)
         hidden_states = residual + hidden_states
 
-        outputs = (hidden_states,)
         if output_attentions:
-            outputs += (self_attn_weights,)
-
-        return outputs
+            return hidden_states, self_attn_weights
+        return (hidden_states,)

@@ -12,12 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Mapping, Sequence
-from typing import TypedDict, cast
+import os
+from collections.abc import Callable, Mapping, Sequence
+from typing import ClassVar, TypedDict, cast
 
 import numpy as np
 import torch
-from transformers import AutoConfig, AutoProcessor
+from transformers.feature_extraction_utils import BatchFeature
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.processing_auto import AutoProcessor
 from typing_extensions import Self
 
 from qwen_tts.core import SpeakerConfiguration, SubTalkerConfiguration
@@ -83,19 +86,24 @@ class Qwen3TTSBaseModel:
     _ASSISTANT_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
     _USER_PREFIX = "<|im_start|>user\n"
     _MESSAGE_SUFFIX = "<|im_end|>\n"
+    _model_class: ClassVar[type[Qwen3TTSConditionalGenerationBase]] = (
+        Qwen3TTSConditionalGenerationBase
+    )
 
     def __init__(
         self,
         model: Qwen3TTSConditionalGenerationBase,
         processor: Qwen3TTSProcessor,
         generate_defaults: GenerationDefaults | None = None,
-    ):
+    ) -> None:
         self.model = model
         self.processor = processor
         self.generate_defaults = self._normalize_generate_defaults(generate_defaults)
 
-        self.device = getattr(model, "device", None)
-        if self.device is None:
+        model_device: object = getattr(model, "device", None)
+        if isinstance(model_device, torch.device):
+            self.device = model_device
+        else:
             try:
                 self.device = next(model.parameters()).device
             except StopIteration:
@@ -110,8 +118,18 @@ class Qwen3TTSBaseModel:
     @classmethod
     def from_pretrained(
         cls,
-        pretrained_model_name_or_path: str,
-        **kwargs,
+        pretrained_model_name_or_path: str | os.PathLike[str],
+        *,
+        config: Qwen3TTSConfig | str | os.PathLike[str] | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        ignore_mismatched_sizes: bool = False,
+        force_download: bool = False,
+        local_files_only: bool = False,
+        token: str | bool | None = None,
+        revision: str = "main",
+        use_safetensors: bool | None = None,
+        weights_only: bool = True,
+        **kwargs: object,
     ) -> Self:
         """
         Load a Qwen3 TTS model and its processor in HuggingFace `from_pretrained` style.
@@ -119,31 +137,84 @@ class Qwen3TTSBaseModel:
         AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
         AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
 
-        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if not isinstance(config, Qwen3TTSConfig):
-            raise TypeError(
-                f"AutoConfig returned {type(config)}, expected Qwen3TTSConfig."
+        if isinstance(config, Qwen3TTSConfig):
+            resolved_config = config
+        else:
+            config_source = pretrained_model_name_or_path if config is None else config
+            config_loader = cast(Callable[..., object], AutoConfig.from_pretrained)
+            config_raw = config_loader(
+                config_source,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                local_files_only=local_files_only,
+                token=token,
+                revision=revision,
+                **kwargs,
             )
+            if not isinstance(config_raw, Qwen3TTSConfig):
+                raise TypeError(
+                    f"AutoConfig returned {type(config_raw)}, expected Qwen3TTSConfig."
+                )
+            resolved_config = config_raw
 
-        if config.tts_model_type == "voice_design":
-            model_cls = Qwen3TTSVoiceDesignForConditionalGeneration
-        elif config.tts_model_type == "custom_voice":
+        if resolved_config.tts_model_type == "voice_design":
+            model_cls: type[Qwen3TTSConditionalGenerationBase] = (
+                Qwen3TTSVoiceDesignForConditionalGeneration
+            )
+        elif resolved_config.tts_model_type == "custom_voice":
             model_cls = Qwen3TTSCustomVoiceForConditionalGeneration
-        elif config.tts_model_type == "base":
+        elif resolved_config.tts_model_type == "base":
             model_cls = Qwen3TTSVoiceCloneForConditionalGeneration
         else:
-            raise ValueError(f"Unsupported tts_model_type: {config.tts_model_type}")
-
-        model = model_cls.from_pretrained(pretrained_model_name_or_path, **kwargs)
-        if not isinstance(model, Qwen3TTSConditionalGenerationBase):
-            raise TypeError(
-                f"Model loader returned {type(model)}, expected Qwen3TTSConditionalGenerationBase subclass."
+            raise ValueError(
+                f"Unsupported tts_model_type: {resolved_config.tts_model_type}"
             )
 
-        processor = AutoProcessor.from_pretrained(
+        model_loader = cast(Callable[..., object], model_cls.from_pretrained)
+        model_raw = model_loader(
             pretrained_model_name_or_path,
-            fix_mistral_regex=True,
+            config=config,
+            cache_dir=cache_dir,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
+            force_download=force_download,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
+            use_safetensors=use_safetensors,
+            weights_only=weights_only,
+            **kwargs,
         )
+        if not isinstance(model_raw, cls._model_class):
+            raise TypeError(
+                f"Model loader returned {type(model_raw)}, expected "
+                f"{cls._model_class.__name__}."
+            )
+        model = model_raw
+
+        subfolder = kwargs.get("subfolder")
+        if subfolder is not None and not isinstance(subfolder, str):
+            raise TypeError("`subfolder` must be a string.")
+        processor_kwargs: dict[str, object] = {
+            "fix_mistral_regex": True,
+            "cache_dir": cache_dir,
+            "force_download": force_download,
+            "local_files_only": local_files_only,
+            "token": token,
+            "revision": revision,
+        }
+        if subfolder is not None:
+            processor_kwargs["subfolder"] = subfolder
+        processor_loader = cast(Callable[..., object], AutoProcessor.from_pretrained)
+        processor_raw = processor_loader(
+            pretrained_model_name_or_path,
+            **processor_kwargs,
+        )
+        if not isinstance(processor_raw, Qwen3TTSProcessor):
+            raise TypeError(
+                f"AutoProcessor returned {type(processor_raw)}, "
+                "expected Qwen3TTSProcessor."
+            )
+        processor = processor_raw
 
         generate_defaults_raw = model.generate_config
         generate_defaults: GenerationDefaults | None
@@ -309,8 +380,15 @@ class Qwen3TTSBaseModel:
         return out
 
     def _tokenize_raw_text(self, text: str) -> torch.Tensor:
-        input_data = self.processor(text=text, return_tensors="pt", padding=True)
-        input_id = input_data["input_ids"].to(self.device)
+        input_data_raw: object = self.processor(
+            text=text, return_tensors="pt", padding=True
+        )
+        if not isinstance(input_data_raw, BatchFeature):
+            raise TypeError("Processor output must be a BatchFeature.")
+        input_ids_raw: object = input_data_raw.get("input_ids")
+        if not isinstance(input_ids_raw, torch.Tensor):
+            raise TypeError("Processor output `input_ids` must be a tensor.")
+        input_id = input_ids_raw.to(self.device)
         return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
 
     def _validate_prompt_fragments(self) -> None:
@@ -375,28 +453,11 @@ class Qwen3TTSBaseModel:
             raise ValueError(f"`{input_name}` must contain at least one chunk.")
 
         chunks: list[TTSInputItem] = []
-        required_keys = {"text", "instruction"}
         for index, chunk in enumerate(tts_input):
-            if not isinstance(chunk, Mapping):
-                raise TypeError(f"`{input_name}[{index}]` must be a mapping.")
-
-            keys = set(chunk)
-            if keys != required_keys:
-                raise ValueError(
-                    f"`{input_name}[{index}]` must contain exactly "
-                    "'text' and 'instruction'."
-                )
-
             text = chunk["text"]
             instruction = chunk["instruction"]
-            if not isinstance(text, str):
-                raise TypeError(f"`{input_name}[{index}].text` must be a string.")
             if text.strip() == "":
                 raise ValueError(f"`{input_name}[{index}].text` must be non-empty.")
-            if not isinstance(instruction, str):
-                raise TypeError(
-                    f"`{input_name}[{index}].instruction` must be a string."
-                )
             chunks.append(TTSInputItem(text=text, instruction=instruction))
         return chunks
 
@@ -549,29 +610,11 @@ class Qwen3TTSBaseModel:
         if generate_defaults is None:
             return normalized_generate_defaults
 
-        if "do_sample" in generate_defaults:
-            normalized_generate_defaults["do_sample"] = generate_defaults["do_sample"]
-        if "top_k" in generate_defaults:
-            normalized_generate_defaults["top_k"] = generate_defaults["top_k"]
-        if "top_p" in generate_defaults:
-            normalized_generate_defaults["top_p"] = generate_defaults["top_p"]
-        if "temperature" in generate_defaults:
-            normalized_generate_defaults["temperature"] = generate_defaults[
-                "temperature"
-            ]
-        if "repetition_penalty" in generate_defaults:
-            normalized_generate_defaults["repetition_penalty"] = generate_defaults[
-                "repetition_penalty"
-            ]
-        if "max_new_tokens" in generate_defaults:
-            normalized_generate_defaults["max_new_tokens"] = generate_defaults[
-                "max_new_tokens"
-            ]
-        if "subtalker_configuration" in generate_defaults:
+        normalized_generate_defaults.update(generate_defaults)
+        subtalker_configuration = generate_defaults.get("subtalker_configuration")
+        if subtalker_configuration is not None:
             normalized_generate_defaults["subtalker_configuration"] = (
-                self._normalize_subtalker_configuration(
-                    generate_defaults["subtalker_configuration"]
-                )
+                self._normalize_subtalker_configuration(subtalker_configuration)
             )
         return normalized_generate_defaults
 
@@ -581,11 +624,9 @@ class Qwen3TTSBaseModel:
     ) -> SubTalkerConfiguration:
         if subtalker_configuration is None:
             return SubTalkerConfiguration()
-        if not isinstance(subtalker_configuration, Mapping):
-            raise TypeError("`subtalker_configuration` must be a mapping.")
-        return self._build_subtalker_configuration(
-            list(subtalker_configuration.items())
-        )
+        normalized = SubTalkerConfiguration()
+        normalized.update(subtalker_configuration)
+        return normalized
 
     def _decode_talker_codes_batch(
         self, talker_codes_list: Sequence[torch.Tensor]
@@ -660,12 +701,12 @@ class Qwen3TTSBaseModel:
         generate_default_subtalker_configuration_value = self.generate_defaults.get(
             "subtalker_configuration"
         )
-        if isinstance(generate_default_subtalker_configuration_value, dict):
+        if generate_default_subtalker_configuration_value is None:
+            generate_default_subtalker_configuration = SubTalkerConfiguration()
+        else:
             generate_default_subtalker_configuration = (
                 generate_default_subtalker_configuration_value
             )
-        else:
-            generate_default_subtalker_configuration = SubTalkerConfiguration()
 
         resolved_subtalker_configuration = SubTalkerConfiguration(
             do_sample=normalized_subtalker_configuration.get(

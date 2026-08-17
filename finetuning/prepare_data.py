@@ -15,13 +15,46 @@
 
 import argparse
 import json
+from collections.abc import Sequence
+
+from dataset import (
+    PreparedTTSJsonRow,
+    RawTTSJsonRow,
+    add_audio_codes,
+    parse_audio_codes,
+    parse_raw_tts_json_row,
+)
 
 from qwen_tts import Qwen3TTSTokenizer
 
 BATCH_INFER_NUM = 32
 
 
-def main():
+class PrepareDataArgs(argparse.Namespace):
+    device: str
+    tokenizer_model_path: str
+    input_jsonl: str
+    output_jsonl: str
+
+
+def _encode_batch(
+    tokenizer: Qwen3TTSTokenizer,
+    rows: list[RawTTSJsonRow],
+    audios: list[str],
+    output: list[PreparedTTSJsonRow],
+) -> None:
+    encoded = tokenizer.encode(audios)
+    if len(encoded.audio_codes) != len(rows):
+        raise RuntimeError(
+            "Tokenizer returned a different number of code sequences than inputs."
+        )
+    for index, (code, row) in enumerate(zip(encoded.audio_codes, rows)):
+        codes_raw: object = code.detach().cpu().tolist()
+        codes = parse_audio_codes(codes_raw, f"tokenizer output[{index}]")
+        output.append(add_audio_codes(row, codes))
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument(
@@ -29,7 +62,7 @@ def main():
     )
     parser.add_argument("--input_jsonl", type=str, required=True)
     parser.add_argument("--output_jsonl", type=str, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv, namespace=PrepareDataArgs())
 
     tokenizer_12hz = Qwen3TTSTokenizer.from_pretrained(
         args.tokenizer_model_path,
@@ -37,37 +70,34 @@ def main():
     )
 
     with open(args.input_jsonl) as input_file:
-        total_lines = input_file.readlines()
-    total_lines = [json.loads(line.strip()) for line in total_lines]
+        input_lines = input_file.readlines()
+    total_lines: list[RawTTSJsonRow] = []
+    for line_number, line in enumerate(input_lines, start=1):
+        value: object = json.loads(line.strip())
+        total_lines.append(
+            parse_raw_tts_json_row(value, f"input JSONL line {line_number}")
+        )
 
-    final_lines = []
-    batch_lines = []
-    batch_audios = []
+    final_lines: list[PreparedTTSJsonRow] = []
+    batch_lines: list[RawTTSJsonRow] = []
+    batch_audios: list[str] = []
     for line in total_lines:
         batch_lines.append(line)
         batch_audios.append(line["audio"])
 
         if len(batch_lines) >= BATCH_INFER_NUM:
-            enc_res = tokenizer_12hz.encode(batch_audios)
-            for code, line in zip(enc_res.audio_codes, batch_lines):
-                line["audio_codes"] = code.cpu().tolist()
-                final_lines.append(line)
+            _encode_batch(tokenizer_12hz, batch_lines, batch_audios, final_lines)
             batch_lines.clear()
             batch_audios.clear()
 
     if len(batch_audios) > 0:
-        enc_res = tokenizer_12hz.encode(batch_audios)
-        for code, line in zip(enc_res.audio_codes, batch_lines):
-            line["audio_codes"] = code.cpu().tolist()
-            final_lines.append(line)
+        _encode_batch(tokenizer_12hz, batch_lines, batch_audios, final_lines)
         batch_lines.clear()
         batch_audios.clear()
 
-    final_lines = [json.dumps(line, ensure_ascii=False) for line in final_lines]
-
     with open(args.output_jsonl, "w") as f:
         for line in final_lines:
-            f.writelines(line + "\n")
+            f.writelines(json.dumps(line, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

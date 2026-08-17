@@ -33,7 +33,7 @@ def is_url(s: str) -> bool:
     try:
         parsed = urlparse(s)
         return parsed.scheme in ("http", "https") and bool(parsed.netloc)
-    except Exception:
+    except ValueError:
         return False
 
 

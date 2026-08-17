@@ -1,11 +1,27 @@
 """Qwen3TTSTokenizerV1 model configuration"""
 
-from typing import ClassVar
+from typing import ClassVar, Protocol, TypeVar, cast
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+
+
+_ConfigT = TypeVar("_ConfigT", bound=PretrainedConfig)
+_ConfigT_co = TypeVar("_ConfigT_co", bound=PretrainedConfig, covariant=True)
+
+
+class _ConfigFactory(Protocol[_ConfigT_co]):
+    def __call__(self, **kwargs: object) -> _ConfigT_co: ...
+
+
+class _ConfigInitializer(Protocol):
+    def __call__(self, **kwargs: object) -> None: ...
+
+
+def _build_config(config_type: type[_ConfigT], values: dict[str, object]) -> _ConfigT:
+    return cast(_ConfigFactory[_ConfigT], config_type)(**values)
 
 
 class Qwen3TTSTokenizerV1DecoderDiTConfig(PretrainedConfig):
@@ -57,31 +73,31 @@ class Qwen3TTSTokenizerV1DecoderDiTConfig(PretrainedConfig):
 
     def __init__(
         self,
-        hidden_size=1024,
-        num_hidden_layers=22,
-        num_attention_heads=16,
-        ff_mult=2,
-        emb_dim=512,
-        head_dim=64,
-        rope_theta=10000.0,
-        max_position_embeddings=32768,
-        block_size=24,
-        look_ahead_layers=None,
-        look_backward_layers=None,
-        repeats=2,
-        num_embeds=8193,
-        mel_dim=80,
-        dropout=0.1,
-        enc_emb_dim=192,
-        enc_dim=128,
-        enc_channels=None,
-        enc_kernel_sizes=None,
-        enc_dilations=None,
-        enc_attention_channels=64,
-        enc_res2net_scale=2,
-        enc_se_channels=64,
-        **kwargs,
-    ):
+        hidden_size: int = 1024,
+        num_hidden_layers: int = 22,
+        num_attention_heads: int = 16,
+        ff_mult: int = 2,
+        emb_dim: int = 512,
+        head_dim: int = 64,
+        rope_theta: float = 10000.0,
+        max_position_embeddings: int = 32768,
+        block_size: int = 24,
+        look_ahead_layers: list[int] | None = None,
+        look_backward_layers: list[int] | None = None,
+        repeats: int = 2,
+        num_embeds: int = 8193,
+        mel_dim: int = 80,
+        dropout: float = 0.1,
+        enc_emb_dim: int = 192,
+        enc_dim: int = 128,
+        enc_channels: list[int] | None = None,
+        enc_kernel_sizes: list[int] | None = None,
+        enc_dilations: list[int] | None = None,
+        enc_attention_channels: int = 64,
+        enc_res2net_scale: int = 2,
+        enc_se_channels: int = 64,
+        **kwargs: object,
+    ) -> None:
         if look_ahead_layers is None:
             look_ahead_layers = [10]
         if look_backward_layers is None:
@@ -116,7 +132,7 @@ class Qwen3TTSTokenizerV1DecoderDiTConfig(PretrainedConfig):
         self.enc_attention_channels = enc_attention_channels
         self.enc_res2net_scale = enc_res2net_scale
         self.enc_se_channels = enc_se_channels
-        super().__init__(**kwargs)
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
 
 
 class Qwen3TTSTokenizerV1DecoderBigVGANConfig(PretrainedConfig):
@@ -143,14 +159,14 @@ class Qwen3TTSTokenizerV1DecoderBigVGANConfig(PretrainedConfig):
 
     def __init__(
         self,
-        mel_dim=80,
-        upsample_initial_channel=1536,
-        resblock_kernel_sizes=None,
-        resblock_dilation_sizes=None,
-        upsample_rates=None,
-        upsample_kernel_sizes=None,
-        **kwargs,
-    ):
+        mel_dim: int = 80,
+        upsample_initial_channel: int = 1536,
+        resblock_kernel_sizes: list[int] | None = None,
+        resblock_dilation_sizes: list[list[int]] | None = None,
+        upsample_rates: list[int] | None = None,
+        upsample_kernel_sizes: list[int] | None = None,
+        **kwargs: object,
+    ) -> None:
         if resblock_kernel_sizes is None:
             resblock_kernel_sizes = [3, 7, 11]
         if resblock_dilation_sizes is None:
@@ -166,7 +182,7 @@ class Qwen3TTSTokenizerV1DecoderBigVGANConfig(PretrainedConfig):
         self.resblock_dilation_sizes = resblock_dilation_sizes
         self.upsample_rates = upsample_rates
         self.upsample_kernel_sizes = upsample_kernel_sizes
-        super().__init__(**kwargs)
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
 
 
 class Qwen3TTSTokenizerV1DecoderConfig(PretrainedConfig):
@@ -189,14 +205,21 @@ class Qwen3TTSTokenizerV1DecoderConfig(PretrainedConfig):
         "bigvgan_config": Qwen3TTSTokenizerV1DecoderBigVGANConfig,
     }
 
-    def __init__(self, dit_config=None, bigvgan_config=None, **kwargs):
+    def __init__(
+        self,
+        dit_config: dict[str, object] | None = None,
+        bigvgan_config: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> None:
         if dit_config is None:
             dit_config = {}
         if bigvgan_config is None:
             bigvgan_config = {}
-        self.dit_config = Qwen3TTSTokenizerV1DecoderDiTConfig(**dit_config)
-        self.bigvgan_config = Qwen3TTSTokenizerV1DecoderBigVGANConfig(**bigvgan_config)
-        super().__init__(**kwargs)
+        self.dit_config = _build_config(Qwen3TTSTokenizerV1DecoderDiTConfig, dit_config)
+        self.bigvgan_config = _build_config(
+            Qwen3TTSTokenizerV1DecoderBigVGANConfig, bigvgan_config
+        )
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
 
 
 class Qwen3TTSTokenizerV1EncoderConfig(PretrainedConfig):
@@ -247,25 +270,25 @@ class Qwen3TTSTokenizerV1EncoderConfig(PretrainedConfig):
 
     def __init__(
         self,
-        n_mels=128,
-        n_ctx=1500,
-        n_state=1280,
-        n_head=20,
-        n_layer=32,
-        n_window=100,
-        output_dim=3584,
-        grad_checkpointing=False,
-        enable_mp=False,
-        audio_sequence_parallel=False,
-        audio_vq_type="GRVQ",
-        audio_vq_layers=6,
-        audio_vq_codebook_size=32768,
-        audio_vq_codebook_dim=1280,
-        audio_vq_pe=True,
-        audio_vq_ds_rate=2,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
+        n_mels: int = 128,
+        n_ctx: int = 1500,
+        n_state: int = 1280,
+        n_head: int = 20,
+        n_layer: int = 32,
+        n_window: int = 100,
+        output_dim: int = 3584,
+        grad_checkpointing: bool = False,
+        enable_mp: bool = False,
+        audio_sequence_parallel: bool = False,
+        audio_vq_type: str = "GRVQ",
+        audio_vq_layers: int = 6,
+        audio_vq_codebook_size: int = 32768,
+        audio_vq_codebook_dim: int | None = 1280,
+        audio_vq_pe: bool = True,
+        audio_vq_ds_rate: int = 2,
+        **kwargs: object,
+    ) -> None:
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
         self.n_mels = n_mels
         self.n_ctx = n_ctx
         self.n_state = n_state
@@ -305,15 +328,15 @@ class Qwen3TTSTokenizerV1Config(PretrainedConfig):
 
     def __init__(
         self,
-        encoder_config=None,
-        decoder_config=None,
-        input_sample_rate=24000,
-        output_sample_rate=24000,
-        decode_upsample_rate=1920,
-        encode_downsample_rate=1920,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
+        encoder_config: dict[str, object] | None = None,
+        decoder_config: dict[str, object] | None = None,
+        input_sample_rate: int = 24000,
+        output_sample_rate: int = 24000,
+        decode_upsample_rate: int = 1920,
+        encode_downsample_rate: int = 1920,
+        **kwargs: object,
+    ) -> None:
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
         if encoder_config is None:
             encoder_config = {}
             logger.info(
@@ -325,8 +348,12 @@ class Qwen3TTSTokenizerV1Config(PretrainedConfig):
                 "decoder_config is None. Initializing decoder with default values"
             )
 
-        self.encoder_config = Qwen3TTSTokenizerV1EncoderConfig(**encoder_config)
-        self.decoder_config = Qwen3TTSTokenizerV1DecoderConfig(**decoder_config)
+        self.encoder_config = _build_config(
+            Qwen3TTSTokenizerV1EncoderConfig, encoder_config
+        )
+        self.decoder_config = _build_config(
+            Qwen3TTSTokenizerV1DecoderConfig, decoder_config
+        )
 
         self.input_sample_rate = input_sample_rate
         self.output_sample_rate = output_sample_rate

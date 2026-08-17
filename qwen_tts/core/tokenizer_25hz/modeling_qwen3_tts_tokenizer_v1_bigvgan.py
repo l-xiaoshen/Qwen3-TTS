@@ -1,6 +1,8 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
 import math
+from collections.abc import Callable, Sequence
+from typing import Literal, cast
 
 import numpy as np
 import torch
@@ -8,6 +10,7 @@ from torch import nn
 from torch.nn import Parameter
 from torch.nn import functional as F
 from transformers.utils import auto_docstring, logging
+from typing_extensions import override
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderBigVGANConfig,
@@ -36,7 +39,7 @@ class SnakeBeta(nn.Module):
         https://huggingface.co/papers/2006.08195
     """
 
-    def __init__(self, in_features, alpha=1.0):
+    def __init__(self, in_features: int, alpha: float = 1.0) -> None:
         super().__init__()
         self.in_features = in_features
 
@@ -46,7 +49,8 @@ class SnakeBeta(nn.Module):
 
         self.no_div_by_zero = 0.000000001
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """
         Forward pass of the function.
         Applies the function to the input elementwise.
@@ -63,7 +67,9 @@ class SnakeBeta(nn.Module):
         return hidden_states
 
 
-def kaiser_sinc_filter1d(cutoff, half_width, kernel_size):
+def kaiser_sinc_filter1d(
+    cutoff: float, half_width: float, kernel_size: int
+) -> torch.Tensor:
     """Generates a 1D Kaiser-windowed sinc filter.
 
     Args:
@@ -114,7 +120,9 @@ def kaiser_sinc_filter1d(cutoff, half_width, kernel_size):
 
 
 class UpSample1d(nn.Module):
-    def __init__(self, ratio=2, kernel_size=None):
+    filter: torch.Tensor
+
+    def __init__(self, ratio: int = 2, kernel_size: int | None = None) -> None:
         super().__init__()
         self.ratio = ratio
         self.kernel_size = (
@@ -132,15 +140,13 @@ class UpSample1d(nn.Module):
         )
         self.register_buffer("filter", filter, persistent=False)
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         channels = hidden_states.shape[1]
-        filter_tensor = self.filter
-        if not isinstance(filter_tensor, torch.Tensor):
-            raise RuntimeError("Upsample filter buffer is not initialized as a tensor.")
         hidden_states = F.pad(hidden_states, (self.pad, self.pad), mode="replicate")
         hidden_states = self.ratio * F.conv_transpose1d(
             hidden_states,
-            filter_tensor.expand(channels, -1, -1),
+            self.filter.expand(channels, -1, -1),
             stride=self.stride,
             groups=channels,
         )
@@ -150,7 +156,9 @@ class UpSample1d(nn.Module):
 
 
 class DownSample1d(nn.Module):
-    def __init__(self, ratio=2, kernel_size=None):
+    filter: torch.Tensor
+
+    def __init__(self, ratio: int = 2, kernel_size: int | None = None) -> None:
         super().__init__()
         cutoff = 0.5 / ratio
         half_width = 0.6 / ratio
@@ -170,19 +178,15 @@ class DownSample1d(nn.Module):
         filter = kaiser_sinc_filter1d(cutoff, half_width, self.kernel_size)
         self.register_buffer("filter", filter, persistent=False)
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         channels = hidden_states.shape[1]
-        filter_tensor = self.filter
-        if not isinstance(filter_tensor, torch.Tensor):
-            raise RuntimeError(
-                "Downsample filter buffer is not initialized as a tensor."
-            )
         hidden_states = F.pad(
             hidden_states, (self.pad_left, self.pad_right), mode="replicate"
         )
         out = F.conv1d(
             hidden_states,
-            filter_tensor.expand(channels, -1, -1),
+            self.filter.expand(channels, -1, -1),
             stride=self.stride,
             groups=channels,
         )
@@ -192,12 +196,12 @@ class DownSample1d(nn.Module):
 class TorchActivation1d(nn.Module):
     def __init__(
         self,
-        activation,
+        activation: Callable[[torch.Tensor], torch.Tensor],
         up_ratio: int = 2,
         down_ratio: int = 2,
         up_kernel_size: int = 12,
         down_kernel_size: int = 12,
-    ):
+    ) -> None:
         super().__init__()
         if not callable(activation):
             raise TypeError("Activation function must be callable")
@@ -205,33 +209,63 @@ class TorchActivation1d(nn.Module):
         self.upsample = UpSample1d(up_ratio, up_kernel_size)
         self.downsample = DownSample1d(down_ratio, down_kernel_size)
 
-    def forward(self, hidden_states):
-        hidden_states = self.upsample(hidden_states)
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_states = cast(torch.Tensor, self.upsample(hidden_states))
         hidden_states = self.act(hidden_states)
-        hidden_states = self.downsample(hidden_states)
+        hidden_states = cast(torch.Tensor, self.downsample(hidden_states))
 
         return hidden_states
 
 
 class CausalConv1d(nn.Conv1d):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple[int],
+        stride: int | tuple[int] = 1,
+        padding: str | int | tuple[int] = 0,
+        dilation: int | tuple[int] = 1,
+        groups: int = 1,
+        bias: bool = True,
+        padding_mode: Literal["zeros", "reflect", "replicate", "circular"] = "zeros",
+        device: torch.device | str | None = None,
+        dtype: torch.dtype | None = None,
+    ) -> None:
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            dilation,
+            groups,
+            bias,
+            padding_mode,
+            device=device,
+            dtype=dtype,
+        )
         self.causal_padding = self.dilation[0] * (self.kernel_size[0] - 1)
 
-    def forward(self, input):
-        return self._conv_forward(
-            F.pad(input, [self.causal_padding, 0]), self.weight, self.bias
+    @override
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return cast(
+            torch.Tensor,
+            self._conv_forward(
+                F.pad(input, [self.causal_padding, 0]), self.weight, self.bias
+            ),
         )
 
 
 class AMPBlock(torch.nn.Module):
     def __init__(
         self,
-        channels,
-        kernel_size=3,
-        dilation=(1, 3, 5),
-        causal_type="1",
-    ):
+        channels: int,
+        kernel_size: int = 3,
+        dilation: Sequence[int] = (1, 3, 5),
+        causal_type: Literal["1", "2"] = "1",
+    ) -> None:
         super().__init__()
 
         self.convs1 = nn.ModuleList(
@@ -340,19 +374,20 @@ class AMPBlock(torch.nn.Module):
             self.pre_conv = nn.Identity()
             self.pre_act = nn.Identity()
 
-    def _get_padding(self, kernel_size, dilation=1):
+    def _get_padding(self, kernel_size: int, dilation: int = 1) -> int:
         return int((kernel_size * dilation - dilation) / 2)
 
-    def forward(self, x):
-        hidden_states = self.pre_conv(x)
-        hidden_states = self.pre_act(hidden_states)
+    @override
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        hidden_states = cast(torch.Tensor, self.pre_conv(x))
+        hidden_states = cast(torch.Tensor, self.pre_act(hidden_states))
         activations = list(self.activations)
         acts1, acts2 = activations[::2], activations[1::2]
         for conv1, conv2, act1, act2 in zip(self.convs1, self.convs2, acts1, acts2):
-            hidden_states = act1(hidden_states)
-            hidden_states = conv1(hidden_states)
-            hidden_states = act2(hidden_states)
-            hidden_states = conv2(hidden_states)
+            hidden_states = cast(torch.Tensor, act1(hidden_states))
+            hidden_states = cast(torch.Tensor, conv1(hidden_states))
+            hidden_states = cast(torch.Tensor, act2(hidden_states))
+            hidden_states = cast(torch.Tensor, conv2(hidden_states))
             x = x + hidden_states
         return x
 
@@ -361,7 +396,7 @@ class AMPBlock(torch.nn.Module):
 class Qwen3TTSTokenizerV1DecoderBigVGANModel(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
     config: Qwen3TTSTokenizerV1DecoderBigVGANConfig
 
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderBigVGANConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderBigVGANConfig) -> None:
         super().__init__(config)
         self.num_residual_blocks = len(config.resblock_kernel_sizes)
         self.num_upsample_layers = len(config.upsample_rates)
@@ -418,14 +453,18 @@ class Qwen3TTSTokenizerV1DecoderBigVGANModel(Qwen3TTSTokenizerV1DecoderPreTraine
             bias=False,
         )
 
-    def normalize_spectrogram(self, spectrogram, max_value, min_db):
+    def normalize_spectrogram(
+        self, spectrogram: torch.Tensor, max_value: float, min_db: float
+    ) -> torch.Tensor:
         return torch.clamp(
             (2 * max_value) * ((spectrogram - min_db) / (-min_db)) - max_value,
             -max_value,
             max_value,
         )
 
-    def amplitude_to_db(self, amplitude, min_db_level):
+    def amplitude_to_db(
+        self, amplitude: torch.Tensor, min_db_level: float
+    ) -> torch.Tensor:
         min_level = torch.exp(
             torch.tensor(
                 min_db_level / 20.0 * np.log(10),
@@ -435,26 +474,30 @@ class Qwen3TTSTokenizerV1DecoderBigVGANModel(Qwen3TTSTokenizerV1DecoderPreTraine
         )
         return 20 * torch.log10(torch.clamp(amplitude, min=min_level))
 
-    def process_mel_spectrogram(self, mel_spectrogram):
+    def process_mel_spectrogram(self, mel_spectrogram: torch.Tensor) -> torch.Tensor:
         amplitude_spectrum = torch.exp(mel_spectrogram)
         decibel_spectrum = self.amplitude_to_db(amplitude_spectrum, -115) - 20
         return self.normalize_spectrogram(decibel_spectrum, 1, -115)
 
-    def forward(self, mel_spectrogram):
+    @override
+    def forward(self, mel_spectrogram: torch.Tensor) -> torch.Tensor:
         processed_spectrogram = self.process_mel_spectrogram(mel_spectrogram)
         hidden_representation = self.conv_pre(processed_spectrogram)
 
         for layer_index in range(self.num_upsample_layers):
             upsample_layer = self.ups[layer_index]
             if isinstance(upsample_layer, nn.ModuleList):
-                upsample = upsample_layer[0]
+                upsample = cast(nn.ConvTranspose1d, upsample_layer[0])
             else:
-                upsample = upsample_layer
+                upsample = cast(nn.ConvTranspose1d, upsample_layer)
             hidden_representation = upsample(hidden_representation)
             residual_output = sum(
-                self.resblocks[layer_index * self.num_residual_blocks + block_index](
-                    hidden_representation
-                )
+                cast(
+                    AMPBlock,
+                    self.resblocks[
+                        layer_index * self.num_residual_blocks + block_index
+                    ],
+                )(hidden_representation)
                 for block_index in range(self.num_residual_blocks)
             )
             residual_output = residual_output / self.num_residual_blocks

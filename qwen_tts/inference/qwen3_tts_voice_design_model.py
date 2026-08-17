@@ -16,10 +16,12 @@ import numpy as np
 import torch
 
 from ..core.models import (
+    Qwen3TTSProcessor,
     Qwen3TTSVoiceDesignForConditionalGeneration,
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import (
+    GenerationDefaults,
     Qwen3TTSBaseModel,
     TTSBatchInput,
     TTSInput,
@@ -30,6 +32,15 @@ StringBatchInput = list[str] | tuple[str, ...]
 
 class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
     model: Qwen3TTSVoiceDesignForConditionalGeneration
+    _model_class = Qwen3TTSVoiceDesignForConditionalGeneration
+
+    def __init__(
+        self,
+        model: Qwen3TTSVoiceDesignForConditionalGeneration,
+        processor: Qwen3TTSProcessor,
+        generate_defaults: GenerationDefaults | None = None,
+    ) -> None:
+        super().__init__(model, processor, generate_defaults)
 
     @torch.no_grad()
     def generate_voice_design(

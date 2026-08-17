@@ -1,11 +1,28 @@
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Protocol, TypeVar, cast
 
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_rope_utils import RopeParameters
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+_ConfigT = TypeVar("_ConfigT", bound=PretrainedConfig)
+_ConfigT_co = TypeVar("_ConfigT_co", bound=PretrainedConfig, covariant=True)
+
+
+class _ConfigFactory(Protocol[_ConfigT_co]):
+    def __call__(self, **kwargs: object) -> _ConfigT_co: ...
+
+
+class _ConfigInitializer(Protocol):
+    def __call__(self, **kwargs: object) -> None: ...
+
+
+def _config_from_dict(
+    config_type: type[_ConfigT], config_data: dict[str, object]
+) -> _ConfigT:
+    factory = cast(_ConfigFactory[_ConfigT], config_type)
+    return factory(**config_data)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,19 +34,6 @@ class CodecSpecialTokenIds:
     no_think: int
     think_bos: int
     think_eos: int
-
-    def __post_init__(self) -> None:
-        values = (
-            self.bos,
-            self.eos,
-            self.pad,
-            self.think,
-            self.no_think,
-            self.think_bos,
-            self.think_eos,
-        )
-        if any(type(value) is not int for value in values):
-            raise TypeError("Codec special-token IDs must be integers.")
 
 
 class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
@@ -60,16 +64,16 @@ class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
 
     def __init__(
         self,
-        mel_dim=128,
-        enc_dim=1024,
-        enc_channels=None,
-        enc_kernel_sizes=None,
-        enc_dilations=None,
-        enc_attention_channels=128,
-        enc_res2net_scale=8,
-        enc_se_channels=128,
-        sample_rate=24000,
-    ):
+        mel_dim: int = 128,
+        enc_dim: int = 1024,
+        enc_channels: list[int] | None = None,
+        enc_kernel_sizes: list[int] | None = None,
+        enc_dilations: list[int] | None = None,
+        enc_attention_channels: int = 128,
+        enc_res2net_scale: int = 8,
+        enc_se_channels: int = 128,
+        sample_rate: int = 24000,
+    ) -> None:
         if enc_channels is None:
             enc_channels = [512, 512, 512, 512, 1536]
         if enc_kernel_sizes is None:
@@ -188,7 +192,7 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
 
     model_type = "qwen3_tts_talker_code_predictor"
     default_theta = 10_000.0
-    rope_parameters: RopeParameters | dict | None = None
+    rope_parameters: RopeParameters | dict[str, object] | None = None
     keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalkerCodePredictor`
@@ -210,30 +214,30 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=2048,
-        hidden_size=1024,
-        intermediate_size=3072,
-        num_hidden_layers=5,
-        num_attention_heads=16,
-        num_key_value_heads=8,
-        head_dim=128,
-        hidden_act="silu",
-        max_position_embeddings=32768,
-        initializer_range=0.02,
-        rms_norm_eps=0.000001,
-        use_cache=True,
-        tie_word_embeddings=False,
-        pad_token_id=None,
-        rope_parameters=None,
-        attention_bias=False,
-        use_sliding_window=False,
-        sliding_window=4096,
-        max_window_layers=28,
-        layer_types=None,
-        attention_dropout=0,
-        num_code_groups=32,
-        **kwargs,
-    ):
+        vocab_size: int = 2048,
+        hidden_size: int = 1024,
+        intermediate_size: int = 3072,
+        num_hidden_layers: int = 5,
+        num_attention_heads: int = 16,
+        num_key_value_heads: int | None = 8,
+        head_dim: int = 128,
+        hidden_act: str = "silu",
+        max_position_embeddings: int = 32768,
+        initializer_range: float = 0.02,
+        rms_norm_eps: float = 0.000001,
+        use_cache: bool = True,
+        tie_word_embeddings: bool = False,
+        pad_token_id: int | None = None,
+        rope_parameters: RopeParameters | dict[str, object] | None = None,
+        attention_bias: bool = False,
+        use_sliding_window: bool = False,
+        sliding_window: int = 4096,
+        max_window_layers: int = 28,
+        layer_types: list[str] | None = None,
+        attention_dropout: float = 0,
+        num_code_groups: int = 32,
+        **kwargs: object,
+    ) -> None:
         # Transformers otherwise injects an `embed_tokens` TP rule, but this model
         # names its embedding module `codec_embedding` and declares that rule above.
         self.tie_word_embeddings = False
@@ -262,16 +266,16 @@ class Qwen3TTSTalkerCodePredictorConfig(PretrainedConfig):
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
 
-        self.layer_types = layer_types
-        if self.layer_types is None:
-            self.layer_types = [
+        if layer_types is None:
+            layer_types = [
                 "sliding_attention"
                 if self.sliding_window is not None and i >= self.max_window_layers
                 else "full_attention"
                 for i in range(self.num_hidden_layers)
             ]
+        self.layer_types = layer_types
         self.num_code_groups = num_code_groups
-        super().__init__(**kwargs)
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
         self.tie_word_embeddings = tie_word_embeddings
         self.validate_layer_type()
 
@@ -369,7 +373,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
 
     model_type = "qwen3_tts_talker"
     default_theta = 10_000.0
-    rope_parameters: RopeParameters | dict | None = None
+    rope_parameters: RopeParameters | dict[str, object] | None = None
     keys_to_ignore_at_inference: ClassVar[list[str]] = ["past_key_values"]
 
     # Default tensor parallel plan for base model `Qwen3TTSTalker`
@@ -394,35 +398,37 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
 
     def __init__(
         self,
-        code_predictor_config=None,
-        vocab_size=3072,
-        hidden_size=1024,
-        intermediate_size=2048,
-        num_hidden_layers=20,
-        num_attention_heads=16,
-        num_key_value_heads=2,
-        head_dim=128,
-        hidden_act="silu",
-        max_position_embeddings=32768,
-        initializer_range=0.02,
-        rms_norm_eps=0.000001,
-        use_cache=True,
-        tie_word_embeddings=False,
-        pad_token_id=None,
-        rope_parameters=None,
-        attention_bias=False,
-        use_sliding_window=False,
-        sliding_window=4096,
-        attention_dropout=0,
-        num_code_groups=32,
-        text_hidden_size=2048,
-        text_vocab_size=151936,
+        code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
+        | dict[str, object]
+        | None = None,
+        vocab_size: int = 3072,
+        hidden_size: int = 1024,
+        intermediate_size: int = 2048,
+        num_hidden_layers: int = 20,
+        num_attention_heads: int = 16,
+        num_key_value_heads: int = 2,
+        head_dim: int = 128,
+        hidden_act: str = "silu",
+        max_position_embeddings: int = 32768,
+        initializer_range: float = 0.02,
+        rms_norm_eps: float = 0.000001,
+        use_cache: bool = True,
+        tie_word_embeddings: bool = False,
+        pad_token_id: int | None = None,
+        rope_parameters: RopeParameters | dict[str, object] | None = None,
+        attention_bias: bool = False,
+        use_sliding_window: bool = False,
+        sliding_window: int = 4096,
+        attention_dropout: float = 0,
+        num_code_groups: int = 32,
+        text_hidden_size: int = 2048,
+        text_vocab_size: int = 151936,
         codec_special_token_ids: CodecSpecialTokenIds | None = None,
-        spk_id=None,
-        spk_is_dialect=None,
-        codec_language_id=None,
-        **kwargs,
-    ):
+        spk_id: dict[str, int] | None = None,
+        spk_is_dialect: dict[str, bool | str] | None = None,
+        codec_language_id: dict[str, int] | None = None,
+        **kwargs: object,
+    ) -> None:
         # Transformers otherwise injects an `embed_tokens` TP rule, but this model
         # names its embedding module `codec_embedding` and declares that rule above.
         self.tie_word_embeddings = False
@@ -456,8 +462,8 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         elif isinstance(code_predictor_config, Qwen3TTSTalkerCodePredictorConfig):
             self.code_predictor_config = code_predictor_config
         else:
-            self.code_predictor_config = Qwen3TTSTalkerCodePredictorConfig(
-                **code_predictor_config
+            self.code_predictor_config = _config_from_dict(
+                Qwen3TTSTalkerCodePredictorConfig, code_predictor_config
             )
         self.num_code_groups = num_code_groups
         self.text_hidden_size = text_hidden_size
@@ -465,7 +471,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         self.codec_language_id = codec_language_id
         self.spk_id = spk_id
         self.spk_is_dialect = spk_is_dialect
-        super().__init__(**kwargs)
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
         self.tie_word_embeddings = tie_word_embeddings
 
         if codec_special_token_ids is not None:
@@ -479,9 +485,10 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
 
         if not isinstance(self.rope_parameters, dict):
             raise TypeError("`rope_parameters` must be a dictionary.")
-        self.rope_parameters.setdefault("mrope_section", [24, 20, 20])
-        self.rope_parameters.setdefault("interleaved", True)
-        mrope_section = self.rope_parameters["mrope_section"]
+        rope_parameters = cast(dict[str, object], self.rope_parameters)
+        rope_parameters.setdefault("mrope_section", [24, 20, 20])
+        rope_parameters.setdefault("interleaved", True)
+        mrope_section = rope_parameters["mrope_section"]
         if not isinstance(mrope_section, list) or not all(
             isinstance(section, int) for section in mrope_section
         ):
@@ -492,6 +499,8 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
             raise ValueError(
                 "Twice the sum of `rope_parameters['mrope_section']` must equal `head_dim`."
             )
+        if not isinstance(rope_parameters["interleaved"], bool):
+            raise TypeError("`rope_parameters['interleaved']` must be a boolean.")
 
     def _require_codec_special_token_id(self, field_name: str) -> int:
         value = getattr(self, field_name, None)
@@ -527,19 +536,19 @@ class Qwen3TTSConfig(PretrainedConfig):
 
     def __init__(
         self,
-        talker_config=None,
-        speaker_encoder_config=None,
-        tokenizer_type=None,
-        tts_model_size=None,
-        tts_model_type=None,
-        im_start_token_id=151644,
-        im_end_token_id=151645,
-        tts_pad_token_id=151671,
-        tts_bos_token_id=151672,
-        tts_eos_token_id=151673,
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
+        talker_config: dict[str, object] | None = None,
+        speaker_encoder_config: dict[str, object] | None = None,
+        tokenizer_type: str | None = None,
+        tts_model_size: str | None = None,
+        tts_model_type: str | None = None,
+        im_start_token_id: int = 151644,
+        im_end_token_id: int = 151645,
+        tts_pad_token_id: int = 151671,
+        tts_bos_token_id: int = 151672,
+        tts_eos_token_id: int = 151673,
+        **kwargs: object,
+    ) -> None:
+        cast(_ConfigInitializer, super().__init__)(**kwargs)
 
         if talker_config is None:
             talker_config = {}
@@ -552,9 +561,9 @@ class Qwen3TTSConfig(PretrainedConfig):
                 "speaker_encoder_config is None. Initializing talker model with default values"
             )
 
-        self.talker_config = Qwen3TTSTalkerConfig(**talker_config)
-        self.speaker_encoder_config = Qwen3TTSSpeakerEncoderConfig(
-            **speaker_encoder_config
+        self.talker_config = _config_from_dict(Qwen3TTSTalkerConfig, talker_config)
+        self.speaker_encoder_config = _config_from_dict(
+            Qwen3TTSSpeakerEncoderConfig, speaker_encoder_config
         )
 
         self.tokenizer_type = tokenizer_type

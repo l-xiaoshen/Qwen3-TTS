@@ -1,12 +1,15 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
+import os
 from dataclasses import dataclass, field
+from typing import Literal, Protocol, SupportsIndex, cast, overload
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, auto_docstring, logging
 from transformers.utils.hub import cached_file
+from typing_extensions import Self, override
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Config,
@@ -23,6 +26,29 @@ from .vq.speech_vq import WhisperEncoderVQ, XVectorExtractor
 from .vq.whisper_encoder import get_mel_audio, get_T_after_cnn
 
 logger = logging.get_logger(__name__)
+
+
+class _WarningOnce(Protocol):
+    def __call__(self, message: str) -> None: ...
+
+
+class _PretrainedModelLoader(Protocol):
+    def __call__(
+        self,
+        pretrained_model_name_or_path: str | os.PathLike[str],
+        *model_args: object,
+        config: Qwen3TTSTokenizerV1Config | str | os.PathLike[str] | None,
+        cache_dir: str | os.PathLike[str] | None,
+        ignore_mismatched_sizes: bool,
+        force_download: bool,
+        local_files_only: bool,
+        token: str | bool | None,
+        revision: str,
+        use_safetensors: bool | None,
+        weights_only: bool,
+        proxies: dict[str, str] | None,
+        **kwargs: object,
+    ) -> object: ...
 
 
 @dataclass
@@ -63,13 +89,13 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
         "Qwen3TTSTokenizerV1DecoderBigVGANModel",
     ]
 
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderConfig) -> None:
         super().__init__(config)
         attn_impl = config._attn_implementation
         warning_once = getattr(logger, "warning_once", None)
         if config._attn_implementation == "flash_attention_2":
             if callable(warning_once):
-                warning_once(
+                cast(_WarningOnce, warning_once)(
                     "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
                     "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
                 )
@@ -81,7 +107,7 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
             attn_impl = "sdpa"
         elif config._attn_implementation == "eager":
             if callable(warning_once):
-                warning_once(
+                cast(_WarningOnce, warning_once)(
                     "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
                 )
             else:
@@ -96,16 +122,17 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
             config.bigvgan_config, attn_implementation=attn_impl
         )
 
+    @override
     def forward(
         self,
-        code,
-        conditioning,
-        reference_mel,
-        num_steps=10,
-        guidance_scale=0.5,
-        sway_coefficient=-1.0,
-        **kwargs,
-    ):
+        code: torch.Tensor,
+        conditioning: torch.Tensor,
+        reference_mel: torch.Tensor,
+        num_steps: int = 10,
+        guidance_scale: float = 0.5,
+        sway_coefficient: float | None = -1.0,
+        **kwargs: object,
+    ) -> torch.Tensor:
         """Generates a waveform from input code and conditioning parameters."""
 
         mel_spectrogram = self.dit.sample(
@@ -117,7 +144,7 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
             sway_coefficient=sway_coefficient,
         )
 
-        waveform = self.bigvgan(mel_spectrogram)
+        waveform = cast(torch.Tensor, self.bigvgan(mel_spectrogram))
 
         return waveform
 
@@ -125,7 +152,7 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
 class Qwen3TTSTokenizerV1Encoder(Qwen3TTSTokenizerV1EncoderPreTrainedModel):
     config: Qwen3TTSTokenizerV1EncoderConfig
 
-    def __init__(self, config: Qwen3TTSTokenizerV1EncoderConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1EncoderConfig) -> None:
         super().__init__(config)
 
         self.tokenizer = WhisperEncoderVQ(
@@ -150,7 +177,7 @@ class Qwen3TTSTokenizerV1Encoder(Qwen3TTSTokenizerV1EncoderPreTrainedModel):
         self.padding = True
         self.audio_vq_ds_rate = self.tokenizer.audio_vq_ds_rate
 
-    def speech2mel(self, speechs):
+    def speech2mel(self, speechs: list[torch.Tensor]) -> list[torch.Tensor]:
         mels = [
             get_mel_audio(
                 speech, padding=self.padding, audio_vq_ds_rate=self.audio_vq_ds_rate
@@ -161,7 +188,7 @@ class Qwen3TTSTokenizerV1Encoder(Qwen3TTSTokenizerV1EncoderPreTrainedModel):
         ]
         return mels
 
-    def mel2code(self, mels):
+    def mel2code(self, mels: list[torch.Tensor]) -> tuple[torch.Tensor, list[int]]:
         audio_mellens = [mel.size(-1) for mel in mels]
         audio_aftercnnlens = [get_T_after_cnn(T) for T in audio_mellens]
         audio_seqlens = [T + 2 for T in audio_aftercnnlens]
@@ -182,7 +209,9 @@ class Qwen3TTSTokenizerV1Encoder(Qwen3TTSTokenizerV1EncoderPreTrainedModel):
 
         return indices, indice_lens
 
-    def quantize_speech(self, speechs):
+    def quantize_speech(
+        self, speechs: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, list[int]]:
         mels = self.speech2mel(speechs)
         indices, indice_lens = self.mel2code(mels)
         return indices, indice_lens
@@ -206,7 +235,9 @@ class Qwen3TTSTokenizerV1PreTrainedModel(PreTrainedModel):
     """
 )
 class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
-    def __init__(self, config: Qwen3TTSTokenizerV1Config):
+    encoder_xvector_extractor: XVectorExtractor | None
+
+    def __init__(self, config: Qwen3TTSTokenizerV1Config) -> None:
         super().__init__(config)
         self.config = config
 
@@ -227,41 +258,87 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
 
         self.post_init()
 
-    def load_encoder_xvector_extractor(self, model_path):
+    def load_encoder_xvector_extractor(
+        self, model_path: str | os.PathLike[str]
+    ) -> None:
         self.encoder_xvector_extractor = XVectorExtractor(model_path)
 
-    def get_model_type(self):
+    def get_model_type(self) -> str:
         return self.config.model_type
 
-    def get_input_sample_rate(self):
+    def get_input_sample_rate(self) -> int:
         return self.input_sample_rate
 
-    def get_output_sample_rate(self):
+    def get_output_sample_rate(self) -> int:
         return self.output_sample_rate
 
-    def get_encode_downsample_rate(self):
+    def get_encode_downsample_rate(self) -> int:
         return self.encode_downsample_rate
 
-    def get_decode_upsample_rate(self):
+    def get_decode_upsample_rate(self) -> int:
         return self.decode_upsample_rate
 
     @classmethod
+    @overload
     def from_pretrained(
         cls,
-        pretrained_model_name_or_path,
-        *model_args,
-        config=None,
-        cache_dir=None,
-        ignore_mismatched_sizes=False,
-        force_download=False,
-        local_files_only=False,
-        token=None,
-        revision="main",
-        use_safetensors=None,
-        weights_only=True,
-        **kwargs,
-    ):
-        model = super().from_pretrained(
+        pretrained_model_name_or_path: str | os.PathLike[str],
+        *model_args: object,
+        config: Qwen3TTSTokenizerV1Config | str | os.PathLike[str] | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        ignore_mismatched_sizes: bool = False,
+        force_download: bool = False,
+        local_files_only: bool = False,
+        token: str | bool | None = None,
+        revision: str = "main",
+        use_safetensors: bool | None = None,
+        weights_only: bool = True,
+        proxies: dict[str, str] | None = None,
+        output_loading_info: Literal[False] = False,
+        **kwargs: object,
+    ) -> Self: ...
+
+    @classmethod
+    @overload
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str | os.PathLike[str],
+        *model_args: object,
+        config: Qwen3TTSTokenizerV1Config | str | os.PathLike[str] | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        ignore_mismatched_sizes: bool = False,
+        force_download: bool = False,
+        local_files_only: bool = False,
+        token: str | bool | None = None,
+        revision: str = "main",
+        use_safetensors: bool | None = None,
+        weights_only: bool = True,
+        proxies: dict[str, str] | None = None,
+        output_loading_info: Literal[True] = True,
+        **kwargs: object,
+    ) -> tuple[Self, dict[str, object]]: ...
+
+    @classmethod
+    @override
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: str | os.PathLike[str],
+        *model_args: object,
+        config: Qwen3TTSTokenizerV1Config | str | os.PathLike[str] | None = None,
+        cache_dir: str | os.PathLike[str] | None = None,
+        ignore_mismatched_sizes: bool = False,
+        force_download: bool = False,
+        local_files_only: bool = False,
+        token: str | bool | None = None,
+        revision: str = "main",
+        use_safetensors: bool | None = None,
+        weights_only: bool = True,
+        proxies: dict[str, str] | None = None,
+        output_loading_info: bool = False,
+        **kwargs: object,
+    ) -> Self | tuple[Self, dict[str, object]]:
+        loader = cast(_PretrainedModelLoader, super().from_pretrained)
+        loaded = loader(
             pretrained_model_name_or_path,
             *model_args,
             config=config,
@@ -273,19 +350,41 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
             revision=revision,
             use_safetensors=use_safetensors,
             weights_only=weights_only,
+            proxies=proxies,
+            output_loading_info=output_loading_info,
             **kwargs,
         )
+        loading_info: dict[str, object] | None = None
+        model_raw = loaded
+        if output_loading_info:
+            if (
+                not isinstance(loaded, tuple)
+                or len(loaded) != 2
+                or not isinstance(loaded[1], dict)
+            ):
+                raise TypeError("Transformers returned invalid model loading info.")
+            model_raw, loading_info_raw = loaded
+            if not all(isinstance(key, str) for key in loading_info_raw):
+                raise TypeError(
+                    "Transformers returned loading info with non-string keys."
+                )
+            loading_info = cast(dict[str, object], loading_info_raw)
+        if not isinstance(model_raw, cls):
+            raise TypeError(f"Expected {cls.__name__}, got {type(model_raw).__name__}.")
+        model = model_raw
+        subfolder = kwargs.get("subfolder")
+        if subfolder is not None and not isinstance(subfolder, str):
+            raise TypeError("`subfolder` must be a string.")
         encoder_xvector_extractor_path = cached_file(
             pretrained_model_name_or_path,
             "campplus.onnx",
-            subfolder=kwargs.pop("subfolder", None),
-            cache_dir=kwargs.pop("cache_dir", None),
-            force_download=kwargs.pop("force_download", False),
-            proxies=kwargs.pop("proxies", None),
-            resume_download=kwargs.pop("resume_download", None),
-            local_files_only=kwargs.pop("local_files_only", False),
-            token=kwargs.pop("use_auth_token", None),
-            revision=kwargs.pop("revision", None),
+            subfolder=subfolder,
+            cache_dir=cache_dir,
+            force_download=force_download,
+            proxies=proxies,
+            local_files_only=local_files_only,
+            token=token,
+            revision=revision,
         )
         if encoder_xvector_extractor_path is None:
             raise ValueError(
@@ -293,6 +392,8 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
             )
         model.load_encoder_xvector_extractor(encoder_xvector_extractor_path)
 
+        if loading_info is not None:
+            return model, loading_info
         return model
 
     def encode(
@@ -327,11 +428,12 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
             for value, mask in zip(input_values, padding_mask)
         ]
 
-        codes, codes_lens = self.encoder.quantize_speech(wavs)
-        codes = [code[: int(length)] for code, length in zip(codes, codes_lens)]
+        code_batch, codes_lens = self.encoder.quantize_speech(wavs)
+        code_rows = cast(tuple[torch.Tensor, ...], code_batch.unbind(0))
+        codes = [code[: int(length)] for code, length in zip(code_rows, codes_lens)]
 
-        xvectors = []
-        ref_mels = []
+        xvectors: list[torch.Tensor] = []
+        ref_mels: list[torch.Tensor] = []
         xvector_extractor = self.encoder_xvector_extractor
         if xvector_extractor is None:
             raise RuntimeError("Encoder xvector extractor is not initialized.")
@@ -377,12 +479,16 @@ class Qwen3TTSTokenizerV1Model(Qwen3TTSTokenizerV1PreTrainedModel):
         audio_lengths = (audio_codes > -1).sum(1) * self.decode_upsample_rate
 
         audio_codes = torch.clamp(audio_codes, min=0)
-        audio_values = self.decoder(
-            code=audio_codes, reference_mel=ref_mels, conditioning=xvectors
+        audio_batch = cast(
+            torch.Tensor,
+            self.decoder(
+                code=audio_codes, reference_mel=ref_mels, conditioning=xvectors
+            ),
         )
 
         audio_values = [
-            audio[:length] for audio, length in zip(audio_values, audio_lengths)
+            audio[: cast(SupportsIndex, length)]
+            for audio, length in zip(audio_batch.unbind(0), audio_lengths.unbind(0))
         ]
 
         if not return_dict:

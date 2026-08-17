@@ -16,21 +16,53 @@ import argparse
 import json
 import os
 import shutil
+from collections.abc import Callable, Mapping, Sequence
+from typing import Protocol, cast, runtime_checkable
 
 import torch
-from accelerate import Accelerator
-from dataset import TTSDataset
+from accelerate.accelerator import Accelerator
+from dataset import TTSBatch, TTSDataset, parse_prepared_tts_json_row
 from safetensors.torch import save_file
-from torch.optim import AdamW
+from torch.optim import AdamW, Optimizer
 from torch.utils.data import DataLoader
-from transformers import AutoConfig
+from transformers.models.auto.configuration_auto import AutoConfig
 
 from qwen_tts import Qwen3TTSBaseModel
+from qwen_tts.core.models import (
+    Qwen3TTSConfig,
+    Qwen3TTSVoiceCloneForConditionalGeneration,
+)
 
-target_speaker_embedding = None
+target_speaker_embedding: torch.Tensor | None = None
 
 
-def train():
+class TrainingArgs(argparse.Namespace):
+    init_model_path: str
+    output_model_path: str
+    train_jsonl: str
+    batch_size: int
+    lr: float
+    num_epochs: int
+    speaker_name: str
+
+
+@runtime_checkable
+class SpeakerEncoder(Protocol):
+    def __call__(self, ref_mels: torch.Tensor) -> torch.Tensor: ...
+
+
+def _json_object(value: object, context: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{context} must be a JSON object.")
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{context} keys must be strings.")
+        result[key] = item
+    return result
+
+
+def train(argv: Sequence[str] | None = None) -> None:
     global target_speaker_embedding
 
     parser = argparse.ArgumentParser()
@@ -43,33 +75,52 @@ def train():
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--num_epochs", type=int, default=3)
     parser.add_argument("--speaker_name", type=str, default="speaker_test")
-    args = parser.parse_args()
+    args = parser.parse_args(argv, namespace=TrainingArgs())
 
     accelerator = Accelerator(
         gradient_accumulation_steps=4, mixed_precision="bf16", log_with="tensorboard"
     )
 
-    MODEL_PATH = args.init_model_path
+    model_path = args.init_model_path
 
     qwen3tts = Qwen3TTSBaseModel.from_pretrained(
-        MODEL_PATH,
+        model_path,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
     )
-    config = AutoConfig.from_pretrained(MODEL_PATH)
+    if not isinstance(qwen3tts.model, Qwen3TTSVoiceCloneForConditionalGeneration):
+        raise TypeError("Fine-tuning requires a Qwen3 TTS Base model.")
+    if qwen3tts.model.speaker_encoder is None:
+        raise RuntimeError("The Base model speaker encoder is not initialized.")
+
+    config_loader = cast(Callable[..., object], AutoConfig.from_pretrained)
+    config_raw = config_loader(model_path)
+    if not isinstance(config_raw, Qwen3TTSConfig):
+        raise TypeError("AutoConfig did not return a Qwen3TTSConfig.")
+    config = config_raw
 
     with open(args.train_jsonl) as train_file:
-        train_data = train_file.readlines()
-    train_data = [json.loads(line) for line in train_data]
+        train_lines = train_file.readlines()
+    train_data = []
+    for line_number, line in enumerate(train_lines, start=1):
+        value: object = json.loads(line)
+        train_data.append(
+            parse_prepared_tts_json_row(value, f"training JSONL line {line_number}")
+        )
     dataset = TTSDataset(train_data, qwen3tts.processor, config)
-    train_dataloader = DataLoader(
+    train_dataloader_raw = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, collate_fn=dataset.collate_fn
     )
 
-    optimizer = AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01)
+    optimizer_raw = AdamW(qwen3tts.model.parameters(), lr=args.lr, weight_decay=0.01)
 
-    model, optimizer, train_dataloader = accelerator.prepare(
-        qwen3tts.model, optimizer, train_dataloader
+    model, optimizer, train_dataloader = cast(
+        tuple[
+            Qwen3TTSVoiceCloneForConditionalGeneration,
+            Optimizer,
+            DataLoader[TTSBatch],
+        ],
+        accelerator.prepare(qwen3tts.model, optimizer_raw, train_dataloader_raw),
     )
 
     num_epochs = args.num_epochs
@@ -87,9 +138,17 @@ def train():
                 codec_0_labels = batch["codec_0_labels"]
                 codec_mask = batch["codec_mask"]
 
-                speaker_embedding = model.speaker_encoder(
+                speaker_encoder: object = getattr(model, "speaker_encoder", None)
+                if speaker_encoder is None:
+                    raise RuntimeError("The prepared model has no speaker encoder.")
+                if not isinstance(speaker_encoder, SpeakerEncoder):
+                    raise TypeError("The prepared speaker encoder is incompatible.")
+                speaker_embedding_raw: object = speaker_encoder(
                     ref_mels.to(model.device).to(model.dtype)
-                ).detach()
+                )
+                if not isinstance(speaker_embedding_raw, torch.Tensor):
+                    raise TypeError("Speaker encoder output must be a tensor.")
+                speaker_embedding = speaker_embedding_raw.detach()
                 if target_speaker_embedding is None:
                     target_speaker_embedding = speaker_embedding
 
@@ -124,7 +183,12 @@ def train():
                     output_hidden_states=True,
                 )
 
-                hidden_states = outputs.hidden_states[0][-1]
+                if outputs.hidden_states is None:
+                    raise RuntimeError("Talker output did not include hidden states.")
+                hidden_state_layers = outputs.hidden_states[0]
+                if hidden_state_layers is None or len(hidden_state_layers) == 0:
+                    raise RuntimeError("Talker output hidden states are empty.")
+                hidden_states = hidden_state_layers[-1]
                 talker_hidden_states = hidden_states[codec_mask[:, 1:]]
                 talker_codec_ids = codec_ids[codec_mask]
 
@@ -133,7 +197,13 @@ def train():
                         talker_codec_ids, talker_hidden_states
                     )
                 )
+                if sub_talker_loss is None:
+                    raise RuntimeError(
+                        "Sub-talker output did not include a training loss."
+                    )
 
+                if outputs.loss is None:
+                    raise RuntimeError("Talker output did not include a training loss.")
                 loss = outputs.loss + 0.3 * sub_talker_loss
 
                 accelerator.backward(loss)
@@ -153,14 +223,16 @@ def train():
             output_dir = os.path.join(
                 args.output_model_path, f"checkpoint-epoch-{epoch}"
             )
-            shutil.copytree(MODEL_PATH, output_dir, dirs_exist_ok=True)
+            shutil.copytree(model_path, output_dir, dirs_exist_ok=True)
 
-            input_config_file = os.path.join(MODEL_PATH, "config.json")
+            input_config_file = os.path.join(model_path, "config.json")
             output_config_file = os.path.join(output_dir, "config.json")
             with open(input_config_file, "r", encoding="utf-8") as f:
-                config_dict = json.load(f)
+                config_value: object = json.load(f)
+            config_dict = _json_object(config_value, "model config")
             config_dict["tts_model_type"] = "custom_voice"
-            talker_config = config_dict.get("talker_config", {})
+            talker_config_value = config_dict.get("talker_config", {})
+            talker_config = _json_object(talker_config_value, "talker config")
             talker_config["spk_id"] = {args.speaker_name: 3000}
             talker_config["spk_is_dialect"] = {args.speaker_name: False}
             config_dict["talker_config"] = talker_config
@@ -168,7 +240,10 @@ def train():
             with open(output_config_file, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f, indent=2, ensure_ascii=False)
 
-            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model = cast(
+                Qwen3TTSVoiceCloneForConditionalGeneration,
+                accelerator.unwrap_model(model),
+            )
             state_dict = {
                 k: v.detach().to("cpu") for k, v in unwrapped_model.state_dict().items()
             }
@@ -179,7 +254,8 @@ def train():
                 del state_dict[k]
 
             weight = state_dict["talker.model.codec_embedding.weight"]
-            assert target_speaker_embedding is not None
+            if target_speaker_embedding is None:
+                raise RuntimeError("No target speaker embedding was captured.")
             state_dict["talker.model.codec_embedding.weight"][3000] = (
                 target_speaker_embedding[0].detach().to(weight.device).to(weight.dtype)
             )

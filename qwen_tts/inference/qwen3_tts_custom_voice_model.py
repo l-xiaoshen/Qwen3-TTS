@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypedDict, cast
 
@@ -21,9 +21,13 @@ import torch
 
 from qwen_tts.core import SpeakerConfiguration, SubTalkerConfiguration
 
-from ..core.models import Qwen3TTSCustomVoiceForConditionalGeneration
+from ..core.models import (
+    Qwen3TTSCustomVoiceForConditionalGeneration,
+    Qwen3TTSProcessor,
+)
 from .qwen3_tts_base_model import (
     AudioLike,
+    GenerationDefaults,
     Qwen3TTSBaseModel,
     TTSBatchInput,
     TTSInput,
@@ -51,8 +55,8 @@ class CustomVoicePromptSingleDict(TypedDict):
     ref_text: str
 
 
-CustomVoicePromptInput = Mapping[str, Sequence[torch.Tensor | str]]
-CustomVoicePromptSingleInput = Mapping[str, torch.Tensor | str]
+CustomVoicePromptInput = CustomVoicePromptDict
+CustomVoicePromptSingleInput = CustomVoicePromptSingleDict
 AudioBatchInput = list[AudioLike] | tuple[AudioLike, ...]
 StringBatchInput = list[str] | tuple[str, ...]
 SpeakerBatchInput = (
@@ -63,6 +67,15 @@ SpeakerBatchInput = (
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     model: Qwen3TTSCustomVoiceForConditionalGeneration
+    _model_class = Qwen3TTSCustomVoiceForConditionalGeneration
+
+    def __init__(
+        self,
+        model: Qwen3TTSCustomVoiceForConditionalGeneration,
+        processor: Qwen3TTSProcessor,
+        generate_defaults: GenerationDefaults | None = None,
+    ) -> None:
+        super().__init__(model, processor, generate_defaults)
 
     def _validate_chunk_instruction_support(
         self, chunks: Sequence[TTSInputItem]
@@ -150,34 +163,13 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def _coerce_custom_voice_prompt_dict(
         self, prompt: CustomVoicePromptInput
     ) -> CustomVoicePromptDict:
-        required_keys = ("ref_code", "ref_text")
-        for key in required_keys:
-            if key not in prompt:
-                raise KeyError(f"Missing key `{key}` in `custom_voice_prompt`.")
-
-        ref_code_raw = prompt["ref_code"]
-        ref_text_raw = prompt["ref_text"]
-
-        if not isinstance(ref_code_raw, list):
-            raise TypeError("`custom_voice_prompt.ref_code` must be a list.")
-        if not isinstance(ref_text_raw, list):
-            raise TypeError("`custom_voice_prompt.ref_text` must be a list.")
-
-        ref_code: list[torch.Tensor] = []
-        for item in ref_code_raw:
-            if not isinstance(item, torch.Tensor):
-                raise TypeError("`custom_voice_prompt.ref_code` items must be Tensor.")
-            ref_code.append(item)
-
-        ref_text: list[str] = []
-        for item in ref_text_raw:
-            if not isinstance(item, str):
-                raise TypeError("`custom_voice_prompt.ref_text` items must be strings.")
+        ref_code = list(prompt["ref_code"])
+        ref_text = list(prompt["ref_text"])
+        for item in ref_text:
             if item.strip() == "":
                 raise ValueError(
                     "`custom_voice_prompt.ref_text` items must be non-empty."
                 )
-            ref_text.append(item)
 
         if len(ref_code) != len(ref_text):
             raise ValueError(
@@ -189,24 +181,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     def _coerce_custom_voice_prompt_single(
         self, prompt: CustomVoicePromptSingleInput
     ) -> CustomVoicePromptSingleDict:
-        required_keys = ("ref_code", "ref_text")
-        for key in required_keys:
-            if key not in prompt:
-                raise KeyError(f"Missing key `{key}` in `custom_voice_prompt`.")
-
-        ref_code_raw = prompt["ref_code"]
-        if not isinstance(ref_code_raw, torch.Tensor):
-            raise TypeError("`custom_voice_prompt.ref_code` must be Tensor.")
-
-        ref_text_raw = prompt["ref_text"]
-        if not isinstance(ref_text_raw, str):
-            raise TypeError("`custom_voice_prompt.ref_text` must be a string.")
-        if ref_text_raw.strip() == "":
+        if prompt["ref_text"].strip() == "":
             raise ValueError("`custom_voice_prompt.ref_text` must be non-empty.")
 
         return CustomVoicePromptSingleDict(
-            ref_code=ref_code_raw,
-            ref_text=ref_text_raw,
+            ref_code=prompt["ref_code"],
+            ref_text=prompt["ref_text"],
         )
 
     @torch.no_grad()
@@ -402,13 +382,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     "`ref_text` is already included in `custom_voice_prompt`."
                 )
             if isinstance(custom_voice_prompt, list):
-                prompt_items: list[CustomVoicePromptItem] = []
-                for item in custom_voice_prompt:
-                    if not isinstance(item, CustomVoicePromptItem):
-                        raise TypeError(
-                            "`custom_voice_prompt` list items must be CustomVoicePromptItem."
-                        )
-                    prompt_items.append(item)
+                prompt_items = list(custom_voice_prompt)
                 if len(prompt_items) != len(structured_inputs):
                     raise ValueError(
                         "Batch size mismatch: "

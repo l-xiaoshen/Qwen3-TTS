@@ -20,8 +20,8 @@ import argparse
 import json
 import os
 import tempfile
-from dataclasses import asdict
-from typing import TypedDict
+from collections.abc import Mapping, Sequence
+from typing import Literal, TypedDict, cast
 
 import gradio as gr
 import numpy as np
@@ -34,6 +34,11 @@ from .. import (
     Qwen3TTSVoiceDesignModel,
     SubTalkerConfiguration,
     VoiceClonePromptItem,
+)
+from ..core.models import (
+    Qwen3TTSCustomVoiceForConditionalGeneration,
+    Qwen3TTSVoiceCloneForConditionalGeneration,
+    Qwen3TTSVoiceDesignForConditionalGeneration,
 )
 
 Qwen3TTSFeatureModel = (
@@ -59,8 +64,47 @@ class DemoLaunchKwargs(TypedDict, total=False):
     ssl_keyfile: str
 
 
+class DemoArgs(argparse.Namespace):
+    checkpoint_pos: str | None
+    checkpoint: str | None
+    device: str
+    dtype: str
+    flash_attn: bool
+    ip: str
+    port: int
+    share: bool
+    concurrency: int
+    ssl_certfile: str | None
+    ssl_keyfile: str | None
+    ssl_verify: bool
+    max_new_tokens: int | None
+    temperature: float | None
+    top_k: int | None
+    top_p: float | None
+    repetition_penalty: float | None
+    subtalker_configuration: str | None
+
+
+class SavedVoiceClonePromptItem(TypedDict):
+    ref_code: torch.Tensor | None
+    ref_spk_embedding: torch.Tensor
+    x_vector_only_mode: bool
+    icl_mode: bool
+    ref_text: str
+
+
+class SavedVoiceClonePromptPayload(TypedDict):
+    items: list[SavedVoiceClonePromptItem]
+
+
+GradioAudio = tuple[int, np.ndarray]
+GenerationResult = tuple[GradioAudio | None, str]
+FileResult = tuple[str | None, str]
+ModelKind = Literal["custom_voice", "voice_design", "base"]
+
+
 def _title_case_display(s: str) -> str:
-    s = (s or "").strip()
+    s = s.strip()
     s = s.replace("_", " ")
     return " ".join([w[:1].upper() + w[1:] if w else "" for w in s.split()])
 
@@ -76,7 +120,7 @@ def _build_choices_and_map(
 
 
 def _dtype_from_str(s: str) -> torch.dtype:
-    s = (s or "").strip().lower()
+    s = s.strip().lower()
     if s in ("bf16", "bfloat16"):
         return torch.bfloat16
     if s in ("fp16", "float16", "half"):
@@ -84,10 +128,6 @@ def _dtype_from_str(s: str) -> torch.dtype:
     if s in ("fp32", "float32"):
         return torch.float32
     raise ValueError(f"Unsupported torch dtype: {s}. Use bfloat16/float16/float32.")
-
-
-def _maybe(v):
-    return v if v is not None else gr.update()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -221,14 +261,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_checkpoint(args: argparse.Namespace) -> str:
+def _resolve_checkpoint(args: DemoArgs) -> str:
     ckpt = args.checkpoint or args.checkpoint_pos
     if not ckpt:
         raise SystemExit(0)  # main() prints help
     return ckpt
 
 
-def _collect_gen_kwargs(args: argparse.Namespace) -> DemoGenKwargs:
+def _collect_gen_kwargs(args: DemoArgs) -> DemoGenKwargs:
     mapping: DemoGenKwargs = {}
     if args.max_new_tokens is not None:
         mapping["max_new_tokens"] = int(args.max_new_tokens)
@@ -314,6 +354,15 @@ def _normalize_audio(wav: object, eps: float = 1e-12, clip: bool = True) -> np.n
     return y
 
 
+def _external_mapping(value: object) -> dict[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        result[str(key)] = item
+    return result
+
+
 def _audio_to_tuple(audio: object) -> tuple[np.ndarray, int] | None:
     if audio is None:
         return None
@@ -325,55 +374,91 @@ def _audio_to_tuple(audio: object) -> tuple[np.ndarray, int] | None:
             wav = _normalize_audio(wav)
             return wav, sr
 
-    if isinstance(audio, dict):
-        audio_map: dict[str, object] = {}
-        for key, value in audio.items():
-            audio_map[str(key)] = value
-        if "sampling_rate" in audio_map and "data" in audio_map:
-            sr = audio_map["sampling_rate"]
-            if not isinstance(sr, (int, float)):
-                return None
-            sr = int(sr)
-            wav = _normalize_audio(audio_map["data"])
-            return wav, sr
+    audio_map = _external_mapping(audio)
+    if audio_map is not None and "sampling_rate" in audio_map and "data" in audio_map:
+        sr = audio_map["sampling_rate"]
+        if not isinstance(sr, (int, float)):
+            return None
+        sr = int(sr)
+        wav = _normalize_audio(audio_map["data"])
+        return wav, sr
 
     return None
 
 
-def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> tuple[int, np.ndarray]:
+def _tensor_from_external(value: object, field_name: str) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value
+    if isinstance(value, np.ndarray):
+        return torch.from_numpy(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        try:
+            return torch.tensor(list(value))
+        except (TypeError, ValueError, RuntimeError, OverflowError) as exc:
+            raise TypeError(f"{field_name} must be tensor-like.") from exc
+    raise TypeError(f"{field_name} must be tensor-like.")
+
+
+def _external_file_path(file_obj: object) -> str:
+    if isinstance(file_obj, str):
+        return file_obj
+    if isinstance(file_obj, os.PathLike):
+        path_value = os.fspath(file_obj)
+        if isinstance(path_value, str) and path_value:
+            return path_value
+    name: object = getattr(file_obj, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(name, os.PathLike):
+        name_value = os.fspath(name)
+        if isinstance(name_value, str) and name_value:
+            return name_value
+    path: object = getattr(file_obj, "path", None)
+    if isinstance(path, str) and path:
+        return path
+    if isinstance(path, os.PathLike):
+        path_value = os.fspath(path)
+        if isinstance(path_value, str) and path_value:
+            return path_value
+    return str(file_obj)
+
+
+def _wav_to_gradio_audio(wav: np.ndarray, sr: int) -> GradioAudio:
     wav = np.asarray(wav, dtype=np.float32)
     return sr, wav
 
 
 def _specialize_model(tts: Qwen3TTSBaseModel) -> Qwen3TTSFeatureModel:
-    mt = getattr(tts.model, "tts_model_type", None)
-    if mt == "custom_voice":
+    model = tts.model
+    if isinstance(model, Qwen3TTSCustomVoiceForConditionalGeneration):
         return Qwen3TTSCustomVoiceModel(
-            model=tts.model,
+            model=model,
             processor=tts.processor,
             generate_defaults=tts.generate_defaults,
         )
-    if mt == "voice_design":
+    if isinstance(model, Qwen3TTSVoiceDesignForConditionalGeneration):
         return Qwen3TTSVoiceDesignModel(
-            model=tts.model,
+            model=model,
             processor=tts.processor,
             generate_defaults=tts.generate_defaults,
         )
-    if mt == "base":
+    if isinstance(model, Qwen3TTSVoiceCloneForConditionalGeneration):
         return Qwen3TTSVoiceCloneModel(
-            model=tts.model,
+            model=model,
             processor=tts.processor,
             generate_defaults=tts.generate_defaults,
         )
-    raise ValueError(f"Unknown Qwen-TTS model type: {mt}")
+    raise TypeError(f"Unsupported Qwen-TTS model class: {type(model).__name__}")
 
 
-def _detect_model_kind(tts: Qwen3TTSFeatureModel) -> str:
-    mt = getattr(tts.model, "tts_model_type", None)
-    if mt in ("custom_voice", "voice_design", "base"):
-        return mt
-    else:
-        raise ValueError(f"Unknown Qwen-TTS model type: {mt}")
+def _detect_model_kind(tts: Qwen3TTSFeatureModel) -> ModelKind:
+    if isinstance(tts, Qwen3TTSCustomVoiceModel):
+        return "custom_voice"
+    if isinstance(tts, Qwen3TTSVoiceDesignModel):
+        return "voice_design"
+    if isinstance(tts, Qwen3TTSVoiceCloneModel):
+        return "base"
+    raise TypeError(f"Unsupported Qwen-TTS wrapper: {type(tts).__name__}")
 
 
 def build_demo(
@@ -381,13 +466,8 @@ def build_demo(
 ) -> gr.Blocks:
     model_kind = _detect_model_kind(tts)
 
-    supported_langs_raw = None
-    if callable(getattr(tts.model, "get_supported_languages", None)):
-        supported_langs_raw = tts.model.get_supported_languages()
-
-    supported_spks_raw = None
-    if callable(getattr(tts.model, "get_supported_speakers", None)):
-        supported_spks_raw = tts.model.get_supported_speakers()
+    supported_langs_raw = tts.model.get_supported_languages()
+    supported_spks_raw = tts.model.get_supported_speakers()
 
     lang_choices_disp, lang_map = _build_choices_and_map(
         [x for x in (supported_langs_raw or [])]
@@ -449,7 +529,9 @@ def build_demo(
                     audio_out = gr.Audio(label="Output Audio (合成结果)", type="numpy")
                     err = gr.Textbox(label="Status (状态)", lines=2)
 
-            def run_instruct(text: str, lang_disp: str, spk_disp: str, instruct: str):
+            def run_instruct(
+                text: str, lang_disp: str, spk_disp: str, instruct: str
+            ) -> GenerationResult:
                 try:
                     if not text or not text.strip():
                         return None, "Text is required (必须填写文本)."
@@ -468,8 +550,8 @@ def build_demo(
                         **kwargs,
                     )
                     return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
-                except Exception as e:
-                    return None, f"{type(e).__name__}: {e}"
+                except Exception as exc:  # noqa: BLE001 - Report failures in the UI.
+                    return None, f"{type(exc).__name__}: {exc}"
 
             btn.click(
                 run_instruct,
@@ -506,7 +588,9 @@ def build_demo(
                     audio_out = gr.Audio(label="Output Audio (合成结果)", type="numpy")
                     err = gr.Textbox(label="Status (状态)", lines=2)
 
-            def run_voice_design(text: str, lang_disp: str, design: str):
+            def run_voice_design(
+                text: str, lang_disp: str, design: str
+            ) -> GenerationResult:
                 try:
                     if not text or not text.strip():
                         return None, "Text is required (必须填写文本)."
@@ -525,8 +609,8 @@ def build_demo(
                         **kwargs,
                     )
                     return _wav_to_gradio_audio(wavs[0], sr), "Finished. (生成完成)"
-                except Exception as e:
-                    return None, f"{type(e).__name__}: {e}"
+                except Exception as exc:  # noqa: BLE001 - Report failures in the UI.
+                    return None, f"{type(exc).__name__}: {exc}"
 
             btn.click(
                 run_voice_design,
@@ -577,8 +661,12 @@ def build_demo(
                             err = gr.Textbox(label="Status (状态)", lines=2)
 
                     def run_voice_clone(
-                        ref_aud, ref_txt: str, use_xvec: bool, text: str, lang_disp: str
-                    ):
+                        ref_aud: object,
+                        ref_txt: str,
+                        use_xvec: bool,
+                        text: str,
+                        lang_disp: str,
+                    ) -> GenerationResult:
                         try:
                             if not text or not text.strip():
                                 return (
@@ -609,8 +697,8 @@ def build_demo(
                             return _wav_to_gradio_audio(
                                 wavs[0], sr
                             ), "Finished. (生成完成)"
-                        except Exception as e:
-                            return None, f"{type(e).__name__}: {e}"
+                        except Exception as exc:  # noqa: BLE001 - Report failures in the UI.
+                            return None, f"{type(exc).__name__}: {exc}"
 
                     btn.click(
                         run_voice_clone,
@@ -675,7 +763,9 @@ Upload a previously saved voice file, then synthesize new text.
                             )
                             err2 = gr.Textbox(label="Status (状态)", lines=2)
 
-                    def save_prompt(ref_aud, ref_txt: str, use_xvec: bool):
+                    def save_prompt(
+                        ref_aud: object, ref_txt: str, use_xvec: bool
+                    ) -> FileResult:
                         try:
                             at = _audio_to_tuple(ref_aud)
                             if at is None:
@@ -693,19 +783,30 @@ Upload a previously saved voice file, then synthesize new text.
                                 ref_text=[ref_txt.strip() if ref_txt else ""],
                                 x_vector_only_mode=[bool(use_xvec)],
                             )
-                            payload = {
-                                "items": [asdict(it) for it in items],
-                            }
+                            payload = SavedVoiceClonePromptPayload(
+                                items=[
+                                    SavedVoiceClonePromptItem(
+                                        ref_code=item.ref_code,
+                                        ref_spk_embedding=item.ref_spk_embedding,
+                                        x_vector_only_mode=item.x_vector_only_mode,
+                                        icl_mode=item.icl_mode,
+                                        ref_text=item.ref_text,
+                                    )
+                                    for item in items
+                                ]
+                            )
                             fd, out_path = tempfile.mkstemp(
                                 prefix="voice_clone_prompt_", suffix=".pt"
                             )
                             os.close(fd)
                             torch.save(payload, out_path)
                             return out_path, "Finished. (生成完成)"
-                        except Exception as e:
-                            return None, f"{type(e).__name__}: {e}"
+                        except Exception as exc:  # noqa: BLE001 - Report failures in the UI.
+                            return None, f"{type(exc).__name__}: {exc}"
 
-                    def load_prompt_and_gen(file_obj, text: str, lang_disp: str):
+                    def load_prompt_and_gen(
+                        file_obj: object, text: str, lang_disp: str
+                    ) -> GenerationResult:
                         try:
                             if file_obj is None:
                                 return (
@@ -718,15 +819,12 @@ Upload a previously saved voice file, then synthesize new text.
                                     "Target text is required (必须填写待合成文本).",
                                 )
 
-                            path = (
-                                getattr(file_obj, "name", None)
-                                or getattr(file_obj, "path", None)
-                                or str(file_obj)
-                            )
-                            payload = torch.load(
+                            path = _external_file_path(file_obj)
+                            payload_raw: object = torch.load(
                                 path, map_location="cpu", weights_only=True
                             )
-                            if not isinstance(payload, dict) or "items" not in payload:
+                            payload = _external_mapping(payload_raw)
+                            if payload is None or "items" not in payload:
                                 return None, "Invalid file format (文件格式不正确)."
 
                             items_raw = payload["items"]
@@ -734,44 +832,63 @@ Upload a previously saved voice file, then synthesize new text.
                                 return None, "Empty voice items (音色为空)."
 
                             items: list[VoiceClonePromptItem] = []
-                            for d in items_raw:
-                                if not isinstance(d, dict):
+                            for item_raw in items_raw:
+                                item = _external_mapping(item_raw)
+                                if item is None:
                                     return (
                                         None,
                                         "Invalid item format in file (文件内部格式错误).",
                                     )
-                                ref_code = d.get("ref_code", None)
-                                if ref_code is not None and not torch.is_tensor(
-                                    ref_code
+                                ref_code_raw = item.get("ref_code")
+                                ref_code = (
+                                    None
+                                    if ref_code_raw is None
+                                    else _tensor_from_external(ref_code_raw, "ref_code")
+                                )
+                                if ref_code is not None and ref_code.dim() not in (
+                                    1,
+                                    2,
                                 ):
-                                    ref_code = torch.tensor(ref_code)
-                                ref_spk = d.get("ref_spk_embedding", None)
-                                if ref_spk is None:
+                                    return (
+                                        None,
+                                        "Invalid ref_code shape (音频码形状错误).",
+                                    )
+
+                                ref_spk_raw = item.get("ref_spk_embedding")
+                                if ref_spk_raw is None:
                                     return (
                                         None,
                                         "Missing ref_spk_embedding (缺少说话人向量).",
                                     )
-                                if not torch.is_tensor(ref_spk):
-                                    ref_spk = torch.tensor(ref_spk)
+                                ref_spk = _tensor_from_external(
+                                    ref_spk_raw, "ref_spk_embedding"
+                                )
+                                if ref_spk.dim() != 1:
+                                    return None, (
+                                        "Invalid ref_spk_embedding shape "
+                                        "(说话人向量形状错误)."
+                                    )
 
                                 items.append(
                                     VoiceClonePromptItem(
                                         ref_code=ref_code,
                                         ref_spk_embedding=ref_spk,
                                         x_vector_only_mode=bool(
-                                            d.get("x_vector_only_mode", False)
+                                            item.get("x_vector_only_mode", False)
                                         ),
                                         icl_mode=bool(
-                                            d.get(
+                                            item.get(
                                                 "icl_mode",
                                                 not bool(
-                                                    d.get("x_vector_only_mode", False)
+                                                    item.get(
+                                                        "x_vector_only_mode", False
+                                                    )
                                                 ),
                                             )
                                         ),
                                         ref_text=(
-                                            str(d.get("ref_text"))
-                                            if d.get("ref_text") is not None
+                                            str(item.get("ref_text"))
+                                            if item.get("ref_text") is not None
                                             else ""
                                         ),
                                     )
@@ -794,11 +911,11 @@ Upload a previously saved voice file, then synthesize new text.
                             return _wav_to_gradio_audio(
                                 wavs[0], sr
                             ), "Finished. (生成完成)"
-                        except Exception as e:
+                        except Exception as exc:  # noqa: BLE001 - Report failures in the UI.
                             return None, (
                                 f"Failed to read or use voice file. Check file format/content.\n"
                                 f"(读取或使用音色文件失败，请检查文件格式或内容)\n"
-                                f"{type(e).__name__}: {e}"
+                                f"{type(exc).__name__}: {exc}"
                             )
 
                     save_btn.click(
@@ -820,12 +937,12 @@ Upload a previously saved voice file, then synthesize new text.
 """
         )
 
-    return demo
+    return cast(gr.Blocks, demo)
 
 
-def main(argv=None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv, namespace=DemoArgs())
 
     if not args.checkpoint and not args.checkpoint_pos:
         parser.print_help()

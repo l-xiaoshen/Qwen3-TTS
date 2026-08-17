@@ -1,16 +1,22 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
+from typing import Protocol, cast
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 from transformers.utils import logging
+from typing_extensions import override
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
-    Qwen3TTSTokenizerV1DecoderBigVGANConfig,
     Qwen3TTSTokenizerV1DecoderDiTConfig,
 )
 
 logger = logging.get_logger(__name__)
+
+
+class _TensorModule(Protocol):
+    def __call__(self, hidden_states: torch.Tensor) -> torch.Tensor: ...
 
 
 # Extracted from modeling_qwen3_tts_tokenizer_v1_core.py for better navigation.
@@ -19,11 +25,11 @@ logger = logging.get_logger(__name__)
 class TimeDelayNetBlock(nn.Module):
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        kernel_size,
-        dilation,
-    ):
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int,
+    ) -> None:
         super().__init__()
         self.conv = nn.Conv1d(
             in_channels=in_channels,
@@ -35,12 +41,20 @@ class TimeDelayNetBlock(nn.Module):
         )
         self.activation = nn.ReLU()
 
-    def forward(self, hidden_states: torch.Tensor):
-        return self.activation(self.conv(hidden_states))
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.activation(self.conv(hidden_states)))
 
 
 class Res2NetBlock(torch.nn.Module):
-    def __init__(self, in_channels, out_channels, scale=8, kernel_size=3, dilation=1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        scale: int = 8,
+        kernel_size: int = 3,
+        dilation: int = 1,
+    ) -> None:
         super().__init__()
 
         in_channel = in_channels // scale
@@ -59,22 +73,23 @@ class Res2NetBlock(torch.nn.Module):
         )
         self.scale = scale
 
-    def forward(self, hidden_states):
-        outputs = []
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        outputs: list[torch.Tensor] = []
         for i, hidden_part in enumerate(torch.chunk(hidden_states, self.scale, dim=1)):
             if i == 0:
                 output_part = hidden_part
-            elif i == 1:
-                output_part = self.blocks[i - 1](hidden_part)
             else:
-                output_part = self.blocks[i - 1](hidden_part + output_part)
+                block_input = hidden_part if i == 1 else hidden_part + outputs[-1]
+                block = cast(_TensorModule, self.blocks[i - 1])
+                output_part = block(block_input)
             outputs.append(output_part)
         output = torch.cat(outputs, dim=1)
         return output
 
 
 class SqueezeExcitationBlock(nn.Module):
-    def __init__(self, in_channels, se_channels, out_channels):
+    def __init__(self, in_channels: int, se_channels: int, out_channels: int) -> None:
         super().__init__()
 
         self.conv1 = nn.Conv1d(
@@ -94,13 +109,14 @@ class SqueezeExcitationBlock(nn.Module):
         )
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         hidden_states_mean = hidden_states.mean(dim=2, keepdim=True)
 
         hidden_states_mean = self.relu(self.conv1(hidden_states_mean))
         hidden_states_mean = self.sigmoid(self.conv2(hidden_states_mean))
 
-        return hidden_states * hidden_states_mean
+        return cast(torch.Tensor, hidden_states * hidden_states_mean)
 
 
 class AttentiveStatisticsPooling(nn.Module):
@@ -108,7 +124,7 @@ class AttentiveStatisticsPooling(nn.Module):
     It returns the concatenated mean and std of the input tensor.
     """
 
-    def __init__(self, channels, attention_channels=128):
+    def __init__(self, channels: int, attention_channels: int = 128) -> None:
         super().__init__()
 
         self.eps = 1e-12
@@ -122,7 +138,13 @@ class AttentiveStatisticsPooling(nn.Module):
             padding_mode="reflect",
         )
 
-    def _length_to_mask(self, length, max_len=None, dtype=None, device=None):
+    def _length_to_mask(
+        self,
+        length: torch.Tensor,
+        max_len: int | None = None,
+        dtype: torch.dtype | None = None,
+        device: torch.device | None = None,
+    ) -> torch.Tensor:
         """Creates a binary mask for each sequence.
 
         Reference: https://discuss.pytorch.org/t/how-to-generate-variable-length-mask/23397/3
@@ -145,7 +167,7 @@ class AttentiveStatisticsPooling(nn.Module):
         """
 
         if max_len is None:
-            max_len = length.max().long().item()  # using arange to generate mask
+            max_len = int(length.max().long().item())
         mask = torch.arange(max_len, device=length.device, dtype=length.dtype).expand(
             len(length), max_len
         ) < length.unsqueeze(1)
@@ -153,14 +175,17 @@ class AttentiveStatisticsPooling(nn.Module):
         mask = torch.as_tensor(mask, dtype=dtype, device=device)
         return mask
 
-    def _compute_statistics(self, x, m, dim=2):
+    def _compute_statistics(
+        self, x: torch.Tensor, m: torch.Tensor, dim: int = 2
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         mean = (m * x).sum(dim)
         std = torch.sqrt(
             (m * (x - mean.unsqueeze(dim)).pow(2)).sum(dim).clamp(self.eps)
         )
         return mean, std
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         seq_length = hidden_states.shape[-1]
         lengths = torch.ones(hidden_states.shape[0], device=hidden_states.device)
 
@@ -204,13 +229,13 @@ class SqueezeExcitationRes2NetBlock(nn.Module):
 
     def __init__(
         self,
-        in_channels,
-        out_channels,
-        res2net_scale=8,
-        se_channels=128,
-        kernel_size=1,
-        dilation=1,
-    ):
+        in_channels: int,
+        out_channels: int,
+        res2net_scale: int = 8,
+        se_channels: int = 128,
+        kernel_size: int = 1,
+        dilation: int = 1,
+    ) -> None:
         super().__init__()
         self.out_channels = out_channels
         self.tdnn1 = TimeDelayNetBlock(
@@ -230,13 +255,14 @@ class SqueezeExcitationRes2NetBlock(nn.Module):
         )
         self.se_block = SqueezeExcitationBlock(out_channels, se_channels, out_channels)
 
-    def forward(self, hidden_state):
+    @override
+    def forward(self, hidden_state: torch.Tensor) -> torch.Tensor:
         residual = hidden_state
 
-        hidden_state = self.tdnn1(hidden_state)
-        hidden_state = self.res2net_block(hidden_state)
-        hidden_state = self.tdnn2(hidden_state)
-        hidden_state = self.se_block(hidden_state)
+        hidden_state = cast(torch.Tensor, self.tdnn1(hidden_state))
+        hidden_state = cast(torch.Tensor, self.res2net_block(hidden_state))
+        hidden_state = cast(torch.Tensor, self.tdnn2(hidden_state))
+        hidden_state = cast(torch.Tensor, self.se_block(hidden_state))
 
         return hidden_state + residual
 
@@ -249,9 +275,8 @@ class ECAPA_TimeDelayNet(torch.nn.Module):
 
     def __init__(
         self,
-        config: Qwen3TTSTokenizerV1DecoderBigVGANConfig
-        | Qwen3TTSTokenizerV1DecoderDiTConfig,
-    ):
+        config: Qwen3TTSTokenizerV1DecoderDiTConfig,
+    ) -> None:
         super().__init__()
         if len(config.enc_channels) != len(config.enc_kernel_sizes) or len(
             config.enc_channels
@@ -308,24 +333,26 @@ class ECAPA_TimeDelayNet(torch.nn.Module):
             padding_mode="reflect",
         )
 
-    def forward(self, hidden_states):
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # Minimize transpose for efficiency
         hidden_states = hidden_states.transpose(1, 2)
 
-        hidden_states_list = []
-        for layer in self.blocks:
+        hidden_states_list: list[torch.Tensor] = []
+        for layer_module in self.blocks:
+            layer = cast(_TensorModule, layer_module)
             hidden_states = layer(hidden_states)
             hidden_states_list.append(hidden_states)
 
         # Multi-layer feature aggregation
         hidden_states = torch.cat(hidden_states_list[1:], dim=1)
-        hidden_states = self.mfa(hidden_states)
+        hidden_states = cast(torch.Tensor, self.mfa(hidden_states))
 
         # Attentive Statistical Pooling
-        hidden_states = self.asp(hidden_states)
+        hidden_states = cast(torch.Tensor, self.asp(hidden_states))
 
         # Final linear transformation
-        hidden_states = self.fc(hidden_states)
+        hidden_states = cast(torch.Tensor, self.fc(hidden_states))
 
         hidden_states = hidden_states.squeeze(-1)
         return hidden_states

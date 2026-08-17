@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -21,11 +20,13 @@ import numpy as np
 import torch
 
 from ..core.models import (
+    Qwen3TTSProcessor,
     Qwen3TTSVoiceCloneForConditionalGeneration,
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import (
     AudioLike,
+    GenerationDefaults,
     Qwen3TTSBaseModel,
     TTSBatchInput,
     TTSInput,
@@ -61,8 +62,8 @@ class VoiceClonePromptSingleDict(TypedDict):
     icl_mode: bool
 
 
-VoiceClonePromptInput = Mapping[str, Sequence[torch.Tensor | bool | None]]
-VoiceClonePromptSingleInput = Mapping[str, torch.Tensor | bool | None]
+VoiceClonePromptInput = VoiceClonePromptDict
+VoiceClonePromptSingleInput = VoiceClonePromptSingleDict
 AudioBatchInput = list[AudioLike] | tuple[AudioLike, ...]
 StringBatchInput = list[str] | tuple[str, ...]
 BoolBatchInput = list[bool] | tuple[bool, ...]
@@ -70,6 +71,15 @@ BoolBatchInput = list[bool] | tuple[bool, ...]
 
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     model: Qwen3TTSVoiceCloneForConditionalGeneration
+    _model_class = Qwen3TTSVoiceCloneForConditionalGeneration
+
+    def __init__(
+        self,
+        model: Qwen3TTSVoiceCloneForConditionalGeneration,
+        processor: Qwen3TTSProcessor,
+        generate_defaults: GenerationDefaults | None = None,
+    ) -> None:
+        super().__init__(model, processor, generate_defaults)
 
     def _extract_ref_speaker_embedding(self, wav: np.ndarray, sr: int) -> torch.Tensor:
         wav_resample = wav
@@ -205,51 +215,10 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     def _coerce_voice_clone_prompt_dict(
         self, prompt: VoiceClonePromptInput
     ) -> VoiceClonePromptDict:
-        required_keys = (
-            "ref_code",
-            "ref_spk_embedding",
-            "x_vector_only_mode",
-            "icl_mode",
-        )
-        for key in required_keys:
-            if key not in prompt:
-                raise KeyError(f"Missing key `{key}` in `voice_clone_prompt`.")
-
-        ref_code_raw = prompt["ref_code"]
-        ref_spk_raw = prompt["ref_spk_embedding"]
-        xvec_raw = prompt["x_vector_only_mode"]
-        icl_raw = prompt["icl_mode"]
-
-        if not isinstance(ref_code_raw, list):
-            raise TypeError("`voice_clone_prompt.ref_code` must be a list.")
-        if not isinstance(ref_spk_raw, list):
-            raise TypeError("`voice_clone_prompt.ref_spk_embedding` must be a list.")
-        if not isinstance(xvec_raw, list):
-            raise TypeError("`voice_clone_prompt.x_vector_only_mode` must be a list.")
-        if not isinstance(icl_raw, list):
-            raise TypeError("`voice_clone_prompt.icl_mode` must be a list.")
-
-        ref_code: list[torch.Tensor | None] = []
-        for item in ref_code_raw:
-            if item is None:
-                ref_code.append(None)
-            elif isinstance(item, torch.Tensor):
-                ref_code.append(item)
-            else:
-                raise TypeError(
-                    "`voice_clone_prompt.ref_code` items must be Tensor or None."
-                )
-
-        ref_spk_embedding: list[torch.Tensor] = []
-        for item in ref_spk_raw:
-            if not isinstance(item, torch.Tensor):
-                raise TypeError(
-                    "`voice_clone_prompt.ref_spk_embedding` items must be Tensor."
-                )
-            ref_spk_embedding.append(item)
-
-        x_vector_only_mode = [bool(item) for item in xvec_raw]
-        icl_mode = [bool(item) for item in icl_raw]
+        ref_code = list(prompt["ref_code"])
+        ref_spk_embedding = list(prompt["ref_spk_embedding"])
+        x_vector_only_mode = list(prompt["x_vector_only_mode"])
+        icl_mode = list(prompt["icl_mode"])
 
         if not (
             len(ref_code)
@@ -271,33 +240,11 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     def _coerce_voice_clone_prompt_single(
         self, prompt: VoiceClonePromptSingleInput
     ) -> VoiceClonePromptSingleDict:
-        required_keys = (
-            "ref_code",
-            "ref_spk_embedding",
-            "x_vector_only_mode",
-            "icl_mode",
-        )
-        for key in required_keys:
-            if key not in prompt:
-                raise KeyError(f"Missing key `{key}` in `voice_clone_prompt`.")
-
-        ref_code_raw = prompt["ref_code"]
-        if ref_code_raw is None:
-            ref_code: torch.Tensor | None = None
-        elif isinstance(ref_code_raw, torch.Tensor):
-            ref_code = ref_code_raw
-        else:
-            raise TypeError("`voice_clone_prompt.ref_code` must be Tensor or None.")
-
-        ref_spk_raw = prompt["ref_spk_embedding"]
-        if not isinstance(ref_spk_raw, torch.Tensor):
-            raise TypeError("`voice_clone_prompt.ref_spk_embedding` must be Tensor.")
-
         return VoiceClonePromptSingleDict(
-            ref_code=ref_code,
-            ref_spk_embedding=ref_spk_raw,
-            x_vector_only_mode=bool(prompt["x_vector_only_mode"]),
-            icl_mode=bool(prompt["icl_mode"]),
+            ref_code=prompt["ref_code"],
+            ref_spk_embedding=prompt["ref_spk_embedding"],
+            x_vector_only_mode=prompt["x_vector_only_mode"],
+            icl_mode=prompt["icl_mode"],
         )
 
     @torch.no_grad()
@@ -459,13 +406,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             ref_texts_for_ids = [it.ref_text for it in prompt_items]
         else:
             if isinstance(voice_clone_prompt, list):
-                prompt_items: list[VoiceClonePromptItem] = []
-                for item in voice_clone_prompt:
-                    if not isinstance(item, VoiceClonePromptItem):
-                        raise TypeError(
-                            "`voice_clone_prompt` list items must be VoiceClonePromptItem."
-                        )
-                    prompt_items.append(item)
+                prompt_items = list(voice_clone_prompt)
                 if len(prompt_items) != len(structured_inputs):
                     raise ValueError(
                         "Batch size mismatch: "

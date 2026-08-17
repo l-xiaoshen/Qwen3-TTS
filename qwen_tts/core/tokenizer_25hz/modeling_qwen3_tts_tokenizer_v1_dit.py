@@ -1,11 +1,13 @@
 """PyTorch Qwen3TTSTokenizerV1 model."""
 
 import math
+from typing import Protocol, cast
 
 import torch
 from torch import nn
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 from transformers.utils import logging
+from typing_extensions import override
 
 from .configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1DecoderDiTConfig,
@@ -15,19 +17,37 @@ from .modeling_qwen3_tts_tokenizer_v1_speaker import ECAPA_TimeDelayNet
 logger = logging.get_logger(__name__)
 
 
+class _AttentionInterface(Protocol):
+    def __call__(
+        self,
+        module: nn.Module,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        attention_mask: torch.Tensor | None,
+        is_causal: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]: ...
+
+
+class _TensorModule(Protocol):
+    def __call__(self, hidden_states: torch.Tensor) -> torch.Tensor: ...
+
+
 # Extracted from modeling_qwen3_tts_tokenizer_v1_core.py for better navigation.
 
 
 class Qwen3TTSTokenizerV1DecoderDiTRotaryEmbedding(nn.Module):
     inv_freq: torch.Tensor  # fix linting for `register_buffer`
 
-    def __init__(self, dim, base=10000):
+    def __init__(self, dim: int, base: float = 10000) -> None:
         super().__init__()
 
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
 
-    def forward(self, x):
+    @override
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len = x.shape[0], x.shape[1]
         t = torch.arange(seq_len, device=x.device)
         device_type = x.device.type
@@ -44,7 +64,7 @@ class Qwen3TTSTokenizerV1DecoderDiTRotaryEmbedding(nn.Module):
 
 
 class DiTInputEmbedding(nn.Module):
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig) -> None:
         super().__init__()
         self.proj = nn.Linear(
             config.mel_dim + config.enc_dim + config.enc_emb_dim + config.emb_dim,
@@ -52,16 +72,17 @@ class DiTInputEmbedding(nn.Module):
         )
         self.spk_encoder = ECAPA_TimeDelayNet(config)
 
+    @override
     def forward(
         self,
         hidden_states: torch.Tensor,
         speaker_embedding: torch.Tensor,
         condition_vector: torch.Tensor,
         code_embed: torch.Tensor,
-        drop_audio_cond: bool | None = False,
+        drop_audio_cond: bool = False,
         code_embed_uncond: torch.Tensor | None = None,
-        apply_cfg: bool | None = True,
-    ):
+        apply_cfg: bool = True,
+    ) -> torch.Tensor:
         if apply_cfg:
             if code_embed_uncond is None:
                 raise ValueError(
@@ -79,14 +100,18 @@ class DiTInputEmbedding(nn.Module):
             condition_vector = torch.zeros_like(condition_vector)
             speaker_embedding = torch.zeros_like(speaker_embedding)
         condition_vector = (
-            self.spk_encoder(condition_vector)
+            cast(torch.Tensor, self.spk_encoder(condition_vector))
             .unsqueeze(1)
             .repeat(1, hidden_states.size(1), 1)
         )
-        hidden_states = self.proj(
-            torch.cat(
-                (hidden_states, condition_vector, code_embed, speaker_embedding), dim=-1
-            )
+        hidden_states = cast(
+            torch.Tensor,
+            self.proj(
+                torch.cat(
+                    (hidden_states, condition_vector, code_embed, speaker_embedding),
+                    dim=-1,
+                )
+            ),
         )
 
         return hidden_states
@@ -94,12 +119,13 @@ class DiTInputEmbedding(nn.Module):
 
 # Transformer backbone using DiT blocks
 class DiTCodecEmbedding(nn.Module):
-    def __init__(self, codec_num_embeds, codec_dim, repeats):
+    def __init__(self, codec_num_embeds: int, codec_dim: int, repeats: int) -> None:
         super().__init__()
         self.repeats = repeats
         self.codec_embed = nn.Embedding(codec_num_embeds + 1, codec_dim)
 
-    def forward(self, code, drop_code=False):
+    @override
+    def forward(self, code: torch.Tensor, drop_code: bool = False) -> torch.Tensor:
         if drop_code:
             code = torch.zeros_like(code)
         code_embed = self.codec_embed(code)
@@ -111,7 +137,7 @@ class DiTCodecEmbedding(nn.Module):
 # AdaLayerNormZero
 # return with modulated x for attn input, and params for later mlp modulation
 class AdaLayerNormZero(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int) -> None:
         super().__init__()
 
         self.silu = nn.SiLU()
@@ -119,14 +145,24 @@ class AdaLayerNormZero(nn.Module):
 
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, hidden_states, emb=None):
-        emb = self.linear(self.silu(emb))
+    @override
+    def forward(
+        self, hidden_states: torch.Tensor, emb: torch.Tensor
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        emb = cast(torch.Tensor, self.linear(self.silu(emb)))
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(
             emb, 6, dim=1
         )
 
-        hidden_states = (
-            self.norm(hidden_states) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        hidden_states = cast(
+            torch.Tensor,
+            self.norm(hidden_states) * (1 + scale_msa[:, None]) + shift_msa[:, None],
         )
         return hidden_states, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
@@ -134,7 +170,7 @@ class AdaLayerNormZero(nn.Module):
 # AdaLayerNormZero for final layer
 # return only with modulated x for attn input, cuz no more mlp modulation
 class AdaLayerNormZero_Final(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int) -> None:
         super().__init__()
 
         self.silu = nn.SiLU()
@@ -142,19 +178,21 @@ class AdaLayerNormZero_Final(nn.Module):
 
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, hidden_states, emb):
-        emb = self.linear(self.silu(emb))
+    @override
+    def forward(self, hidden_states: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        emb = cast(torch.Tensor, self.linear(self.silu(emb)))
         scale, shift = torch.chunk(emb, 2, dim=1)
 
-        hidden_states = (
-            self.norm(hidden_states) * (1 + scale)[:, None, :] + shift[:, None, :]
+        hidden_states = cast(
+            torch.Tensor,
+            self.norm(hidden_states) * (1 + scale)[:, None, :] + shift[:, None, :],
         )
         return hidden_states
 
 
 # FeedForward
 class DiTMLP(nn.Module):
-    def __init__(self, dim, mult=4, dropout=0.0):
+    def __init__(self, dim: int, mult: int = 4, dropout: float = 0.0) -> None:
         super().__init__()
         inner_dim = int(dim * mult)
 
@@ -167,14 +205,23 @@ class DiTMLP(nn.Module):
             ]
         )
 
-    def forward(self, hidden_states):
-        for layer in self.ff:
+    @override
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        for layer_module in self.ff:
+            layer = cast(_TensorModule, layer_module)
             hidden_states = layer(hidden_states)
         return hidden_states
 
 
 # Modified from Llama with a different rotate function, will fixed in next release
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+def apply_rotary_pos_emb(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    position_ids: torch.Tensor | None = None,
+    unsqueeze_dim: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Applies Rotary Position Embedding to the query and key tensors.
 
     Args:
@@ -195,7 +242,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
 
-    def rotate_half_codec(x):
+    def rotate_half_codec(x: torch.Tensor) -> torch.Tensor:
         # x = rearrange(x, "... (d r) -> ... d r", r=2)
         x = x.reshape(*x.shape[:-1], -1, 2)
         x1, x2 = x.unbind(dim=-1)
@@ -210,7 +257,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 
 class DiTAttention(nn.Module):
-    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig):
+    def __init__(self, config: Qwen3TTSTokenizerV1DecoderDiTConfig) -> None:
         super().__init__()
 
         self.config = config
@@ -228,12 +275,13 @@ class DiTAttention(nn.Module):
             [nn.Linear(self.inner_dim, config.hidden_size), nn.Dropout(config.dropout)]
         )
 
+    @override
     def forward(
         self,
-        hidden_states,  # noised input x
+        hidden_states: torch.Tensor,  # noised input x
         position_embeddings: tuple[torch.Tensor, torch.Tensor]
         | None = None,  # rotary position embedding for x
-        attention_mask=None,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size = hidden_states.shape[0]
 
@@ -256,7 +304,10 @@ class DiTAttention(nn.Module):
         cos, sin = position_embeddings
         query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
-        attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        attention_interface = cast(
+            _AttentionInterface,
+            ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation],
+        )
         attention_weights, _ = attention_interface(
             self,
             query,
@@ -273,19 +324,22 @@ class DiTAttention(nn.Module):
         attention_weights = attention_weights.to(query.dtype)
 
         # linear proj
-        attention_output = self.to_out[0](attention_weights)
-        attention_output = self.to_out[1](attention_output)
+        output_projection = cast(_TensorModule, self.to_out[0])
+        output_dropout = cast(_TensorModule, self.to_out[1])
+        attention_output = output_projection(attention_weights)
+        attention_output = output_dropout(attention_output)
 
         return attention_output
 
 
 # time step conditioning embedding
 class SinusPositionEmbedding(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int) -> None:
         super().__init__()
         self.dim = dim
 
-    def forward(self, hidden_states, scale=1000):
+    @override
+    def forward(self, hidden_states: torch.Tensor, scale: float = 1000) -> torch.Tensor:
         device = hidden_states.device
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
@@ -296,17 +350,19 @@ class SinusPositionEmbedding(nn.Module):
 
 
 class DiTTimestepEmbedding(nn.Module):
-    def __init__(self, dim, freq_embed_dim=256):
+    def __init__(self, dim: int, freq_embed_dim: int = 256) -> None:
         super().__init__()
         self.time_embed = SinusPositionEmbedding(freq_embed_dim)
         self.time_mlp = nn.ModuleList(
             [nn.Linear(freq_embed_dim, dim), nn.SiLU(), nn.Linear(dim, dim)]
         )
 
-    def forward(self, timestep):
-        time_hidden = self.time_embed(timestep)
+    @override
+    def forward(self, timestep: torch.Tensor) -> torch.Tensor:
+        time_hidden = cast(torch.Tensor, self.time_embed(timestep))
         time_hidden = time_hidden.to(timestep.dtype)
-        for layer in self.time_mlp:
+        for layer_module in self.time_mlp:
+            layer = cast(_TensorModule, layer_module)
             time_hidden = layer(time_hidden)  # b d
         return time_hidden
 
@@ -315,9 +371,9 @@ class DiTDecoderLayer(nn.Module):
     def __init__(
         self,
         config: Qwen3TTSTokenizerV1DecoderDiTConfig,
-        look_ahead_block=0,
-        look_backward_block=0,
-    ):
+        look_ahead_block: int = 0,
+        look_backward_block: int = 0,
+    ) -> None:
         super().__init__()
         self.attn_norm = AdaLayerNormZero(config.hidden_size)
 
@@ -331,26 +387,37 @@ class DiTDecoderLayer(nn.Module):
             dim=config.hidden_size, mult=config.ff_mult, dropout=config.dropout
         )
 
+    @override
     def forward(
         self,
-        hidden_states,
-        timestep,
+        hidden_states: torch.Tensor,
+        timestep: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None = None,
         block_diff: torch.Tensor | None = None,
-    ):  # x: noised input, t: time embedding
+    ) -> torch.Tensor:  # x: noised input, t: time embedding
         # pre-norm & modulation for attention input
-        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
-            hidden_states, emb=timestep
+        norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = cast(
+            tuple[
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+                torch.Tensor,
+            ],
+            self.attn_norm(hidden_states, emb=timestep),
         )
 
         # attention
         if block_diff is None:
             raise ValueError("`block_diff` must be provided.")
-        attn_output = self.attn(
-            hidden_states=norm,
-            position_embeddings=position_embeddings,
-            attention_mask=(block_diff >= -float(self.look_backward_block))
-            & (block_diff <= float(self.look_ahead_block)),
+        attn_output = cast(
+            torch.Tensor,
+            self.attn(
+                hidden_states=norm,
+                position_embeddings=position_embeddings,
+                attention_mask=(block_diff >= -float(self.look_backward_block))
+                & (block_diff <= float(self.look_ahead_block)),
+            ),
         )
 
         # process attention output for input x
@@ -359,7 +426,7 @@ class DiTDecoderLayer(nn.Module):
         norm = (
             self.ff_norm(hidden_states) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
         )
-        ff_output = self.ff(norm)
+        ff_output = cast(torch.Tensor, self.ff(norm))
         hidden_states = hidden_states + gate_mlp.unsqueeze(1) * ff_output
 
         return hidden_states

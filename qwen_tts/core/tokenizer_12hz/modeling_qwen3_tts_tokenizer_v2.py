@@ -1,9 +1,11 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
+from transformers.models.mimi.modeling_mimi import MimiEncoderOutput
 from transformers.utils import ModelOutput, auto_docstring, logging
 
 from .configuration_qwen3_tts_tokenizer_v2 import (
@@ -37,7 +39,7 @@ class Qwen3TTSTokenizerV2DecoderOutput(ModelOutput):
         Each tensor has shape (segment_length_i).
     """
 
-    audio_values: list[torch.FloatTensor] = field(default_factory=list)
+    audio_values: list[torch.Tensor] = field(default_factory=list)
 
 
 @auto_docstring
@@ -58,7 +60,7 @@ class Qwen3TTSTokenizerV2PreTrainedModel(PreTrainedModel):
     """
 )
 class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
-    def __init__(self, config: Qwen3TTSTokenizerV2Config):
+    def __init__(self, config: Qwen3TTSTokenizerV2Config) -> None:
         super().__init__(config)
         self.config = config
 
@@ -70,28 +72,30 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         self.decode_upsample_rate = config.decode_upsample_rate
         self.encode_downsample_rate = config.encode_downsample_rate
 
-        self.encoder = Qwen3TTSTokenizerV2Encoder._from_config(
-            self.config.encoder_config
+        self.encoder = cast(
+            Qwen3TTSTokenizerV2Encoder,
+            Qwen3TTSTokenizerV2Encoder._from_config(self.config.encoder_config),
         )
-        self.decoder = Qwen3TTSTokenizerV2Decoder._from_config(
-            self.config.decoder_config
+        self.decoder = cast(
+            Qwen3TTSTokenizerV2Decoder,
+            Qwen3TTSTokenizerV2Decoder._from_config(self.config.decoder_config),
         )
 
         self.post_init()
 
-    def get_model_type(self):
+    def get_model_type(self) -> str:
         return self.config.model_type
 
-    def get_input_sample_rate(self):
+    def get_input_sample_rate(self) -> int:
         return self.input_sample_rate
 
-    def get_output_sample_rate(self):
+    def get_output_sample_rate(self) -> int:
         return self.output_sample_rate
 
-    def get_encode_downsample_rate(self):
+    def get_encode_downsample_rate(self) -> int:
         return self.encode_downsample_rate
 
-    def get_decode_upsample_rate(self):
+    def get_decode_upsample_rate(self) -> int:
         return self.decode_upsample_rate
 
     def encode(
@@ -118,27 +122,38 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         if padding_mask is None:
             raise ValueError("`padding_mask` is required for encode.")
 
-        encoded_frames = self.encoder.encode(
-            input_values=input_values.unsqueeze(1), return_dict=True
+        encoded_frames = cast(
+            MimiEncoderOutput,
+            self.encoder.encode(
+                input_values=input_values.unsqueeze(1), return_dict=True
+            ),
         )
-        audio_codes = encoded_frames.audio_codes[:, : self.encoder_valid_num_quantizers]
-        audio_codes = [
-            code[
-                ..., : -(-int(mask.sum().item()) // self.encode_downsample_rate)
-            ].transpose(0, 1)
-            for code, mask in zip(audio_codes, padding_mask)
+        encoded_audio_codes = encoded_frames.audio_codes
+        if encoded_audio_codes is None:
+            raise RuntimeError("Mimi encoder did not return audio codes.")
+        encoded_audio_codes = encoded_audio_codes[
+            :, : self.encoder_valid_num_quantizers
+        ]
+        audio_codes: list[torch.LongTensor] = [
+            cast(
+                torch.LongTensor,
+                code[
+                    ..., : -(-int(mask.sum().item()) // self.encode_downsample_rate)
+                ].transpose(0, 1),
+            )
+            for code, mask in zip(encoded_audio_codes, padding_mask)
         ]
 
         if not return_dict:
             return (audio_codes,)
 
-        return Qwen3TTSTokenizerV2EncoderOutput(audio_codes)
+        return Qwen3TTSTokenizerV2EncoderOutput(audio_codes=audio_codes)
 
     def decode(
         self,
         audio_codes: torch.Tensor,
         return_dict: bool | None = None,
-    ) -> tuple[list[torch.FloatTensor]] | Qwen3TTSTokenizerV2DecoderOutput:
+    ) -> tuple[list[torch.Tensor]] | Qwen3TTSTokenizerV2DecoderOutput:
         """
         Decodes the given frames into an output audio waveform.
 
@@ -158,18 +173,18 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
         audio_lengths = (audio_codes[..., 0] > -1).sum(1) * self.decode_upsample_rate
 
         audio_codes = torch.clamp(audio_codes, min=0)
-        audio_values = self.decoder.chunked_decode(audio_codes.transpose(1, 2)).squeeze(
-            1
-        )
+        decoded_audio = self.decoder.chunked_decode(
+            audio_codes.transpose(1, 2)
+        ).squeeze(1)
 
-        audio_values = [
-            audio[:length] for audio, length in zip(audio_values, audio_lengths)
+        audio_values: list[torch.Tensor] = [
+            audio[:length] for audio, length in zip(decoded_audio, audio_lengths)
         ]
 
         if not return_dict:
             return (audio_values,)
 
-        return Qwen3TTSTokenizerV2DecoderOutput(audio_values)
+        return Qwen3TTSTokenizerV2DecoderOutput(audio_values=audio_values)
 
 
 __all__ = ["Qwen3TTSTokenizerV2Model", "Qwen3TTSTokenizerV2PreTrainedModel"]

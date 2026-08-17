@@ -1,8 +1,15 @@
 import inspect
 import unittest
+from unittest.mock import patch
+
+import torch
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.processing_auto import AutoProcessor
 
 from qwen_tts.core.models import (
+    Qwen3TTSConfig,
     Qwen3TTSCustomVoiceForConditionalGeneration,
+    Qwen3TTSProcessor,
     Qwen3TTSVoiceCloneForConditionalGeneration,
     Qwen3TTSVoiceDesignForConditionalGeneration,
 )
@@ -129,6 +136,51 @@ class GenerationApiTest(unittest.TestCase):
         self.assertEqual(resolved["subtalker_configuration"].get("temperature"), 0.6)
         self.assertEqual(resolved["max_new_tokens"], 1024)
         self.assertIsNone(resolved["eos_token_id"])
+
+    def test_loader_preserves_model_kwargs_after_config_dispatch(self) -> None:
+        config = Qwen3TTSConfig(tts_model_type="custom_voice")
+        model = object.__new__(Qwen3TTSCustomVoiceForConditionalGeneration)
+        object.__setattr__(model, "generate_config", None)
+        processor = object.__new__(Qwen3TTSProcessor)
+
+        with (
+            patch.object(AutoConfig, "register"),
+            patch.object(AutoProcessor, "register"),
+            patch.object(
+                AutoConfig, "from_pretrained", return_value=config
+            ) as config_loader,
+            patch.object(
+                Qwen3TTSCustomVoiceForConditionalGeneration,
+                "from_pretrained",
+                return_value=model,
+            ) as model_loader,
+            patch.object(
+                AutoProcessor, "from_pretrained", return_value=processor
+            ) as processor_loader,
+            patch.object(Qwen3TTSBaseModel, "__init__", return_value=None),
+        ):
+            Qwen3TTSBaseModel.from_pretrained(
+                "model-id",
+                dtype=torch.bfloat16,
+                subfolder="nested",
+            )
+
+            self.assertEqual(processor_loader.call_args.kwargs["subfolder"], "nested")
+
+            Qwen3TTSBaseModel.from_pretrained(
+                "model-id",
+                dtype=torch.bfloat16,
+            )
+
+            self.assertNotIn("subfolder", processor_loader.call_args.kwargs)
+
+        nested_config_kwargs = config_loader.call_args_list[0].kwargs
+        nested_model_kwargs = model_loader.call_args_list[0].kwargs
+        self.assertEqual(nested_config_kwargs["dtype"], torch.bfloat16)
+        self.assertEqual(nested_config_kwargs["subfolder"], "nested")
+        self.assertIsNone(nested_model_kwargs["config"])
+        self.assertEqual(nested_model_kwargs["dtype"], torch.bfloat16)
+        self.assertEqual(nested_model_kwargs["subfolder"], "nested")
 
 
 if __name__ == "__main__":

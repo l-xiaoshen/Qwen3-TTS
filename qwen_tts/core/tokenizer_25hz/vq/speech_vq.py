@@ -14,9 +14,13 @@
 # limitations under the License.
 import copy
 import operator
+import os
+from collections.abc import Mapping, Sequence
 from itertools import accumulate
+from typing import Literal, Protocol, cast, overload
 
 import numpy as np
+import numpy.typing as npt
 import onnxruntime
 import sox
 import torch
@@ -24,16 +28,69 @@ import torch.nn.functional as F
 from librosa.filters import mel as librosa_mel_fn
 from torch import Tensor, nn
 from torchaudio.compliance import kaldi
+from typing_extensions import override
 
 from .core_vq import DistributedGroupResidualVectorQuantization
-from .whisper_encoder import Conv1d, ConvTranspose1d, WhisperEncoder
+from .whisper_encoder import (
+    Conv1d,
+    ConvTranspose1d,
+    ResidualAttentionBlock,
+    WhisperEncoder,
+)
+
+NumpyArray = npt.NDArray[np.generic]
 
 
-def dynamic_range_compression_torch(x, C=1, clip_val=1e-5):
+class _OnnxInput(Protocol):
+    name: str
+
+
+class _OnnxGraphOptimizationLevel(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def value(self) -> int: ...
+
+
+class _OnnxGraphOptimizationLevels(Protocol):
+    ORT_ENABLE_ALL: _OnnxGraphOptimizationLevel
+
+
+class _OnnxSessionOptions(Protocol):
+    graph_optimization_level: _OnnxGraphOptimizationLevel
+    intra_op_num_threads: int
+
+
+class _OnnxSessionOptionsFactory(Protocol):
+    def __call__(self) -> _OnnxSessionOptions: ...
+
+
+class _OnnxSession(Protocol):
+    def get_inputs(self) -> Sequence[_OnnxInput]: ...
+
+    def run(
+        self,
+        output_names: Sequence[str] | None,
+        input_feed: Mapping[str, NumpyArray],
+    ) -> Sequence[object]: ...
+
+
+class _SoxTransformer(Protocol):
+    def norm(self, db_level: float) -> None: ...
+
+    def build_array(
+        self, *, input_array: NumpyArray, sample_rate_in: int
+    ) -> NumpyArray: ...
+
+
+def dynamic_range_compression_torch(
+    x: torch.Tensor, C: float = 1, clip_val: float = 1e-5
+) -> torch.Tensor:
     return torch.log(torch.clamp(x, min=clip_val) * C)
 
 
-def spectral_normalize_torch(magnitudes):
+def spectral_normalize_torch(magnitudes: torch.Tensor) -> torch.Tensor:
     output = dynamic_range_compression_torch(magnitudes)
     return output
 
@@ -58,17 +115,17 @@ class MelSpectrogramFeatures(nn.Module):
 
     def __init__(
         self,
-        filter_length=1024,
-        hop_length=160,
-        win_length=640,
-        n_mel_channels=80,
-        mel_fmin=0,
-        mel_fmax=8000,
-        sampling_rate=16000,
-        sampling_rate_org=None,
-        padding="center",
-        use_db=False,
-    ):
+        filter_length: int = 1024,
+        hop_length: int = 160,
+        win_length: int = 640,
+        n_mel_channels: int = 80,
+        mel_fmin: float = 0,
+        mel_fmax: float = 8000,
+        sampling_rate: int = 16000,
+        sampling_rate_org: int | None = None,
+        padding: Literal["center", "same"] = "center",
+        use_db: bool = False,
+    ) -> None:
         super().__init__()
         if padding not in ["center", "same"]:
             raise ValueError("Padding must be 'center' or 'same'.")
@@ -84,19 +141,21 @@ class MelSpectrogramFeatures(nn.Module):
         self.sampling_rate_org = (
             sampling_rate_org if sampling_rate_org is not None else sampling_rate
         )
-        self.mel_basis = {}
-        self.hann_window = {}
+        self.mel_basis: dict[str, torch.Tensor] = {}
+        self.hann_window: dict[str, torch.Tensor] = {}
 
-    def forward(self, audio: torch.Tensor, **kwargs) -> torch.Tensor:
+    @override
+    def forward(self, audio: torch.Tensor, **kwargs: object) -> torch.Tensor:
         with torch.no_grad():
             feats = self.extract(audio, **kwargs)
         return feats
 
-    def extract(self, audio, **kwargs):
+    def extract(self, audio: torch.Tensor, **kwargs: object) -> torch.Tensor:
 
         if len(audio.shape) == 3:
             audio = audio.squeeze(1) if audio.shape[1] == 1 else audio.squeeze(2)
-        assert len(audio.shape) == 2
+        if audio.ndim != 2:
+            raise ValueError("Mel extraction expects a two-dimensional audio batch.")
 
         y = audio
         if len(list(self.mel_basis.keys())) == 0:
@@ -148,19 +207,28 @@ class MelSpectrogramFeatures(nn.Module):
 
 
 class XVectorExtractor(nn.Module):
-    def __init__(self, audio_codec_with_xvector):
+    def __init__(self, audio_codec_with_xvector: str | os.PathLike[str]) -> None:
         super().__init__()
-        option = onnxruntime.SessionOptions()  # type: ignore[possibly-missing-attribute]
-        option.graph_optimization_level = (
-            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL  # type: ignore[possibly-missing-attribute]
+        session_options_factory = cast(
+            _OnnxSessionOptionsFactory,
+            vars(onnxruntime)["SessionOptions"],
         )
+        graph_optimization_levels = cast(
+            _OnnxGraphOptimizationLevels,
+            vars(onnxruntime)["GraphOptimizationLevel"],
+        )
+        option = session_options_factory()
+        option.graph_optimization_level = graph_optimization_levels.ORT_ENABLE_ALL
         option.intra_op_num_threads = 1
         providers = ["CPUExecutionProvider"]
-        self.ort_session = onnxruntime.InferenceSession(
-            audio_codec_with_xvector, sess_options=option, providers=providers
+        self.ort_session = cast(
+            _OnnxSession,
+            onnxruntime.InferenceSession(
+                audio_codec_with_xvector, sess_options=option, providers=providers
+            ),
         )
 
-        self.tfm = sox.Transformer()
+        self.tfm = cast(_SoxTransformer, sox.Transformer())
         self.tfm.norm(db_level=-6)
 
         self.mel_ext = MelSpectrogramFeatures(
@@ -173,7 +241,7 @@ class XVectorExtractor(nn.Module):
             sampling_rate=16000,
         )
 
-    def extract_code(self, audio):
+    def extract_code(self, audio: NumpyArray) -> tuple[NumpyArray, NumpyArray]:
         with torch.no_grad():
             norm_audio = self.sox_norm(audio)
 
@@ -182,27 +250,35 @@ class XVectorExtractor(nn.Module):
                 norm_audio, num_mel_bins=80, dither=0, sample_frequency=16000
             )
             feat = feat - feat.mean(dim=0, keepdim=True)
-            ort_output = self.ort_session.run(
+            ort_outputs = self.ort_session.run(
                 None,
                 {
                     self.ort_session.get_inputs()[0].name: feat.unsqueeze(dim=0)
                     .cpu()
                     .numpy()
                 },
-            )[0]
-            norm_embedding = np.asarray(ort_output).flatten()
+            )
+            if not ort_outputs:
+                raise TypeError("ONNX x-vector inference returned an invalid result.")
+            norm_embedding = np.asarray(ort_outputs[0])
+            if not np.issubdtype(norm_embedding.dtype, np.number):
+                raise TypeError("ONNX x-vector inference must return numeric values.")
+            norm_embedding = norm_embedding.flatten()
             norm_embedding = F.normalize(torch.from_numpy(norm_embedding), dim=0)
 
             ref_mel = self.mel_ext.extract(audio=norm_audio)
 
         return norm_embedding.numpy(), ref_mel.permute(0, 2, 1).squeeze(0).numpy()
 
-    def sox_norm(self, audio):
+    def sox_norm(self, audio: NumpyArray) -> NumpyArray:
         wav_norm = self.tfm.build_array(input_array=audio, sample_rate_in=16000)
         return wav_norm
 
 
-class WhisperEncoderVQ(WhisperEncoder):
+WhisperEncoderVQOutput = tuple[Tensor, Tensor] | tuple[Tensor, dict[str, Tensor]]
+
+
+class WhisperEncoderVQ(WhisperEncoder[WhisperEncoderVQOutput]):
     def __init__(
         self,
         n_mels: int,
@@ -226,7 +302,7 @@ class WhisperEncoderVQ(WhisperEncoder):
         audio_vq_threshold_ema_dead_code: float = 0.1,
         audio_vq_codebook_dim: int | None = None,
         audio_vq_ds_rate: int | None = None,
-    ):
+    ) -> None:
         super().__init__(
             n_mels,
             n_ctx,
@@ -241,7 +317,6 @@ class WhisperEncoderVQ(WhisperEncoder):
         )
 
         self.audio_vq_layers = audio_vq_layers
-        self.audio_vq_type = audio_vq_type
         self.audio_vq_codebook_size = audio_vq_codebook_size
         self.audio_vq_pe = audio_vq_pe
         self.audio_vq_commit_loss = audio_vq_commit_loss
@@ -249,7 +324,7 @@ class WhisperEncoderVQ(WhisperEncoder):
         self.audio_vq_no_quantize = audio_vq_no_quantize
         self.audio_vq_ff_layer = audio_vq_ff_layer
 
-        if audio_vq_layers > 0:
+        if 0 < audio_vq_layers <= n_layer:
             self.vq_feature_dim = self.n_state
             self.audio_vq_ds_rate = 1
         else:
@@ -261,7 +336,10 @@ class WhisperEncoderVQ(WhisperEncoder):
             self.audio_vq_downsample = nn.Identity()
             self.audio_vq_upsample = nn.Identity()
         else:
-            assert audio_vq_ds_rate % self.audio_vq_ds_rate == 0
+            if audio_vq_ds_rate % self.audio_vq_ds_rate != 0:
+                raise ValueError(
+                    "`audio_vq_ds_rate` must be divisible by the encoder VQ rate."
+                )
             stride = audio_vq_ds_rate // self.audio_vq_ds_rate
             self.audio_vq_downsample = Conv1d(
                 self.vq_feature_dim,
@@ -277,60 +355,63 @@ class WhisperEncoderVQ(WhisperEncoder):
             )
             self.audio_vq_ds_rate = audio_vq_ds_rate
 
-        if audio_vq_type == "GRVQ":
-            self.audio_quantizer = DistributedGroupResidualVectorQuantization(
-                codebook_size=audio_vq_codebook_size,
-                dim=self.vq_feature_dim,
-                codebook_dim=self.vq_codebook_dim
-                if audio_vq_codebook_dim is None
-                else audio_vq_codebook_dim,
-                num_groups=1,
-                num_quantizers=1,
-                kmeans_init=False,
-                threshold_ema_dead_code=audio_vq_threshold_ema_dead_code,
-            )
-        else:
+        if audio_vq_type != "GRVQ":
             raise ValueError(f"Unsupported audio_vq_type: {audio_vq_type}")
+        self.audio_vq_type: Literal["GRVQ"] = "GRVQ"
+        self.audio_quantizer = DistributedGroupResidualVectorQuantization(
+            codebook_size=audio_vq_codebook_size,
+            dim=self.vq_feature_dim,
+            codebook_dim=audio_vq_codebook_dim,
+            num_groups=1,
+            num_quantizers=1,
+            kmeans_init=False,
+            threshold_ema_dead_code=audio_vq_threshold_ema_dead_code,
+        )
 
+        self.project_after_vq_pe: nn.Linear | None = None
         if self.audio_vq_pe:
             self.project_after_vq_pe = nn.Linear(self.n_state, self.n_state)
 
-    def _calc_quantize_activities(self, indices):
+    def _calc_quantize_activities(
+        self, indices: torch.Tensor
+    ) -> dict[str, torch.Tensor]:
         indices_onehot = F.one_hot(
             indices.long().flatten(), self.audio_vq_codebook_size
         ).sum(dim=0)
-        vq_num_activities = sum(indices_onehot > 0)
-        vq_num_tokens = sum(indices_onehot)
+        vq_num_activities = (indices_onehot > 0).sum()
+        vq_num_tokens = indices_onehot.sum()
         return {
             "vq_num_activities": vq_num_activities,
             "vq_num_tokens": vq_num_tokens,
         }
 
-    def _do_quantize(self, x: torch.Tensor, pe: torch.Tensor | None = None, y=None):
+    def _do_quantize(
+        self,
+        x: torch.Tensor,
+        pe: torch.Tensor | None = None,
+        y: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         """
         x: torch.Tensor, shape = (T, D)
         q: torch.Tensor, shape = (T, D)
         i: torch.Tensor, shape = (T)
         """
-        if self.audio_vq_out_commit_loss > 0:
-            x_teacher = x.clone()
+        x_teacher = x.clone() if self.audio_vq_out_commit_loss > 0 else None
         x = x.unsqueeze(0)
 
-        x = self.audio_vq_downsample(x.transpose(1, 2))
+        x = cast(torch.Tensor, self.audio_vq_downsample(x.transpose(1, 2)))
         x = x.transpose(1, 2)
 
-        vq_stats = {}
+        vq_stats: dict[str, torch.Tensor] = {}
 
-        if self.audio_vq_type == "GRVQ":
-            if self.training:
-                raise RuntimeError(
-                    "Training mode quantization is not supported for this VQ path. "
-                    "Use eval mode for inference."
-                )
-            else:
-                indices = self.audio_quantizer.encode(x)
-                x = self.audio_quantizer.decode(indices)
-                indices = indices.squeeze(2).squeeze(1)
+        if self.training:
+            raise RuntimeError(
+                "Training mode quantization is not supported for this VQ path. "
+                "Use eval mode for inference."
+            )
+        indices = self.audio_quantizer.encode(x)
+        x = self.audio_quantizer.decode(indices)
+        indices = indices.squeeze(2).squeeze(1)
 
         vq_stats.update(self._calc_quantize_activities(indices))
 
@@ -339,12 +420,13 @@ class WhisperEncoderVQ(WhisperEncoder):
             if pe is None:
                 raise ValueError("`pe` must be provided when `audio_vq_pe` is enabled.")
             x = x + pe
-            x = self.project_after_vq_pe(x)
+            project_after_vq_pe = cast(nn.Linear, self.project_after_vq_pe)
+            x = cast(torch.Tensor, project_after_vq_pe(x))
 
-        x = self.audio_vq_upsample(x.unsqueeze(0).transpose(1, 2))
+        x = cast(torch.Tensor, self.audio_vq_upsample(x.unsqueeze(0).transpose(1, 2)))
         x = x.transpose(1, 2).squeeze(0)
 
-        if self.audio_vq_out_commit_loss > 0:
+        if x_teacher is not None:
             vq_out_commit_loss = F.mse_loss(x_teacher.detach(), x)
             vq_stats["vq_out_commit_loss"] = (
                 vq_out_commit_loss * self.audio_vq_out_commit_loss
@@ -352,28 +434,58 @@ class WhisperEncoderVQ(WhisperEncoder):
 
         return x, indices, vq_stats
 
+    @overload
     def forward(
         self,
         x_list: list[Tensor],
         audio_mellens: list[int],
         audio_aftercnnlens: list[int],
         audio_seqlens: list[int],
-        return_indices=False,
-        audio_pitchs=None,
-    ):
+        return_indices: Literal[True],
+        audio_pitchs: list[Tensor] | None = None,
+    ) -> tuple[Tensor, Tensor]: ...
+
+    @overload
+    def forward(
+        self,
+        x_list: list[Tensor],
+        audio_mellens: list[int],
+        audio_aftercnnlens: list[int],
+        audio_seqlens: list[int],
+        return_indices: Literal[False] = False,
+        audio_pitchs: list[Tensor] | None = None,
+    ) -> tuple[Tensor, dict[str, Tensor]]: ...
+
+    @overload
+    def forward(
+        self,
+        x_list: list[Tensor],
+        audio_mellens: list[int],
+        audio_aftercnnlens: list[int],
+        audio_seqlens: list[int],
+        return_indices: bool,
+        audio_pitchs: list[Tensor] | None = None,
+    ) -> WhisperEncoderVQOutput: ...
+
+    @override
+    def forward(
+        self,
+        x_list: list[Tensor],
+        audio_mellens: list[int],
+        audio_aftercnnlens: list[int],
+        audio_seqlens: list[int],
+        return_indices: bool = False,
+        audio_pitchs: list[Tensor] | None = None,
+    ) -> WhisperEncoderVQOutput:
         """
         x : torch.Tensor, shape = (n_mels, n_ctx)
             the mel spectrogram of the audio
         """
 
         positional_embedding = self.positional_embedding
-        if not isinstance(positional_embedding, torch.Tensor):
-            raise RuntimeError("`positional_embedding` is not initialized as a tensor.")
         audio_vq_ds_rate = self.audio_vq_ds_rate
-        if not isinstance(audio_vq_ds_rate, int):
-            raise RuntimeError("`audio_vq_ds_rate` must be an integer.")
-        aftercnn_x_list = []
-        pe_for_vq_list = []
+        aftercnn_x_list: list[torch.Tensor] = []
+        pe_for_vq_list: list[torch.Tensor] = []
         for each_x in x_list:
             each_x_split_list = each_x.split(self.n_window * 2, dim=1)
             for each_x_split in each_x_split_list:
@@ -397,7 +509,7 @@ class WhisperEncoderVQ(WhisperEncoder):
         pe_for_vq = torch.cat(pe_for_vq_list, dim=0)
         x = torch.cat(aftercnn_x_list, dim=0)
 
-        output_list = []
+        output_list: list[int] = []
         for item in audio_aftercnnlens:
             while item > self.n_window:
                 output_list.append(self.n_window)
@@ -407,23 +519,30 @@ class WhisperEncoderVQ(WhisperEncoder):
         cu_seqlens = list(accumulate(output_list, func=operator.add, initial=0))
         cu_seqlens = torch.Tensor(cu_seqlens).to(device=x.device, dtype=torch.int32)
 
-        for layer_id, block in enumerate(self.blocks, start=1):
+        blocks = list(self.blocks)
+        vq_layer_index = self.audio_vq_layers - 1
+        for block_module in blocks[:vq_layer_index]:
+            block = cast(ResidualAttentionBlock, block_module)
             x = block(x, cu_seqlens=cu_seqlens)
 
-            if self.audio_vq_layers == layer_id:  # vq inside encoder
-                x, indices, vq_stats = self._do_quantize(x, pe_for_vq)
-                if return_indices:
-                    return x, indices
+        vq_block = cast(ResidualAttentionBlock, blocks[vq_layer_index])
+        x = vq_block(x, cu_seqlens=cu_seqlens)
+        x, indices, vq_stats = self._do_quantize(x, pe_for_vq)
+        if return_indices:
+            return x, indices
 
-        if self.avg_pooler:
-            x_list = x.split(audio_aftercnnlens, dim=0)
-            token_x_list = []
-            for x in x_list:
-                x = x.permute(1, 0)
-                x = self.avg_pooler(x)
-                x = x.permute(1, 0)
-                token_x_list.append(x)
-            x = torch.cat(token_x_list, dim=0)
+        for block_module in blocks[vq_layer_index + 1 :]:
+            block = cast(ResidualAttentionBlock, block_module)
+            x = block(x, cu_seqlens=cu_seqlens)
+
+        pooled_x_list = x.split(audio_aftercnnlens, dim=0)
+        token_x_list: list[torch.Tensor] = []
+        for pooled_x in pooled_x_list:
+            pooled_x = pooled_x.permute(1, 0)
+            pooled_x = self.avg_pooler(pooled_x)
+            pooled_x = pooled_x.permute(1, 0)
+            token_x_list.append(pooled_x)
+        x = torch.cat(token_x_list, dim=0)
 
         x = self.ln_post(x)
 
@@ -454,6 +573,4 @@ class WhisperEncoderVQ(WhisperEncoder):
         output[end_ids] = self.audio_bos_eos_token.weight[1].to(x.dtype)
         output[audio_tokens_mask] = x
 
-        if self.audio_vq_type != "NULL":
-            return output, vq_stats
-        return output
+        return output, vq_stats
