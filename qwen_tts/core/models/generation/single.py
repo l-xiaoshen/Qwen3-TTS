@@ -92,8 +92,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, bool]:
         if len(talker_input_embeds) == 0:
             raise RuntimeError(
@@ -125,15 +123,13 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             ),
             repetition_penalty=repetition_penalty,
             suppress_tokens=suppress_tokens,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
+            output_hidden_states=True,
+            return_dict_in_generate=True,
         )
 
         hidden_states = getattr(talker_result, "hidden_states", None)
         if not isinstance(hidden_states, Sequence):
-            raise RuntimeError(
-                "Talker generate output does not contain `hidden_states`."
-            )
+            raise TypeError("Talker generate output does not contain `hidden_states`.")
 
         talker_code_steps: list[torch.Tensor] = []
         talker_hidden_steps: list[torch.Tensor] = []
@@ -210,8 +206,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embeds: list[torch.Tensor] = []
         self._append_instruct_embed_block(talker_input_embeds, instruct_id)
@@ -230,8 +224,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
         return talker_codes, talker_hidden_states
 
@@ -248,16 +240,9 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (len(input_ids) == len(instruct_ids) == len(prepared_prompts) != 0):
             raise ValueError("Structured generation turn counts must match.")
-        if not output_hidden_states or not return_dict_in_generate:
-            raise ValueError(
-                "Structured generation requires `output_hidden_states=True` and "
-                "`return_dict_in_generate=True`."
-            )
 
         history_embeddings: list[torch.Tensor] = []
         talker_codes_list: list[torch.Tensor] = []
@@ -285,8 +270,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
                     subtalker_configuration=subtalker_configuration,
                     eos_token_id=eos_token_id,
                     repetition_penalty=repetition_penalty,
-                    output_hidden_states=output_hidden_states,
-                    return_dict_in_generate=return_dict_in_generate,
                 )
             )
             talker_codes_list.append(talker_codes)
@@ -337,8 +320,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         prepared_prompts = [
             self._prepare_standard_generation(
@@ -361,8 +342,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     def _generate_voice_clone_turns_from_ids(
@@ -383,8 +362,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         prepared_prompts = [
             self._prepare_voice_clone_generation(
@@ -410,8 +387,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     def _generate_standard_from_ids(
@@ -429,8 +404,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_standard_generation(
@@ -453,8 +426,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     def _generate_voice_clone_from_ids(
@@ -475,8 +446,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         talker_input_embed, trailing_text_hidden, tts_pad_embed = (
             self._prepare_voice_clone_generation(
@@ -502,8 +471,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
 

@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Protocol
+from typing import Literal, Protocol, overload
 
 import numpy as np
 import torch
@@ -23,12 +23,14 @@ from ..core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Config,
 )
 from ..core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    Qwen3TTSTokenizerV2EncoderOutput,
     Qwen3TTSTokenizerV2Model,
 )
 from ..core.tokenizer_25hz.configuration_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Config,
 )
 from ..core.tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import (
+    Qwen3TTSTokenizerV1EncoderOutput,
     Qwen3TTSTokenizerV1Model,
 )
 from .qwen3_tts_tokenizer_audio_mixin import Qwen3TTSTokenizerAudioMixin
@@ -55,6 +57,17 @@ class _TokenizerFeatureExtractor(Protocol):
 
 
 TokenizerModel = Qwen3TTSTokenizerV1Model | Qwen3TTSTokenizerV2Model
+TokenizerEncoderOutput = (
+    Qwen3TTSTokenizerV1EncoderOutput | Qwen3TTSTokenizerV2EncoderOutput
+)
+TokenizerEncoderTuple = (
+    tuple[list[torch.LongTensor]]
+    | tuple[
+        list[torch.LongTensor],
+        list[torch.FloatTensor],
+        list[torch.FloatTensor],
+    ]
+)
 
 
 class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixin):
@@ -135,12 +148,31 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
 
         return inst
 
+    @overload
     def encode(
         self,
         audios: AudioInput,
         sr: int | None = None,
+        *,
+        return_dict: Literal[True] = True,
+    ) -> TokenizerEncoderOutput: ...
+
+    @overload
+    def encode(
+        self,
+        audios: AudioInput,
+        sr: int | None = None,
+        *,
+        return_dict: Literal[False],
+    ) -> TokenizerEncoderTuple: ...
+
+    def encode(
+        self,
+        audios: AudioInput,
+        sr: int | None = None,
+        *,
         return_dict: bool = True,
-    ):
+    ) -> TokenizerEncoderOutput | TokenizerEncoderTuple:
         """
         Batch-encode audio into discrete codes (and optional conditioning, depending on 25Hz/12Hz).
 

@@ -160,6 +160,23 @@ turn_wavs, sr = tts.generate_custom_voice(
 )
 ```
 
+### Generation controls
+
+All single and batch generation methods expose the same closed set of keyword-only controls: `do_sample`, `top_k`, `top_p`, `temperature`, `repetition_penalty`, `subtalker_configuration`, `max_new_tokens`, and `eos_token_id`. Omitting a sampling override, or passing `None`, uses the checkpoint's `generation_config.json` value and then the library fallback when the checkpoint does not define one. `eos_token_id=None` uses the model's codec EOS token.
+
+```python
+turn_wavs, sr = tts.generate_custom_voice(
+    tts_input=[{"text": text, "instruction": ""}],
+    speaker={"Vivian": 1.0},
+    top_k=40,
+    temperature=0.8,
+    subtalker_configuration={"top_k": 20, "temperature": 0.7},
+    eos_token_id=None,
+)
+```
+
+The signatures do not accept arbitrary generation keywords. Misspelled or unsupported option names therefore fail immediately with Python's standard unexpected-keyword `TypeError` and are visible to static type checkers and IDE completion.
+
 ## Example files
 
 The repository includes the following example flows:

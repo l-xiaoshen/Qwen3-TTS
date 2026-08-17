@@ -6,7 +6,6 @@ import torch
 
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_types import (
-    GenerateConfigPrimitive,
     SubTalkerConfiguration,
     VoiceClonePrompt,
     VoiceClonePromptSingle,
@@ -19,6 +18,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         self,
         input_id: torch.Tensor,
         voice_clone_prompt: VoiceClonePromptSingle,
+        *,
         instruct_id: torch.Tensor | None = None,
         ref_id: torch.Tensor | None = None,
         language: str = "Auto",
@@ -32,9 +32,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
-        output_hidden_states: bool = True,
-        return_dict_in_generate: bool = True,
-        **kwargs: GenerateConfigPrimitive,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         input_id = self._validate_input_id(input_id)
         instruct_id = self._normalize_instruct_id(instruct_id)
@@ -42,8 +39,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         language = self._normalize_language(language)
         speaker = self._normalize_speaker(speaker)
         self._validate_voice_clone_prompt(voice_clone_prompt)
-        if len(kwargs) != 0:
-            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_id = self._resolve_language_id(language, speaker)
         voice_clone_spk_embed = self.generate_speaker_prompt(
@@ -69,8 +64,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     @torch.no_grad()
@@ -78,6 +71,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         self,
         input_ids: list[torch.Tensor],
         voice_clone_prompt: VoiceClonePromptSingle,
+        *,
         instruct_ids: Sequence[torch.Tensor | None] = (),
         ref_id: torch.Tensor | None = None,
         language: str = "Auto",
@@ -91,9 +85,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
-        output_hidden_states: bool = True,
-        return_dict_in_generate: bool = True,
-        **kwargs: GenerateConfigPrimitive,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         input_ids = [
             self._validate_input_id(input_id)
@@ -109,8 +100,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         language = self._normalize_language(language)
         speaker = self._normalize_speaker(speaker)
         self._validate_voice_clone_prompt(voice_clone_prompt)
-        if len(kwargs) != 0:
-            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_id = self._resolve_language_id(language, speaker)
         voice_clone_spk_embed = self.generate_speaker_prompt(
@@ -136,8 +125,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     @torch.no_grad()
@@ -145,6 +132,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         self,
         input_ids: list[torch.Tensor],
         voice_clone_prompt: VoiceClonePrompt,
+        *,
         instruct_ids: Sequence[torch.Tensor | None] = (),
         ref_ids: Sequence[torch.Tensor | None] = (),
         languages: Sequence[str] = (),
@@ -158,9 +146,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
-        output_hidden_states: bool = True,
-        return_dict_in_generate: bool = True,
-        **kwargs: GenerateConfigPrimitive,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         input_ids = self._validate_input_ids_batch(input_ids)
         batch_size = len(input_ids)
@@ -169,8 +154,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         languages = self._normalize_languages_batch(languages, batch_size)
         speakers = self._normalize_speakers_batch(speakers, batch_size)
         self._validate_voice_clone_prompt_batch(voice_clone_prompt, batch_size)
-        if len(kwargs) != 0:
-            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
 
         language_ids = [
             self._resolve_language_id(language, speaker)
@@ -204,8 +187,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
 

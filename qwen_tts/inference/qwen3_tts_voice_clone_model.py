@@ -26,7 +26,6 @@ from ..core.models import (
 )
 from .qwen3_tts_base_model import (
     AudioLike,
-    GenerateExtraArg,
     Qwen3TTSBaseModel,
     TTSBatchInput,
     TTSInput,
@@ -305,6 +304,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     def generate_voice_clone(
         self,
         tts_input: TTSInput,
+        *,
         language: str = "Auto",
         ref_audio: AudioLike | None = None,
         ref_text: str = "",
@@ -313,14 +313,14 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         | VoiceClonePromptItem
         | None = None,
         non_streaming_mode: bool = False,
-        do_sample: bool = True,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.05,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
         subtalker_configuration: SubTalkerConfiguration | None = None,
-        max_new_tokens: int = 2048,
-        **kwargs: GenerateExtraArg,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
     ) -> tuple[list[np.ndarray], int]:
         """
         Voice clone one assistant waveform per turn in a shared Base-model context.
@@ -371,7 +371,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
         ref_id = self._tokenize_ref_text(ref_text_for_id)
 
-        gen_kwargs = self._merge_generate_kwargs(
+        generation_options = self._resolve_generation_options(
             do_sample=do_sample,
             top_k=top_k,
             top_p=top_p,
@@ -379,7 +379,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             repetition_penalty=repetition_penalty,
             subtalker_configuration=subtalker_configuration,
             max_new_tokens=max_new_tokens,
-            **kwargs,
+            eos_token_id=eos_token_id,
         )
 
         talker_codes_list, _ = self.model.generate_voice_clone_turns(
@@ -389,7 +389,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             voice_clone_prompt=voice_clone_prompt_single,
             language=language_value,
             non_streaming_mode=non_streaming_mode,
-            **gen_kwargs,
+            **generation_options,
         )
 
         return self._decode_talker_turns(
@@ -405,6 +405,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
     def generate_voice_clone_batch(
         self,
         tts_input: TTSBatchInput,
+        *,
         language: StringBatchInput = (),
         ref_audio: AudioBatchInput | None = None,
         ref_text: StringBatchInput = (),
@@ -413,14 +414,14 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         | list[VoiceClonePromptItem]
         | None = None,
         non_streaming_mode: bool = False,
-        do_sample: bool = True,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.05,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
         subtalker_configuration: SubTalkerConfiguration | None = None,
-        max_new_tokens: int = 2048,
-        **kwargs: GenerateExtraArg,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
     ) -> tuple[list[list[np.ndarray]], int]:
         """
         Voice clone batched shared-context turns.
@@ -502,7 +503,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                     f"Bad index={index}"
                 )
 
-        gen_kwargs = self._merge_generate_kwargs(
+        generation_options = self._resolve_generation_options(
             do_sample=do_sample,
             top_k=top_k,
             top_p=top_p,
@@ -510,7 +511,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             repetition_penalty=repetition_penalty,
             subtalker_configuration=subtalker_configuration,
             max_new_tokens=max_new_tokens,
-            **kwargs,
+            eos_token_id=eos_token_id,
         )
 
         wavs_by_input: list[list[np.ndarray]] = []
@@ -537,7 +538,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
                 voice_clone_prompt=prompt,
                 language=language_value,
                 non_streaming_mode=non_streaming_mode,
-                **gen_kwargs,
+                **generation_options,
             )
             wavs, fs = self._decode_talker_turns(
                 talker_codes_list,

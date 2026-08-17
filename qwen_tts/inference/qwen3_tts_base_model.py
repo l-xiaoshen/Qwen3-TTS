@@ -48,12 +48,8 @@ class TTSInputItem(TypedDict):
 TTSInput = list[TTSInputItem] | tuple[TTSInputItem, ...]
 TTSBatchInput = list[TTSInput] | tuple[TTSInput, ...]
 
-GenerateDefaultValue = bool | int | float | SubTalkerConfiguration
-GenerateDefaults = dict[str, GenerateDefaultValue]
-GenerateExtraArg = bool | int | float | str
 
-
-class GenerateOptions(TypedDict):
+class GenerationDefaults(TypedDict, total=False):
     do_sample: bool
     top_k: int
     top_p: float
@@ -63,10 +59,15 @@ class GenerateOptions(TypedDict):
     max_new_tokens: int
 
 
-class GenerateOptionsExtended(GenerateOptions, total=False):
-    eos_token_id: int
-    output_hidden_states: bool
-    return_dict_in_generate: bool
+class ResolvedGenerationOptions(TypedDict):
+    do_sample: bool
+    top_k: int
+    top_p: float
+    temperature: float
+    repetition_penalty: float
+    subtalker_configuration: SubTalkerConfiguration
+    max_new_tokens: int
+    eos_token_id: int | None
 
 
 class Qwen3TTSBaseModel:
@@ -87,7 +88,7 @@ class Qwen3TTSBaseModel:
         self,
         model: Qwen3TTSConditionalGenerationBase,
         processor: Qwen3TTSProcessor,
-        generate_defaults: GenerateDefaults | None = None,
+        generate_defaults: GenerationDefaults | None = None,
     ):
         self.model = model
         self.processor = processor
@@ -145,7 +146,7 @@ class Qwen3TTSBaseModel:
         )
 
         generate_defaults_raw = model.generate_config
-        generate_defaults: GenerateDefaults | None
+        generate_defaults: GenerationDefaults | None
         if isinstance(generate_defaults_raw, Mapping):
             generate_defaults = cls._parse_generate_defaults(generate_defaults_raw)
         else:
@@ -169,6 +170,8 @@ class Qwen3TTSBaseModel:
             v = langs()
             if v is None:
                 return None
+            if not isinstance(v, Sequence) or isinstance(v, (str, bytes)):
+                raise TypeError("Model-supported languages must be a sequence.")
             return {str(x).lower() for x in v}
         return None
 
@@ -178,6 +181,8 @@ class Qwen3TTSBaseModel:
             v = spks()
             if v is None:
                 return None
+            if not isinstance(v, Sequence) or isinstance(v, (str, bytes)):
+                raise TypeError("Model-supported speakers must be a sequence.")
             return {str(x).lower() for x in v}
         return None
 
@@ -486,54 +491,88 @@ class Qwen3TTSBaseModel:
     @classmethod
     def _parse_generate_defaults(
         cls,
-        generate_defaults: Mapping[object, object] | None,
-    ) -> GenerateDefaults | None:
+        generate_defaults: Mapping[str, object] | None,
+    ) -> GenerationDefaults | None:
         if generate_defaults is None:
             return None
 
-        parsed_generate_defaults: GenerateDefaults = {}
-        for key, value in generate_defaults.items():
-            str_key = str(key)
-            if isinstance(value, (bool, int, float)):
-                parsed_generate_defaults[str_key] = value
-            elif str_key == "subtalker_configuration":
-                if value is None:
-                    continue
-                if not isinstance(value, Mapping):
-                    raise TypeError(
-                        "`generate_defaults['subtalker_configuration']` must be a mapping."
-                    )
-                parsed_generate_defaults[str_key] = cls._parse_subtalker_configuration(
-                    cast(Mapping[object, object], value)
+        parsed_generate_defaults = GenerationDefaults()
+
+        do_sample = generate_defaults.get("do_sample")
+        if do_sample is not None:
+            if not isinstance(do_sample, bool):
+                raise TypeError("`generate_defaults['do_sample']` must be a boolean.")
+            parsed_generate_defaults["do_sample"] = do_sample
+
+        for key in ("top_k", "max_new_tokens"):
+            value = generate_defaults.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(f"`generate_defaults[{key!r}]` must be an integer.")
+            if key == "top_k":
+                parsed_generate_defaults["top_k"] = value
+            else:
+                parsed_generate_defaults["max_new_tokens"] = value
+
+        for key in ("top_p", "temperature", "repetition_penalty"):
+            value = generate_defaults.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise TypeError(f"`generate_defaults[{key!r}]` must be numeric.")
+            if key == "top_p":
+                parsed_generate_defaults["top_p"] = float(value)
+            elif key == "temperature":
+                parsed_generate_defaults["temperature"] = float(value)
+            else:
+                parsed_generate_defaults["repetition_penalty"] = float(value)
+
+        subtalker_configuration = generate_defaults.get("subtalker_configuration")
+        if subtalker_configuration is not None:
+            if not isinstance(subtalker_configuration, Mapping):
+                raise TypeError(
+                    "`generate_defaults['subtalker_configuration']` must be a mapping."
                 )
+            parsed_generate_defaults["subtalker_configuration"] = (
+                cls._parse_subtalker_configuration(
+                    cast(Mapping[object, object], subtalker_configuration)
+                )
+            )
         return parsed_generate_defaults
 
     def _normalize_generate_defaults(
         self,
-        generate_defaults: GenerateDefaults | None,
-    ) -> GenerateDefaults:
-        normalized_generate_defaults: GenerateDefaults = {}
+        generate_defaults: GenerationDefaults | None,
+    ) -> GenerationDefaults:
+        normalized_generate_defaults = GenerationDefaults()
         if generate_defaults is None:
             return normalized_generate_defaults
 
-        for key, value in generate_defaults.items():
-            if key == "subtalker_configuration":
-                if not isinstance(value, dict):
-                    raise TypeError(
-                        "`generate_defaults['subtalker_configuration']` must be a SubTalkerConfiguration."
-                    )
-                normalized_generate_defaults[key] = (
-                    self._normalize_subtalker_configuration(
-                        cast(SubTalkerConfiguration, value)
-                    )
+        if "do_sample" in generate_defaults:
+            normalized_generate_defaults["do_sample"] = generate_defaults["do_sample"]
+        if "top_k" in generate_defaults:
+            normalized_generate_defaults["top_k"] = generate_defaults["top_k"]
+        if "top_p" in generate_defaults:
+            normalized_generate_defaults["top_p"] = generate_defaults["top_p"]
+        if "temperature" in generate_defaults:
+            normalized_generate_defaults["temperature"] = generate_defaults[
+                "temperature"
+            ]
+        if "repetition_penalty" in generate_defaults:
+            normalized_generate_defaults["repetition_penalty"] = generate_defaults[
+                "repetition_penalty"
+            ]
+        if "max_new_tokens" in generate_defaults:
+            normalized_generate_defaults["max_new_tokens"] = generate_defaults[
+                "max_new_tokens"
+            ]
+        if "subtalker_configuration" in generate_defaults:
+            normalized_generate_defaults["subtalker_configuration"] = (
+                self._normalize_subtalker_configuration(
+                    generate_defaults["subtalker_configuration"]
                 )
-            elif isinstance(value, (bool, int, float)):
-                normalized_generate_defaults[key] = value
-            else:
-                raise TypeError(
-                    "`generate_defaults` values must be bool, int, float, or "
-                    "`SubTalkerConfiguration`."
-                )
+            )
         return normalized_generate_defaults
 
     def _normalize_subtalker_configuration(
@@ -601,50 +640,22 @@ class Qwen3TTSBaseModel:
             raise RuntimeError("Turn decoding produced no outputs.")
         return turn_wavs, sample_rate
 
-    def _merge_generate_kwargs(
+    def _resolve_generation_options(
         self,
-        do_sample: bool = True,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        temperature: float = 0.9,
-        repetition_penalty: float = 1.05,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
         subtalker_configuration: SubTalkerConfiguration | None = None,
-        max_new_tokens: int = 2048,
-        **kwargs: GenerateExtraArg,
-    ) -> GenerateOptionsExtended:
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
+    ) -> ResolvedGenerationOptions:
         """
-        Merge user-provided generation arguments with defaults from `generate_config.json`.
+        Resolve user overrides against defaults from `generation_config.json`.
         """
         normalized_subtalker_configuration = self._normalize_subtalker_configuration(
             subtalker_configuration
-        )
-
-        unsupported_kwargs = sorted(
-            key
-            for key in kwargs
-            if key
-            not in {
-                "eos_token_id",
-                "output_hidden_states",
-                "return_dict_in_generate",
-            }
-        )
-        if len(unsupported_kwargs) != 0:
-            raise TypeError(f"Unsupported generation kwargs: {unsupported_kwargs}")
-
-        hard_defaults = {
-            "do_sample": True,
-            "top_k": 50,
-            "top_p": 1.0,
-            "temperature": 0.9,
-            "repetition_penalty": 1.05,
-            "max_new_tokens": 2048,
-        }
-        hard_subtalker_defaults = SubTalkerConfiguration(
-            do_sample=True,
-            top_k=50,
-            top_p=1.0,
-            temperature=0.9,
         )
         generate_default_subtalker_configuration_value = self.generate_defaults.get(
             "subtalker_configuration"
@@ -656,102 +667,55 @@ class Qwen3TTSBaseModel:
         else:
             generate_default_subtalker_configuration = SubTalkerConfiguration()
 
-        def pick_bool(name: str, user_val: bool) -> bool:
-            hard_default = bool(hard_defaults[name])
-            if user_val != hard_default:
-                return user_val
-            default_val = self.generate_defaults.get(name)
-            if isinstance(default_val, bool):
-                return default_val
-            return hard_default
-
-        def pick_int(name: str, user_val: int) -> int:
-            hard_default = int(hard_defaults[name])
-            if user_val != hard_default:
-                return user_val
-            default_val = self.generate_defaults.get(name)
-            if isinstance(default_val, int):
-                return default_val
-            return hard_default
-
-        def pick_float(name: str, user_val: float) -> float:
-            hard_default = float(hard_defaults[name])
-            if user_val != hard_default:
-                return float(user_val)
-            default_val = self.generate_defaults.get(name)
-            if isinstance(default_val, (int, float)):
-                return float(default_val)
-            return hard_default
-
-        def pick_subtalker_bool(
-            user_val: bool, default_val: object, hard_default: bool
-        ) -> bool:
-            if user_val != hard_default:
-                return user_val
-            if isinstance(default_val, bool):
-                return default_val
-            return hard_default
-
-        def pick_subtalker_int(
-            user_val: int, default_val: object, hard_default: int
-        ) -> int:
-            if user_val != hard_default:
-                return user_val
-            if isinstance(default_val, int):
-                return default_val
-            return hard_default
-
-        def pick_subtalker_float(
-            user_val: float, default_val: object, hard_default: float
-        ) -> float:
-            if user_val != hard_default:
-                return float(user_val)
-            if isinstance(default_val, (int, float)):
-                return float(default_val)
-            return hard_default
-
         resolved_subtalker_configuration = SubTalkerConfiguration(
-            do_sample=pick_subtalker_bool(
-                normalized_subtalker_configuration.get("do_sample", True),
-                generate_default_subtalker_configuration.get("do_sample"),
-                bool(hard_subtalker_defaults["do_sample"]),
+            do_sample=normalized_subtalker_configuration.get(
+                "do_sample",
+                generate_default_subtalker_configuration.get("do_sample", True),
             ),
-            top_k=pick_subtalker_int(
-                normalized_subtalker_configuration.get("top_k", 50),
-                generate_default_subtalker_configuration.get("top_k"),
-                int(hard_subtalker_defaults["top_k"]),
+            top_k=normalized_subtalker_configuration.get(
+                "top_k",
+                generate_default_subtalker_configuration.get("top_k", 50),
             ),
-            top_p=pick_subtalker_float(
-                float(normalized_subtalker_configuration.get("top_p", 1.0)),
-                generate_default_subtalker_configuration.get("top_p"),
-                float(hard_subtalker_defaults["top_p"]),
+            top_p=normalized_subtalker_configuration.get(
+                "top_p",
+                generate_default_subtalker_configuration.get("top_p", 1.0),
             ),
-            temperature=pick_subtalker_float(
-                float(normalized_subtalker_configuration.get("temperature", 0.9)),
-                generate_default_subtalker_configuration.get("temperature"),
-                float(hard_subtalker_defaults["temperature"]),
+            temperature=normalized_subtalker_configuration.get(
+                "temperature",
+                generate_default_subtalker_configuration.get("temperature", 0.9),
             ),
         )
 
-        merged = GenerateOptionsExtended(
-            do_sample=pick_bool("do_sample", do_sample),
-            top_k=pick_int("top_k", top_k),
-            top_p=pick_float("top_p", top_p),
-            temperature=pick_float("temperature", temperature),
-            repetition_penalty=pick_float("repetition_penalty", repetition_penalty),
+        return ResolvedGenerationOptions(
+            do_sample=(
+                do_sample
+                if do_sample is not None
+                else self.generate_defaults.get("do_sample", True)
+            ),
+            top_k=(
+                top_k if top_k is not None else self.generate_defaults.get("top_k", 50)
+            ),
+            top_p=(
+                top_p if top_p is not None else self.generate_defaults.get("top_p", 1.0)
+            ),
+            temperature=(
+                temperature
+                if temperature is not None
+                else self.generate_defaults.get("temperature", 0.9)
+            ),
+            repetition_penalty=(
+                repetition_penalty
+                if repetition_penalty is not None
+                else self.generate_defaults.get("repetition_penalty", 1.05)
+            ),
             subtalker_configuration=resolved_subtalker_configuration,
-            max_new_tokens=pick_int("max_new_tokens", max_new_tokens),
+            max_new_tokens=(
+                max_new_tokens
+                if max_new_tokens is not None
+                else self.generate_defaults.get("max_new_tokens", 2048)
+            ),
+            eos_token_id=eos_token_id,
         )
-        for key, value in kwargs.items():
-            if key == "eos_token_id":
-                if isinstance(value, int):
-                    merged["eos_token_id"] = value
-            elif key == "output_hidden_states":
-                if isinstance(value, bool):
-                    merged["output_hidden_states"] = value
-            elif key == "return_dict_in_generate" and isinstance(value, bool):
-                merged["return_dict_in_generate"] = value
-        return merged
 
     def get_supported_speakers(self) -> list[str] | None:
         supported = self._supported_speakers_set()

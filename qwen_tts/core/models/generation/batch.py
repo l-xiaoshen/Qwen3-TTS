@@ -24,7 +24,7 @@ from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 from ..modeling_qwen3_tts_types import SubTalkerConfiguration, VoiceClonePrompt
 from .core import Qwen3TTSGenerationCoreMixin
 
-StringBatchInput = list[str] | tuple[str, ...]
+StringBatchInput = Sequence[str]
 
 
 class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
@@ -125,8 +125,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         merged_talker_input_embeds: list[torch.Tensor] = []
         for sample_embeds in talker_input_embeds:
@@ -195,15 +193,13 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             ),
             repetition_penalty=repetition_penalty,
             suppress_tokens=suppress_tokens,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
+            output_hidden_states=True,
+            return_dict_in_generate=True,
         )
 
         hidden_states = getattr(talker_result, "hidden_states", None)
         if not isinstance(hidden_states, Sequence):
-            raise RuntimeError(
-                "Talker generate output does not contain `hidden_states`."
-            )
+            raise TypeError("Talker generate output does not contain `hidden_states`.")
 
         talker_code_steps: list[torch.Tensor] = []
         talker_hidden_steps: list[torch.Tensor] = []
@@ -280,8 +276,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (
             len(prepared_talker_input_embeds)
@@ -312,8 +306,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     def _generate_standard_batch_from_ids(
@@ -331,8 +323,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (
             len(input_ids)
@@ -376,8 +366,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
     def _generate_voice_clone_batch_from_ids(
@@ -398,8 +386,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
-        output_hidden_states: bool,
-        return_dict_in_generate: bool,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (
             len(input_ids)
@@ -461,8 +447,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
-            output_hidden_states=output_hidden_states,
-            return_dict_in_generate=return_dict_in_generate,
         )
 
 
