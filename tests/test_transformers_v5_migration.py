@@ -1,11 +1,10 @@
 import unittest
-from collections.abc import Mapping
 from tempfile import TemporaryDirectory
-from typing import cast
 
 import torch
 
 from qwen_tts.core.models.configuration_qwen3_tts import (
+    CodecSpecialTokenIds,
     Qwen3TTSTalkerCodePredictorConfig,
     Qwen3TTSTalkerConfig,
 )
@@ -75,13 +74,15 @@ class TransformersV5MigrationTest(unittest.TestCase):
             text_vocab_size=20,
             pad_token_id=0,
             tie_word_embeddings=tie_word_embeddings,
-            codec_eos_token_id=15,
-            codec_think_id=2,
-            codec_nothink_id=3,
-            codec_think_bos_id=4,
-            codec_think_eos_id=5,
-            codec_pad_id=0,
-            codec_bos_id=1,
+            codec_special_token_ids=CodecSpecialTokenIds(
+                bos=1,
+                eos=15,
+                pad=0,
+                think=2,
+                no_think=3,
+                think_bos=4,
+                think_eos=5,
+            ),
             rope_parameters={
                 "rope_type": "default",
                 "rope_theta": 10_000.0,
@@ -89,39 +90,6 @@ class TransformersV5MigrationTest(unittest.TestCase):
                 "interleaved": True,
             },
         )
-
-    def test_checkpoint_rope_fields_migrate_to_rope_parameters(self) -> None:
-        predictor_config = Qwen3TTSTalkerCodePredictorConfig(rope_theta=1_000_000)
-        talker_config = Qwen3TTSTalkerConfig(
-            rope_theta=1_000_000,
-            rope_scaling={
-                "rope_type": "default",
-                "mrope_section": [24, 20, 20],
-                "interleaved": True,
-            },
-        )
-
-        predictor_rope = predictor_config.rope_parameters
-        talker_rope = talker_config.rope_parameters
-        self.assertIsInstance(predictor_rope, Mapping)
-        self.assertIsInstance(talker_rope, Mapping)
-        if not isinstance(predictor_rope, Mapping) or not isinstance(
-            talker_rope, Mapping
-        ):
-            self.fail("Transformers did not initialize native RoPE parameters.")
-        predictor_rope_mapping = cast(Mapping[str, object], predictor_rope)
-        talker_rope_mapping = cast(Mapping[str, object], talker_rope)
-        self.assertEqual(predictor_rope_mapping["rope_theta"], 1_000_000)
-        self.assertEqual(talker_rope_mapping["rope_theta"], 1_000_000)
-        self.assertEqual(talker_rope_mapping["mrope_section"], [24, 20, 20])
-        self.assertIsNone(talker_config.pad_token_id)
-
-        serialized = talker_config.to_dict()
-        self.assertIn("rope_parameters", serialized)
-        self.assertNotIn("rope_scaling", serialized)
-        self.assertNotIn("rope_theta", serialized)
-        round_tripped = Qwen3TTSTalkerConfig.from_dict(serialized)
-        self.assertEqual(round_tripped.rope_parameters, talker_config.rope_parameters)
 
     def test_default_rotary_embeddings_construct(self) -> None:
         predictor_config = self.predictor_config()

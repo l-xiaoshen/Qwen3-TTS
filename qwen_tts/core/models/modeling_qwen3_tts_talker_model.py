@@ -351,6 +351,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
 
     def __init__(self, config: Qwen3TTSTalkerConfig):
         super().__init__(config)
+        self.codec_special_token_ids = config.codec_special_token_ids
         self.model = Qwen3TTSTalkerModel(config)
         self.vocab_size = config.vocab_size
         self.text_projection = Qwen3TTSTalkerResizeMLP(

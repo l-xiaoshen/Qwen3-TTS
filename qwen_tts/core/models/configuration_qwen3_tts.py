@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import ClassVar
 
 from transformers.configuration_utils import PretrainedConfig
@@ -5,6 +6,30 @@ from transformers.modeling_rope_utils import RopeParameters
 from transformers.utils import logging
 
 logger = logging.get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CodecSpecialTokenIds:
+    bos: int
+    eos: int
+    pad: int
+    think: int
+    no_think: int
+    think_bos: int
+    think_eos: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.bos,
+            self.eos,
+            self.pad,
+            self.think,
+            self.no_think,
+            self.think_bos,
+            self.think_eos,
+        )
+        if any(type(value) is not int for value in values):
+            raise TypeError("Codec special-token IDs must be integers.")
 
 
 class Qwen3TTSSpeakerEncoderConfig(PretrainedConfig):
@@ -392,13 +417,7 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         num_code_groups=32,
         text_hidden_size=2048,
         text_vocab_size=151936,
-        codec_eos_token_id=2150,
-        codec_think_id=2154,
-        codec_nothink_id=2155,
-        codec_think_bos_id=2156,
-        codec_think_eos_id=2157,
-        codec_pad_id=2148,
-        codec_bos_id=2149,
+        codec_special_token_ids: CodecSpecialTokenIds | None = None,
         spk_id=None,
         spk_is_dialect=None,
         codec_language_id=None,
@@ -443,18 +462,20 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
         self.num_code_groups = num_code_groups
         self.text_hidden_size = text_hidden_size
         self.text_vocab_size = text_vocab_size
-        self.codec_eos_token_id = codec_eos_token_id
-        self.codec_think_id = codec_think_id
         self.codec_language_id = codec_language_id
-        self.codec_nothink_id = codec_nothink_id
-        self.codec_think_bos_id = codec_think_bos_id
-        self.codec_think_eos_id = codec_think_eos_id
-        self.codec_pad_id = codec_pad_id
-        self.codec_bos_id = codec_bos_id
         self.spk_id = spk_id
         self.spk_is_dialect = spk_is_dialect
         super().__init__(**kwargs)
         self.tie_word_embeddings = tie_word_embeddings
+
+        if codec_special_token_ids is not None:
+            self.codec_bos_id = codec_special_token_ids.bos
+            self.codec_eos_token_id = codec_special_token_ids.eos
+            self.codec_pad_id = codec_special_token_ids.pad
+            self.codec_think_id = codec_special_token_ids.think
+            self.codec_nothink_id = codec_special_token_ids.no_think
+            self.codec_think_bos_id = codec_special_token_ids.think_bos
+            self.codec_think_eos_id = codec_special_token_ids.think_eos
 
         if not isinstance(self.rope_parameters, dict):
             raise TypeError("`rope_parameters` must be a dictionary.")
@@ -471,6 +492,26 @@ class Qwen3TTSTalkerConfig(PretrainedConfig):
             raise ValueError(
                 "Twice the sum of `rope_parameters['mrope_section']` must equal `head_dim`."
             )
+
+    def _require_codec_special_token_id(self, field_name: str) -> int:
+        value = getattr(self, field_name, None)
+        if not isinstance(value, int):
+            raise TypeError(
+                f"The talker checkpoint or config must define `{field_name}`."
+            )
+        return value
+
+    @property
+    def codec_special_token_ids(self) -> CodecSpecialTokenIds:
+        return CodecSpecialTokenIds(
+            bos=self._require_codec_special_token_id("codec_bos_id"),
+            eos=self._require_codec_special_token_id("codec_eos_token_id"),
+            pad=self._require_codec_special_token_id("codec_pad_id"),
+            think=self._require_codec_special_token_id("codec_think_id"),
+            no_think=self._require_codec_special_token_id("codec_nothink_id"),
+            think_bos=self._require_codec_special_token_id("codec_think_bos_id"),
+            think_eos=self._require_codec_special_token_id("codec_think_eos_id"),
+        )
 
 
 class Qwen3TTSConfig(PretrainedConfig):
@@ -527,4 +568,9 @@ class Qwen3TTSConfig(PretrainedConfig):
         self.tts_eos_token_id = tts_eos_token_id
 
 
-__all__ = ["Qwen3TTSConfig", "Qwen3TTSSpeakerEncoderConfig", "Qwen3TTSTalkerConfig"]
+__all__ = [
+    "CodecSpecialTokenIds",
+    "Qwen3TTSConfig",
+    "Qwen3TTSSpeakerEncoderConfig",
+    "Qwen3TTSTalkerConfig",
+]

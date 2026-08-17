@@ -156,6 +156,7 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         codec_mask = torch.zeros((b, t), dtype=torch.bool)
         attention_mask = torch.zeros((b, t), dtype=torch.long)
         codec_0_labels = torch.full((b, t), -100, dtype=torch.long)
+        codec_token_ids = self.config.talker_config.codec_special_token_ids
 
         for i, data in enumerate(batch):
             text_ids = data["text_ids"]
@@ -180,34 +181,26 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
             # input_ids[i,   :3, 1] = 0
             input_ids[i, 3:8, 1] = torch.tensor(
                 [
-                    self.config.talker_config.codec_nothink_id,
-                    self.config.talker_config.codec_think_bos_id,
-                    self.config.talker_config.codec_think_eos_id,
+                    codec_token_ids.no_think,
+                    codec_token_ids.think_bos,
+                    codec_token_ids.think_eos,
                     0,  # for speaker embedding
-                    self.config.talker_config.codec_pad_id,
+                    codec_token_ids.pad,
                 ]
             )
-            input_ids[i, 8 : 8 + text_ids_len - 3, 1] = (
-                self.config.talker_config.codec_pad_id
-            )
-            input_ids[i, 8 + text_ids_len - 3, 1] = (
-                self.config.talker_config.codec_pad_id
-            )
-            input_ids[i, 8 + text_ids_len - 2, 1] = (
-                self.config.talker_config.codec_bos_id
-            )
+            input_ids[i, 8 : 8 + text_ids_len - 3, 1] = codec_token_ids.pad
+            input_ids[i, 8 + text_ids_len - 3, 1] = codec_token_ids.pad
+            input_ids[i, 8 + text_ids_len - 2, 1] = codec_token_ids.bos
             input_ids[
                 i, 8 + text_ids_len - 1 : 8 + text_ids_len - 1 + codec_ids_len, 1
             ] = audio_codec_0
-            input_ids[i, 8 + text_ids_len - 1 + codec_ids_len, 1] = (
-                self.config.talker_config.codec_eos_token_id
-            )
+            input_ids[i, 8 + text_ids_len - 1 + codec_ids_len, 1] = codec_token_ids.eos
 
             codec_0_labels[
                 i, 8 + text_ids_len - 1 : 8 + text_ids_len - 1 + codec_ids_len
             ] = audio_codec_0
             codec_0_labels[i, 8 + text_ids_len - 1 + codec_ids_len] = (
-                self.config.talker_config.codec_eos_token_id
+                codec_token_ids.eos
             )
 
             codec_ids[

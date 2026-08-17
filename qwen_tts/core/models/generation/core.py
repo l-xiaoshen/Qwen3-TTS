@@ -34,6 +34,8 @@ class Qwen3TTSGenerationCoreMixin:
         tts_eos_embed: torch.Tensor,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        codec_token_ids = self.talker.codec_special_token_ids
+
         # text embed (ref id + text id + eos) 1 T1 D
         text_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(torch.cat([ref_id, text_id], dim=-1))
@@ -56,7 +58,7 @@ class Qwen3TTSGenerationCoreMixin:
             [
                 self.talker.get_input_embeddings()(
                     torch.tensor(
-                        [[self.config.talker_config.codec_bos_id]],
+                        [[codec_token_ids.bos]],
                         device=self.talker.device,
                         dtype=text_id.dtype,
                     )
@@ -72,7 +74,7 @@ class Qwen3TTSGenerationCoreMixin:
         if non_streaming_mode:
             icl_input_embed = text_embed + self.talker.get_input_embeddings()(
                 torch.tensor(
-                    [[self.config.talker_config.codec_pad_id] * text_lens],
+                    [[codec_token_ids.pad] * text_lens],
                     device=self.talker.device,
                     dtype=text_id.dtype,
                 )
@@ -96,6 +98,7 @@ class Qwen3TTSGenerationCoreMixin:
         language_id: int | None,
         speaker_embed: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        codec_token_ids = self.talker.codec_special_token_ids
         tts_bos_embed, tts_eos_embed, tts_pad_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(
                 torch.tensor(
@@ -115,18 +118,18 @@ class Qwen3TTSGenerationCoreMixin:
         if language_id is None:
             codec_prefill_list = [
                 [
-                    self.config.talker_config.codec_nothink_id,
-                    self.config.talker_config.codec_think_bos_id,
-                    self.config.talker_config.codec_think_eos_id,
+                    codec_token_ids.no_think,
+                    codec_token_ids.think_bos,
+                    codec_token_ids.think_eos,
                 ]
             ]
         else:
             codec_prefill_list = [
                 [
-                    self.config.talker_config.codec_think_id,
-                    self.config.talker_config.codec_think_bos_id,
+                    codec_token_ids.think,
+                    codec_token_ids.think_bos,
                     language_id,
-                    self.config.talker_config.codec_think_eos_id,
+                    codec_token_ids.think_eos,
                 ]
             ]
 
@@ -141,8 +144,8 @@ class Qwen3TTSGenerationCoreMixin:
             torch.tensor(
                 [
                     [
-                        self.config.talker_config.codec_pad_id,
-                        self.config.talker_config.codec_bos_id,
+                        codec_token_ids.pad,
+                        codec_token_ids.bos,
                     ]
                 ],
                 device=self.talker.device,
@@ -215,7 +218,7 @@ class Qwen3TTSGenerationCoreMixin:
         tts_pad_embed: torch.Tensor,
         non_streaming_mode: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-
+        codec_token_ids = self.talker.codec_special_token_ids
         talker_input_embed = torch.cat(
             [
                 talker_input_embed,
@@ -242,10 +245,7 @@ class Qwen3TTSGenerationCoreMixin:
                     )
                     + self.talker.get_input_embeddings()(
                         torch.tensor(
-                            [
-                                [self.config.talker_config.codec_pad_id]
-                                * (input_id[:, 3:-5].shape[1] + 1)
-                            ],
+                            [[codec_token_ids.pad] * (input_id[:, 3:-5].shape[1] + 1)],
                             device=self.talker.device,
                             dtype=input_id.dtype,
                         )
@@ -253,7 +253,7 @@ class Qwen3TTSGenerationCoreMixin:
                     tts_pad_embed
                     + self.talker.get_input_embeddings()(
                         torch.tensor(
-                            [[self.config.talker_config.codec_bos_id]],
+                            [[codec_token_ids.bos]],
                             device=self.talker.device,
                             dtype=input_id.dtype,
                         )
@@ -430,7 +430,7 @@ class Qwen3TTSGenerationCoreMixin:
         resolved_eos_token_id = (
             eos_token_id
             if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id
+            else self.talker.codec_special_token_ids.eos
         )
         return [
             token_id

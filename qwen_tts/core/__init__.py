@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .config import SpeakerConfiguration
+from .models.configuration_qwen3_tts import CodecSpecialTokenIds
 from .models.modeling_qwen3_tts_types import SubTalkerConfiguration
 from .tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Config,
@@ -24,6 +25,7 @@ from .tokenizer_25hz.configuration_qwen3_tts_tokenizer_v1 import (
 from .tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import Qwen3TTSTokenizerV1Model
 
 __all__ = [
+    "CodecSpecialTokenIds",
     "Qwen3TTSTokenizerV1Config",
     "Qwen3TTSTokenizerV1Model",
     "Qwen3TTSTokenizerV2Config",

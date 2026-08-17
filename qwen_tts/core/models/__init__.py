@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from ..config import SpeakerConfiguration
-from .configuration_qwen3_tts import Qwen3TTSConfig
+from .configuration_qwen3_tts import CodecSpecialTokenIds, Qwen3TTSConfig
 from .modeling_qwen3_tts_base import Qwen3TTSConditionalGenerationBase
 from .modeling_qwen3_tts_core import mel_spectrogram
 from .modeling_qwen3_tts_custom_voice import Qwen3TTSCustomVoiceForConditionalGeneration
@@ -23,6 +23,7 @@ from .modeling_qwen3_tts_voice_design import Qwen3TTSVoiceDesignForConditionalGe
 from .processing_qwen3_tts import Qwen3TTSProcessor
 
 __all__ = [
+    "CodecSpecialTokenIds",
     "Qwen3TTSConditionalGenerationBase",
     "Qwen3TTSConfig",
     "Qwen3TTSCustomVoiceForConditionalGeneration",

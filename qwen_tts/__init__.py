@@ -17,7 +17,7 @@
 qwen_tts: Qwen-TTS package.
 """
 
-from .core import SpeakerConfiguration, SubTalkerConfiguration
+from .core import CodecSpecialTokenIds, SpeakerConfiguration, SubTalkerConfiguration
 from .inference.qwen3_tts_base_model import (
     AudioLike,
     Qwen3TTSBaseModel,
@@ -38,6 +38,7 @@ from .inference.qwen3_tts_voice_design_model import Qwen3TTSVoiceDesignModel
 
 __all__ = [
     "AudioLike",
+    "CodecSpecialTokenIds",
     "CustomVoicePromptItem",
     "Qwen3TTSBaseModel",
     "Qwen3TTSCustomVoiceModel",

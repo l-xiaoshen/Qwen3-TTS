@@ -173,6 +173,11 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         padding_mask = arange_tensor >= lengths_tensor
         padded_hiddens[padding_mask] = pad_embedding_vector
         trailing_text_hiddens_tensor = padded_hiddens
+        resolved_eos_token_id = (
+            eos_token_id
+            if eos_token_id is not None
+            else self.talker.codec_special_token_ids.eos
+        )
 
         # Transformers 5's generation protocol rejects official models too (transformers#44233).
         talker_result = self.talker.generate(  # ty: ignore[invalid-argument-type, missing-argument]
@@ -187,11 +192,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             top_p=top_p,
             temperature=temperature,
             subtalker_configuration=subtalker_configuration,
-            eos_token_id=(
-                eos_token_id
-                if eos_token_id is not None
-                else self.config.talker_config.codec_eos_token_id
-            ),
+            eos_token_id=resolved_eos_token_id,
             repetition_penalty=repetition_penalty,
             suppress_tokens=suppress_tokens,
             output_hidden_states=True,
@@ -227,11 +228,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         talker_codes = torch.stack(talker_code_steps, dim=1)
         talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
 
-        resolved_eos_token_id = (
-            eos_token_id
-            if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id
-        )
         first_codebook = talker_codes[:, :, 0]
         is_stop_token = first_codebook == resolved_eos_token_id
         stop_indices = torch.argmax(is_stop_token.int(), dim=1)

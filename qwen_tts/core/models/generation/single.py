@@ -97,6 +97,11 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             raise RuntimeError(
                 "Generation input must contain at least one embed block."
             )
+        resolved_eos_token_id = (
+            eos_token_id
+            if eos_token_id is not None
+            else self.talker.codec_special_token_ids.eos
+        )
         talker_input_embed = torch.cat(talker_input_embeds, dim=1)
         talker_attention_mask = torch.ones(
             (1, talker_input_embed.shape[1]),
@@ -117,11 +122,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             top_p=top_p,
             temperature=temperature,
             subtalker_configuration=subtalker_configuration,
-            eos_token_id=(
-                eos_token_id
-                if eos_token_id is not None
-                else self.config.talker_config.codec_eos_token_id
-            ),
+            eos_token_id=resolved_eos_token_id,
             repetition_penalty=repetition_penalty,
             suppress_tokens=suppress_tokens,
             output_hidden_states=True,
@@ -157,11 +158,6 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_codes = torch.stack(talker_code_steps, dim=1)
         talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
 
-        resolved_eos_token_id = (
-            eos_token_id
-            if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id
-        )
         first_codebook = talker_codes[0, :, 0]
         stop_positions = torch.nonzero(
             first_codebook == resolved_eos_token_id,
@@ -299,7 +295,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
                         eos_token_id=(
                             eos_token_id
                             if eos_token_id is not None
-                            else self.config.talker_config.codec_eos_token_id
+                            else self.talker.codec_special_token_ids.eos
                         ),
                     )
                 )
