@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import TypedDict, cast
 
 import numpy as np
@@ -38,6 +38,15 @@ AudioLike = (
     | np.ndarray  # waveform (requires sr)
     | tuple[np.ndarray, int]  # (waveform, sr)
 )
+
+
+class TTSInputItem(TypedDict):
+    text: str
+    instruction: str
+
+
+TTSInput = list[TTSInputItem] | tuple[TTSInputItem, ...]
+TTSBatchInput = list[TTSInput] | tuple[TTSInput, ...]
 
 GenerateDefaultValue = bool | int | float | SubTalkerConfiguration
 GenerateDefaults = dict[str, GenerateDefaultValue]
@@ -69,6 +78,11 @@ class Qwen3TTSBaseModel:
     dedicated subclasses.
     """
 
+    _ASSISTANT_PREFIX = "<|im_start|>assistant\n"
+    _ASSISTANT_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n"
+    _USER_PREFIX = "<|im_start|>user\n"
+    _MESSAGE_SUFFIX = "<|im_end|>\n"
+
     def __init__(
         self,
         model: Qwen3TTSConditionalGenerationBase,
@@ -85,6 +99,12 @@ class Qwen3TTSBaseModel:
                 self.device = next(model.parameters()).device
             except StopIteration:
                 self.device = torch.device("cpu")
+
+        self._assistant_prefix_ids = self._tokenize_raw_text(self._ASSISTANT_PREFIX)
+        self._assistant_suffix_ids = self._tokenize_raw_text(self._ASSISTANT_SUFFIX)
+        self._user_prefix_ids = self._tokenize_raw_text(self._USER_PREFIX)
+        self._message_suffix_ids = self._tokenize_raw_text(self._MESSAGE_SUFFIX)
+        self._validate_prompt_fragments()
 
     @classmethod
     def from_pretrained(
@@ -283,19 +303,119 @@ class Qwen3TTSBaseModel:
                 out[i] = (mono, a[1])
         return out
 
-    def _build_assistant_text(self, text: str) -> str:
-        return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
-
-    def _build_ref_text(self, text: str) -> str:
-        return f"<|im_start|>assistant\n{text}<|im_end|>\n"
-
-    def _build_instruct_text(self, instruct: str) -> str:
-        return f"<|im_start|>user\n{instruct}<|im_end|>\n"
-
-    def _tokenize_text(self, text: str) -> torch.Tensor:
+    def _tokenize_raw_text(self, text: str) -> torch.Tensor:
         input_data = self.processor(text=text, return_tensors="pt", padding=True)
         input_id = input_data["input_ids"].to(self.device)
         return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
+    def _validate_prompt_fragments(self) -> None:
+        fragment_lengths = {
+            "assistant prefix": self._assistant_prefix_ids.shape[1],
+            "assistant suffix": self._assistant_suffix_ids.shape[1],
+            "user prefix": self._user_prefix_ids.shape[1],
+            "message suffix": self._message_suffix_ids.shape[1],
+        }
+        expected_lengths = {
+            "assistant prefix": 3,
+            "assistant suffix": 5,
+            "user prefix": 3,
+            "message suffix": 2,
+        }
+        if fragment_lengths != expected_lengths:
+            raise ValueError(
+                "The text tokenizer produced an unsupported Qwen TTS prompt layout: "
+                f"{fragment_lengths}. Expected {expected_lengths}."
+            )
+
+    def _tokenize_framed_text(
+        self,
+        text: str,
+        prefix_ids: torch.Tensor,
+        suffix_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        text_ids = self._tokenize_raw_text(text)
+        return torch.cat((prefix_ids, text_ids, suffix_ids), dim=1)
+
+    def _tokenize_assistant_input(self, text: str) -> torch.Tensor:
+        return self._tokenize_framed_text(
+            text,
+            self._assistant_prefix_ids,
+            self._assistant_suffix_ids,
+        )
+
+    def _tokenize_instruction(self, instruction: str) -> torch.Tensor | None:
+        if instruction == "":
+            return None
+        return self._tokenize_framed_text(
+            instruction,
+            self._user_prefix_ids,
+            self._message_suffix_ids,
+        )
+
+    def _tokenize_ref_text(self, ref_text: str) -> torch.Tensor | None:
+        if ref_text == "":
+            return None
+        return self._tokenize_framed_text(
+            ref_text,
+            self._assistant_prefix_ids,
+            self._message_suffix_ids,
+        )
+
+    def _normalize_tts_input(
+        self,
+        tts_input: TTSInput,
+        input_name: str = "tts_input",
+    ) -> list[TTSInputItem]:
+        if len(tts_input) == 0:
+            raise ValueError(f"`{input_name}` must contain at least one chunk.")
+
+        chunks: list[TTSInputItem] = []
+        required_keys = {"text", "instruction"}
+        for index, chunk in enumerate(tts_input):
+            if not isinstance(chunk, Mapping):
+                raise TypeError(f"`{input_name}[{index}]` must be a mapping.")
+
+            keys = set(chunk)
+            if keys != required_keys:
+                raise ValueError(
+                    f"`{input_name}[{index}]` must contain exactly "
+                    "'text' and 'instruction'."
+                )
+
+            text = chunk["text"]
+            instruction = chunk["instruction"]
+            if not isinstance(text, str):
+                raise TypeError(f"`{input_name}[{index}].text` must be a string.")
+            if text.strip() == "":
+                raise ValueError(f"`{input_name}[{index}].text` must be non-empty.")
+            if not isinstance(instruction, str):
+                raise TypeError(
+                    f"`{input_name}[{index}].instruction` must be a string."
+                )
+            chunks.append(TTSInputItem(text=text, instruction=instruction))
+        return chunks
+
+    def _normalize_tts_batch_input(
+        self, tts_input: TTSBatchInput
+    ) -> list[list[TTSInputItem]]:
+        if len(tts_input) == 0:
+            raise ValueError("`tts_input` must contain at least one input.")
+
+        return [
+            self._normalize_tts_input(
+                item,
+                input_name=f"tts_input[{index}]",
+            )
+            for index, item in enumerate(tts_input)
+        ]
+
+    def _tokenize_tts_chunks(
+        self, chunks: Sequence[TTSInputItem]
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor | None]]:
+        return (
+            [self._tokenize_assistant_input(chunk["text"]) for chunk in chunks],
+            [self._tokenize_instruction(chunk["instruction"]) for chunk in chunks],
+        )
 
     def _normalize_language_value(self, language: str) -> str:
         return "Auto" if language == "" else language
@@ -307,45 +427,10 @@ class Qwen3TTSBaseModel:
             return ["Auto"] * batch_size
         return list(languages)
 
-    def _tokenize_optional_text(
-        self, text: str, builder: Callable[[str], str]
-    ) -> torch.Tensor | None:
-        if text == "":
-            return None
-        return self._tokenize_text(builder(text))
-
-    def _tokenize_optional_texts(
-        self, texts: Sequence[str], builder: Callable[[str], str]
-    ) -> list[torch.Tensor | None]:
-        return [self._tokenize_optional_text(text, builder) for text in texts]
-
-    def _tokenize_assistant_input(self, text: str) -> torch.Tensor:
-        return self._tokenize_text(self._build_assistant_text(text))
-
-    def _tokenize_assistant_inputs(self, texts: Sequence[str]) -> list[torch.Tensor]:
-        return [self._tokenize_text(self._build_assistant_text(text)) for text in texts]
-
-    def _tokenize_instruct(self, instruct: str) -> torch.Tensor | None:
-        return self._tokenize_optional_text(instruct, self._build_instruct_text)
-
-    def _tokenize_instructs(
-        self, instructs: Sequence[str]
-    ) -> list[torch.Tensor | None]:
-        return self._tokenize_optional_texts(instructs, self._build_instruct_text)
-
-    def _tokenize_ref_text(self, ref_text: str) -> torch.Tensor | None:
-        return self._tokenize_optional_text(ref_text, self._build_ref_text)
-
     def _tokenize_ref_texts(
         self, ref_texts: Sequence[str]
     ) -> list[torch.Tensor | None]:
-        return self._tokenize_optional_texts(ref_texts, self._build_ref_text)
-
-    def _tokenize_texts_batch(self, texts: list[str]) -> list[torch.Tensor]:
-        input_ids: list[torch.Tensor] = []
-        for text in texts:
-            input_ids.append(self._tokenize_text(text))
-        return input_ids
+        return [self._tokenize_ref_text(ref_text) for ref_text in ref_texts]
 
     @staticmethod
     def _build_subtalker_configuration(
@@ -471,6 +556,50 @@ class Qwen3TTSBaseModel:
             [{"audio_codes": codes} for codes in talker_codes_list]
         )
         return wavs, fs
+
+    def _decode_talker_turns(
+        self,
+        talker_codes_list: Sequence[torch.Tensor],
+        prefix_code: torch.Tensor | None = None,
+    ) -> tuple[list[np.ndarray], int]:
+        if len(talker_codes_list) == 0:
+            raise ValueError("`talker_codes_list` must contain at least one turn.")
+
+        first_code = talker_codes_list[0]
+        code_parts: list[torch.Tensor] = []
+        history_length = 0
+        if prefix_code is not None:
+            history_length = int(prefix_code.shape[0])
+            code_parts.append(
+                prefix_code.to(device=first_code.device, dtype=first_code.dtype)
+            )
+
+        samples_per_code = self._require_speech_tokenizer().get_decode_upsample_rate()
+        turn_wavs: list[np.ndarray] = []
+        sample_rate: int | None = None
+        for talker_codes in talker_codes_list:
+            code_parts.append(talker_codes)
+            cumulative_codes = torch.cat(code_parts, dim=0)
+            decoded, fs = self._decode_talker_codes_batch([cumulative_codes])
+            if len(decoded) != 1:
+                raise RuntimeError("Turn decoding produced an unexpected output count.")
+            if sample_rate is not None and fs != sample_rate:
+                raise RuntimeError("Decoded sample rates differ across turns.")
+            sample_rate = fs
+
+            expected_length = int(cumulative_codes.shape[0]) * samples_per_code
+            waveform = decoded[0]
+            if waveform.shape[0] < expected_length:
+                raise RuntimeError(
+                    "Decoded waveform is shorter than its codec sequence requires."
+                )
+
+            offset = history_length * samples_per_code
+            turn_wavs.append(waveform[offset:expected_length].copy())
+            history_length = int(cumulative_codes.shape[0])
+        if sample_rate is None:
+            raise RuntimeError("Turn decoding produced no outputs.")
+        return turn_wavs, sample_rate
 
     def _merge_generate_kwargs(
         self,

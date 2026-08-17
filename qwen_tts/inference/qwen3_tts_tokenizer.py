@@ -19,11 +19,17 @@ import torch
 from transformers import AutoConfig, AutoFeatureExtractor, AutoModel
 from transformers.feature_extraction_utils import BatchFeature
 
-from ..core import (
-    Qwen3TTSTokenizerV1Config,
-    Qwen3TTSTokenizerV1Model,
+from ..core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Config,
+)
+from ..core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
     Qwen3TTSTokenizerV2Model,
+)
+from ..core.tokenizer_25hz.configuration_qwen3_tts_tokenizer_v1 import (
+    Qwen3TTSTokenizerV1Config,
+)
+from ..core.tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import (
+    Qwen3TTSTokenizerV1Model,
 )
 from .qwen3_tts_tokenizer_audio_mixin import Qwen3TTSTokenizerAudioMixin
 from .qwen3_tts_tokenizer_decode_mixin import Qwen3TTSTokenizerDecodeMixin

@@ -373,14 +373,65 @@ class Qwen3TTSGenerationCoreMixin:
         )
         return talker_input_embed, trailing_text_hidden, tts_pad_embed
 
-    def _build_talker_suppress_tokens(self) -> list[int]:
+    def _build_generated_codec_history_embeddings(
+        self,
+        talker_codes: torch.Tensor,
+        trailing_text_hidden: torch.Tensor,
+        tts_pad_embed: torch.Tensor,
+    ) -> torch.Tensor:
+        if talker_codes.dim() != 2:
+            raise ValueError("`talker_codes` must have shape (time, code_groups).")
+        if talker_codes.shape[1] != self.talker.config.num_code_groups:
+            raise ValueError(
+                "Generated code-group count does not match the talker config."
+            )
+
+        codec_embeddings = [self.talker.get_input_embeddings()(talker_codes[:, :1])]
+        codec_embeddings.extend(
+            self.talker.code_predictor.get_input_embeddings()[index - 1](
+                talker_codes[:, index : index + 1]
+            )
+            for index in range(1, self.talker.config.num_code_groups)
+        )
+        codec_history = torch.cat(codec_embeddings, dim=1).sum(dim=1).unsqueeze(0)
+
+        text_history = tts_pad_embed.expand(-1, talker_codes.shape[0], -1).clone()
+        trailing_length = min(talker_codes.shape[0], trailing_text_hidden.shape[1])
+        if trailing_length != 0:
+            text_history[:, :trailing_length] = trailing_text_hidden[
+                :, :trailing_length
+            ]
+        return text_history + codec_history
+
+    def _build_codec_eos_history_embedding(
+        self,
+        tts_pad_embed: torch.Tensor,
+        input_dtype: torch.dtype,
+        eos_token_id: int,
+    ) -> torch.Tensor:
+        return tts_pad_embed + self.talker.get_input_embeddings()(
+            torch.tensor(
+                [[eos_token_id]],
+                device=self.talker.device,
+                dtype=input_dtype,
+            )
+        )
+
+    def _build_talker_suppress_tokens(
+        self, eos_token_id: int | None = None
+    ) -> list[int]:
+        resolved_eos_token_id = (
+            eos_token_id
+            if eos_token_id is not None
+            else self.config.talker_config.codec_eos_token_id
+        )
         return [
             token_id
             for token_id in range(
                 self.config.talker_config.vocab_size - 1024,
                 self.config.talker_config.vocab_size,
             )
-            if token_id not in (self.config.talker_config.codec_eos_token_id,)
+            if token_id != resolved_eos_token_id
         ]
 
     def _resolve_custom_voice_speaker_embed(

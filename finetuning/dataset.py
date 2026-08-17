@@ -32,11 +32,18 @@ MaybeList = T | list[T]
 
 
 class TTSDataset(Dataset[dict[str, torch.Tensor]]):
+    _ASSISTANT_PREFIX = "<|im_start|>assistant\n"
+
     def __init__(self, data_list, processor, config: Qwen3TTSConfig, lag_num=-1):
         self.data_list = data_list
         self.processor = processor
         self.lag_num = lag_num
         self.config = config
+        self._assistant_prefix_ids = self._tokenize_text(self._ASSISTANT_PREFIX)
+        if self._assistant_prefix_ids.shape[1] != 3:
+            raise ValueError(
+                "The text tokenizer produced an unsupported Qwen TTS assistant prefix."
+            )
 
     def __len__(self):
         return len(self.data_list)
@@ -84,16 +91,16 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
                 out[i] = (np.mean(audio, axis=-1).astype(np.float32), sr)
         return out
 
-    def _build_assistant_text(self, text: str) -> str:
-        return f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
-
     def _ensure_list(self, x: MaybeList[T]) -> list[T]:
         return x if isinstance(x, list) else [x]
 
-    def _tokenize_texts(self, text: str) -> torch.Tensor:
+    def _tokenize_text(self, text: str) -> torch.Tensor:
         input = self.processor(text=text, return_tensors="pt", padding=True)
         input_id = input["input_ids"]
         return input_id.unsqueeze(0) if input_id.dim() == 1 else input_id
+
+    def _tokenize_assistant_input(self, text: str) -> torch.Tensor:
+        return torch.cat((self._assistant_prefix_ids, self._tokenize_text(text)), dim=1)
 
     @torch.inference_mode()
     def extract_mels(self, audio, sr):
@@ -117,8 +124,7 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         audio_codes = item["audio_codes"]
         ref_audio_path = item["ref_audio"]
 
-        text = self._build_assistant_text(text)
-        text_ids = self._tokenize_texts(text)
+        text_ids = self._tokenize_assistant_input(text)
 
         audio_codes = torch.tensor(audio_codes, dtype=torch.long)
 
@@ -129,7 +135,7 @@ class TTSDataset(Dataset[dict[str, torch.Tensor]]):
         ref_mel = self.extract_mels(audio=wav, sr=sr)
 
         return {
-            "text_ids": text_ids[:, :-5],  # 1 , t
+            "text_ids": text_ids,  # 1 , t
             "audio_codes": audio_codes,  # t, 16
             "ref_mel": ref_mel,
         }

@@ -230,8 +230,13 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
         talker_codes = torch.stack(talker_code_steps, dim=1)
         talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
 
+        resolved_eos_token_id = (
+            eos_token_id
+            if eos_token_id is not None
+            else self.config.talker_config.codec_eos_token_id
+        )
         first_codebook = talker_codes[:, :, 0]
-        is_stop_token = first_codebook == self.config.talker_config.codec_eos_token_id
+        is_stop_token = first_codebook == resolved_eos_token_id
         stop_indices = torch.argmax(is_stop_token.int(), dim=1)
         has_stop_token = is_stop_token.any(dim=1)
         effective_lengths = torch.where(
@@ -298,7 +303,7 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             talker_input_embeds=talker_input_embeds,
             trailing_text_hiddens=trailing_text_hiddens,
             tts_pad_embed_last=tts_pad_embed_last,
-            suppress_tokens=self._build_talker_suppress_tokens(),
+            suppress_tokens=self._build_talker_suppress_tokens(eos_token_id),
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             top_k=top_k,

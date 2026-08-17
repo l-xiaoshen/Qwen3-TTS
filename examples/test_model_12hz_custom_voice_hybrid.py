@@ -55,18 +55,22 @@ def main():
     # Direct path: pass speaker embedding plus ref audio/text in one call.
     torch.cuda.synchronize()
     t0 = time.time()
-    wav, sr = tts.generate_custom_voice(
-        text=target_text,
+    wavs, sr = tts.generate_custom_voice(
+        tts_input=[
+            {
+                "text": target_text,
+                "instruction": "Speak with restrained frustration.",
+            }
+        ],
         language="Auto",
         speaker=speaker_embedding,
         ref_audio=ref_audio,
         ref_text=ref_text,
-        instruct="Speak with restrained frustration.",
     )
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[Hybrid CustomVoice Direct] time: {t1 - t0:.3f}s")
-    sf.write("qwen3_tts_test_custom_voice_hybrid_direct.wav", wav, sr)
+    sf.write("qwen3_tts_test_custom_voice_hybrid_direct.wav", wavs[0], sr)
 
     # Reuse path: precompute the ICL prompt once, then synthesize again.
     prompt = tts.create_custom_voice_prompt(
@@ -76,17 +80,21 @@ def main():
 
     torch.cuda.synchronize()
     t0 = time.time()
-    wav, sr = tts.generate_custom_voice(
-        text=target_text,
+    wavs, sr = tts.generate_custom_voice(
+        tts_input=[
+            {
+                "text": target_text,
+                "instruction": "Speak with restrained frustration.",
+            }
+        ],
         language="Auto",
         speaker=speaker_embedding,
         custom_voice_prompt=prompt,
-        instruct="Speak with restrained frustration.",
     )
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[Hybrid CustomVoice Prompt Reuse] time: {t1 - t0:.3f}s")
-    sf.write("qwen3_tts_test_custom_voice_hybrid_prompt.wav", wav, sr)
+    sf.write("qwen3_tts_test_custom_voice_hybrid_prompt.wav", wavs[0], sr)
 
 
 if __name__ == "__main__":

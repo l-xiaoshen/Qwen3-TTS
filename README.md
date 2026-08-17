@@ -1,12 +1,12 @@
 # Qwen TTS Fork
 
-This fork extends `qwen-tts` with additional inference APIs for speaker embeddings, reusable prompts, weighted speaker mixing, and hybrid custom voice generation.
+This fork extends `qwen-tts` with structured chunk inputs, speaker embeddings, reusable prompts, weighted speaker mixing, and hybrid custom voice generation.
 
 The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 
 - Use `Qwen3TTSVoiceCloneModel` for reference-based voice cloning.
-- Use `Qwen3TTSCustomVoiceModel` for custom voice generation, speaker merge, and instruction control.
-- Use the hybrid `custom_voice` flow when instruction control and reference prompting are both required.
+- Use `Qwen3TTSCustomVoiceModel` for custom voice generation and speaker merge.
+- Use `Qwen3TTSVoiceDesignModel` for instruction-driven voice design.
 
 ## Features/API added in this fork
 
@@ -15,9 +15,18 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 - Public `SpeakerConfiguration` support.
 - Weighted speaker merge.
 - Reusable prompt builders.
-- Hybrid custom voice generation with `speaker`, reference audio, reference text, and `instruct`.
+- Structured `TTSInput` chunks with an independent instruction per chunk.
+- Hybrid custom voice generation with `speaker`, reference audio, and reference text.
 
-`Qwen3TTSVoiceCloneModel` does not expose `instruct`. When instruction control is required, use `Qwen3TTSCustomVoiceModel.generate_custom_voice()` with a direct speaker embedding plus a reference prompt.
+Each generation method accepts `tts_input`, a non-empty sequence of `{"text": str, "instruction": str}` turns. Every item is serialized causally as a user instruction followed by an assistant text/audio response. Before a later turn is generated, its Transformer context includes the earlier instructions, assistant text prefills, generated codec tokens, and codec end markers. Single-request methods return one waveform per assistant turn; batch methods group those waveforms by logical `TTSInput`.
+
+An empty instruction omits the user instruction block, matching the native single-turn API. Multi-turn inputs require `non_streaming_mode=True` (the public API default). Each waveform is decoded with the reference and prior turn codes as acoustic context, then trimmed at the exact codec boundary.
+
+Structured multi-turn generation is a fork-level experimental mode. The upstream checkpoints and API document independent utterances, not repeated assistant audio turns in one ChatML history. Retained text and codec context can therefore change later delivery based on dialogue semantics rather than preserve the first turn's style exactly.
+
+CustomVoice 0.6B requires empty chunk instructions because that checkpoint does not support instruction conditioning.
+
+VoiceDesign and CustomVoice can interpret age, gender, and timbre words as requests to alter perceived identity. For a fixed speaker, keep turn instructions limited to emotion and prosody and repeat required constraints on each turn rather than assuming an empty instruction inherits the prior style.
 
 ## Usage
 
@@ -43,23 +52,28 @@ embeddings = base.extract_speaker_embedding_batch(ref_audios)
 Use a direct speaker embedding or a weighted speaker configuration.
 
 ```python
-from qwen_tts import Qwen3TTSCustomVoiceModel
+from qwen_tts import Qwen3TTSCustomVoiceModel, TTSInput
 
 tts = Qwen3TTSCustomVoiceModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
-wav, sr = tts.generate_custom_voice(
-    text=text,
+tts_input: TTSInput = [
+    {"text": first_sentence, "instruction": "Calm and low voice."},
+    {"text": second_sentence, "instruction": "Sound surprised."},
+]
+turn_wavs, sr = tts.generate_custom_voice(
+    tts_input=tts_input,
     speaker=embedding,
-    instruct="Calm and low voice.",
 )
 ```
 
 For batch generation, use the batch API.
 
 ```python
-wavs, sr = tts.generate_custom_voice_batch(
-    text=texts,
+turn_wavs_by_input, sr = tts.generate_custom_voice_batch(
+    tts_input=[
+        [{"text": first_text, "instruction": "Speak calmly."}],
+        [{"text": second_text, "instruction": "Speak quickly."}],
+    ],
     speaker=embeddings,
-    instruct=instructs,
 )
 ```
 
@@ -69,7 +83,10 @@ Use `SpeakerConfiguration` to mix built-in speakers.
 
 ```python
 speaker = {"Vivian": 1.0, "Ryan": 0.3}
-wav, sr = tts.generate_custom_voice(text=text, speaker=speaker)
+turn_wavs, sr = tts.generate_custom_voice(
+    tts_input=[{"text": text, "instruction": ""}],
+    speaker=speaker,
+)
 ```
 
 ### Clone from reference audio and reference text
@@ -84,22 +101,45 @@ prompt = clone.create_voice_clone_prompt(
     ref_audio=[ref_audio],
     ref_text=[ref_text],
 )[0]
-wav, sr = clone.generate_voice_clone(text=text, voice_clone_prompt=prompt)
+turn_wavs, sr = clone.generate_voice_clone(
+    tts_input=[{"text": text, "instruction": ""}],
+    voice_clone_prompt=prompt,
+)
 ```
 
 ### Use reference prompting with instruction
 
-Use the hybrid `custom_voice` flow when instruction control and reference prompting must be combined.
+Instructions are part of each structured chunk, including for VoiceClone:
 
 ```python
-wav, sr = tts.generate_custom_voice(
-    text=text,
+turn_wavs, sr = clone.generate_voice_clone(
+    tts_input=[
+        {
+            "text": text,
+            "instruction": "Speak with restrained frustration.",
+        }
+    ],
+    voice_clone_prompt=prompt,
+)
+```
+
+The hybrid `custom_voice` flow can combine the same chunk instructions with a direct speaker embedding and reference prompt:
+
+```python
+turn_wavs, sr = tts.generate_custom_voice(
+    tts_input=[
+        {
+            "text": text,
+            "instruction": "Speak with restrained frustration.",
+        }
+    ],
     speaker=embedding,
     ref_audio=ref_audio,
     ref_text=ref_text,
-    instruct="Speak with restrained frustration.",
 )
 ```
+
+This hybrid combines a Base-model speaker embedding and ICL reference with a CustomVoice checkpoint. It is not an upstream-supported conditioning mode and can be less stable than either native path, especially across multiple turns. Prefer Base VoiceClone for reference-speaker fidelity, or a built-in CustomVoice speaker for instruction control.
 
 For repeated requests, precompute the prompt once and reuse it.
 
@@ -108,11 +148,15 @@ prompt = tts.create_custom_voice_prompt(
     ref_audio=[ref_audio],
     ref_text=[ref_text],
 )[0]
-wav, sr = tts.generate_custom_voice(
-    text=text,
+turn_wavs, sr = tts.generate_custom_voice(
+    tts_input=[
+        {
+            "text": text,
+            "instruction": "Speak with restrained frustration.",
+        }
+    ],
     speaker=embedding,
     custom_voice_prompt=prompt,
-    instruct="Speak with restrained frustration.",
 )
 ```
 
@@ -121,9 +165,10 @@ wav, sr = tts.generate_custom_voice(
 The repository includes the following example flows:
 
 - `examples/test_model_12hz_custom_voice.py`: Custom voice single and batch generation.
+- `examples/test_model_12hz_structured_input.py`: Alternating instruction and assistant speech turns with retained text/audio context.
 - `examples/test_model_12hz_voice_merge.py`: Weighted speaker merge with `SpeakerConfiguration`.
 - `examples/test_model_12hz_base.py`: Voice clone single and batch generation, including prompt reuse.
-- `examples/test_model_12hz_custom_voice_hybrid.py`: Hybrid custom voice generation with `speaker`, reference audio, reference text, and `instruct`.
+- `examples/test_model_12hz_custom_voice_hybrid.py`: Hybrid custom voice generation with structured instructions and reference prompting.
 
 ## Public classes and prompt types
 
@@ -135,3 +180,6 @@ The fork exports the following top-level objects:
 - `VoiceClonePromptItem`
 - `CustomVoicePromptItem`
 - `SpeakerConfiguration`
+- `TTSInputItem`
+- `TTSInput`
+- `TTSBatchInput`

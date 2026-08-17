@@ -18,7 +18,12 @@ qwen_tts: Qwen-TTS package.
 """
 
 from .core import SpeakerConfiguration, SubTalkerConfiguration
-from .inference.qwen3_tts_base_model import Qwen3TTSBaseModel
+from .inference.qwen3_tts_base_model import (
+    Qwen3TTSBaseModel,
+    TTSBatchInput,
+    TTSInput,
+    TTSInputItem,
+)
 from .inference.qwen3_tts_custom_voice_model import (
     CustomVoicePromptItem,
     Qwen3TTSCustomVoiceModel,
@@ -39,5 +44,8 @@ __all__ = [
     "Qwen3TTSVoiceDesignModel",
     "SpeakerConfiguration",
     "SubTalkerConfiguration",
+    "TTSBatchInput",
+    "TTSInput",
+    "TTSInputItem",
     "VoiceClonePromptItem",
 ]

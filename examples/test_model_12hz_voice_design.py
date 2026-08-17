@@ -35,17 +35,21 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wav, sr = tts.generate_voice_design(
-        text="哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+    wavs, sr = tts.generate_voice_design(
+        tts_input=[
+            {
+                "text": "哥哥，你回来啦，人家等了你好久好久了，要抱抱！",
+                "instruction": "体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
+            }
+        ],
         language="Chinese",
-        instruct="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、做作又刻意卖萌的听觉效果。",
     )
 
     torch.cuda.synchronize()
     t1 = time.time()
     print(f"[VoiceDesign Single] time: {t1 - t0:.3f}s")
 
-    sf.write("qwen3_tts_test_voice_design_single.wav", wav, sr)
+    sf.write("qwen3_tts_test_voice_design_single.wav", wavs[0], sr)
 
     # -------- Batch --------
     texts = [
@@ -61,10 +65,12 @@ def main():
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wavs, sr = tts.generate_voice_design_batch(
-        text=texts,
+    wavs_by_input, sr = tts.generate_voice_design_batch(
+        tts_input=[
+            [{"text": text, "instruction": instruction}]
+            for text, instruction in zip(texts, instructs)
+        ],
         language=languages,
-        instruct=instructs,
         max_new_tokens=2048,
     )
 
@@ -72,8 +78,8 @@ def main():
     t1 = time.time()
     print(f"[VoiceDesign Batch] time: {t1 - t0:.3f}s")
 
-    for i, w in enumerate(wavs):
-        sf.write(f"qwen3_tts_test_voice_design_batch_{i}.wav", w, sr)
+    for i, turn_wavs in enumerate(wavs_by_input):
+        sf.write(f"qwen3_tts_test_voice_design_batch_{i}.wav", turn_wavs[0], sr)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,75 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         )
 
     @torch.no_grad()
+    def generate_voice_clone_turns(
+        self,
+        input_ids: list[torch.Tensor],
+        voice_clone_prompt: VoiceClonePromptSingle,
+        instruct_ids: Sequence[torch.Tensor | None] = (),
+        ref_id: torch.Tensor | None = None,
+        language: str = "Auto",
+        speaker: str = "",
+        non_streaming_mode: bool = True,
+        max_new_tokens: int = 4096,
+        do_sample: bool = True,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        temperature: float = 0.9,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
+        eos_token_id: int | None = None,
+        repetition_penalty: float = 1.05,
+        output_hidden_states: bool = True,
+        return_dict_in_generate: bool = True,
+        **kwargs: GenerateConfigPrimitive,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        input_ids = [
+            self._validate_input_id(input_id)
+            for input_id in self._validate_input_ids_batch(input_ids)
+        ]
+        if len(input_ids) > 1 and not non_streaming_mode:
+            raise ValueError("Shared-context turns require `non_streaming_mode=True`.")
+        instruct_ids = [
+            self._normalize_instruct_id(instruct_id)
+            for instruct_id in self._normalize_instruct_ids_batch(
+                instruct_ids, len(input_ids)
+            )
+        ]
+        ref_id = self._normalize_ref_id(ref_id)
+        language = self._normalize_language(language)
+        speaker = self._normalize_speaker(speaker)
+        self._validate_voice_clone_prompt(voice_clone_prompt)
+        if len(kwargs) != 0:
+            raise TypeError(f"Unsupported generation kwargs: {sorted(kwargs)}")
+
+        language_id = self._resolve_language_id(language, speaker)
+        voice_clone_spk_embed = self.generate_speaker_prompt(
+            voice_clone_prompt["ref_spk_embedding"]
+        )
+        speaker_embed = self._resolve_voice_clone_speaker_embed(
+            voice_clone_prompt, voice_clone_spk_embed
+        )
+        return self._generate_voice_clone_turns_from_ids(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            language_id=language_id,
+            speaker_embed=speaker_embed,
+            non_streaming_mode=non_streaming_mode,
+            ref_code=voice_clone_prompt["ref_code"],
+            ref_id=ref_id,
+            use_icl_prompt=bool(voice_clone_prompt["icl_mode"]),
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            subtalker_configuration=subtalker_configuration,
+            eos_token_id=eos_token_id,
+            repetition_penalty=repetition_penalty,
+            output_hidden_states=output_hidden_states,
+            return_dict_in_generate=return_dict_in_generate,
+        )
+
+    @torch.no_grad()
     def generate_voice_clone_batch(
         self,
         input_ids: list[torch.Tensor],

@@ -543,7 +543,6 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(
         self.post_init()
 
     @check_model_inputs()
-    @auto_docstring
     def forward(
         self,
         input_ids: torch.Tensor | None = None,

@@ -40,11 +40,11 @@ def run_case(tts: Qwen3TTSVoiceCloneModel, out_dir: str, case_name: str, call_fn
     torch.cuda.synchronize()
     t0 = time.time()
 
-    wav_or_wavs, sr = call_fn()
-    if isinstance(wav_or_wavs, list):
-        wavs = wav_or_wavs
+    generated, sr = call_fn()
+    if len(generated) > 0 and isinstance(generated[0], list):
+        wavs = [wav for turn_wavs in generated for wav in turn_wavs]
     else:
-        wavs = [wav_or_wavs]
+        wavs = generated
 
     torch.cuda.synchronize()
     t1 = time.time()
@@ -89,12 +89,14 @@ def main():
         "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye."
     )
     syn_lang_single = "Auto"
+    syn_input_single = [{"text": syn_text_single, "instruction": ""}]
 
     syn_text_batch = [
         "Good one. Okay, fine, I'm just gonna leave this sock monkey here. Goodbye.",
         "其实我真的有发现，我是一个特别善于观察别人情绪的人。",
     ]
     syn_lang_batch = ["Chinese", "English"]
+    syn_input_batch = [[{"text": text, "instruction": ""}] for text in syn_text_batch]
 
     common_gen_kwargs: VoiceCloneGenKwargs = {
         "max_new_tokens": 2048,
@@ -120,7 +122,7 @@ def main():
             OUT_DIR,
             f"case1_promptSingle_synSingle_direct_{mode_tag}",
             lambda xvec_only=xvec_only: tts.generate_voice_clone(
-                text=syn_text_single,
+                tts_input=syn_input_single,
                 language=syn_lang_single,
                 ref_audio=ref_audio_single,
                 ref_text=ref_text_single,
@@ -137,7 +139,7 @@ def main():
                 x_vector_only_mode=[xvec_only],
             )
             return tts.generate_voice_clone(
-                text=syn_text_single,
+                tts_input=syn_input_single,
                 language=syn_lang_single,
                 voice_clone_prompt=prompt_items[0],
                 **common_gen_kwargs,
@@ -156,7 +158,7 @@ def main():
             OUT_DIR,
             f"case2_promptSingle_synBatch_direct_{mode_tag}",
             lambda xvec_only=xvec_only: tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_input=syn_input_batch,
                 language=syn_lang_batch,
                 ref_audio=[ref_audio_single, ref_audio_single],
                 ref_text=[ref_text_single, ref_text_single],
@@ -174,7 +176,7 @@ def main():
             )
             prompt_items = prompt_items * len(syn_text_batch)
             return tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_input=syn_input_batch,
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,
                 **common_gen_kwargs,
@@ -193,7 +195,7 @@ def main():
             OUT_DIR,
             f"case3_promptBatch_synBatch_direct_{mode_tag}",
             lambda xvec_only=xvec_only: tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_input=syn_input_batch,
                 language=syn_lang_batch,
                 ref_audio=ref_audio_batch,
                 ref_text=ref_text_batch,
@@ -210,7 +212,7 @@ def main():
                 x_vector_only_mode=[xvec_only, xvec_only],
             )
             return tts.generate_voice_clone_batch(
-                text=syn_text_batch,
+                tts_input=syn_input_batch,
                 language=syn_lang_batch,
                 voice_clone_prompt=prompt_items,
                 **common_gen_kwargs,

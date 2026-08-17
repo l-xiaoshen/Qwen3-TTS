@@ -94,7 +94,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         repetition_penalty: float,
         output_hidden_states: bool,
         return_dict_in_generate: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, bool]:
         if len(talker_input_embeds) == 0:
             raise RuntimeError(
                 "Generation input must contain at least one embed block."
@@ -160,9 +160,14 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         talker_codes = torch.stack(talker_code_steps, dim=1)
         talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
 
+        resolved_eos_token_id = (
+            eos_token_id
+            if eos_token_id is not None
+            else self.config.talker_config.codec_eos_token_id
+        )
         first_codebook = talker_codes[0, :, 0]
         stop_positions = torch.nonzero(
-            first_codebook == self.config.talker_config.codec_eos_token_id,
+            first_codebook == resolved_eos_token_id,
             as_tuple=False,
         )
         if stop_positions.numel() > 0:
@@ -170,9 +175,16 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         else:
             effective_length = int(talker_codes.shape[1])
 
+        sequences = getattr(talker_result, "sequences", None)
+        terminated = (
+            isinstance(sequences, torch.Tensor)
+            and sequences.numel() != 0
+            and int(sequences[0, -1].item()) == resolved_eos_token_id
+        )
         return (
             talker_codes[0, :effective_length],
             talker_hidden_states[0, :effective_length, :],
+            terminated,
         )
 
     def _append_instruct_embed_block(
@@ -205,11 +217,189 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         self._append_instruct_embed_block(talker_input_embeds, instruct_id)
         talker_input_embeds.append(talker_input_embed)
 
-        return self._run_talker_generation(
+        talker_codes, talker_hidden_states, _ = self._run_talker_generation(
             talker_input_embeds=talker_input_embeds,
             trailing_text_hidden=trailing_text_hidden,
             tts_pad_embed=tts_pad_embed,
-            suppress_tokens=self._build_talker_suppress_tokens(),
+            suppress_tokens=self._build_talker_suppress_tokens(eos_token_id),
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            subtalker_configuration=subtalker_configuration,
+            eos_token_id=eos_token_id,
+            repetition_penalty=repetition_penalty,
+            output_hidden_states=output_hidden_states,
+            return_dict_in_generate=return_dict_in_generate,
+        )
+        return talker_codes, talker_hidden_states
+
+    def _generate_turns_with_prepared_prompts(
+        self,
+        input_ids: list[torch.Tensor],
+        instruct_ids: list[torch.Tensor | None],
+        prepared_prompts: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        max_new_tokens: int,
+        do_sample: bool,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        eos_token_id: int | None,
+        repetition_penalty: float,
+        output_hidden_states: bool,
+        return_dict_in_generate: bool,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        if not (len(input_ids) == len(instruct_ids) == len(prepared_prompts) != 0):
+            raise ValueError("Structured generation turn counts must match.")
+        if not output_hidden_states or not return_dict_in_generate:
+            raise ValueError(
+                "Structured generation requires `output_hidden_states=True` and "
+                "`return_dict_in_generate=True`."
+            )
+
+        history_embeddings: list[torch.Tensor] = []
+        talker_codes_list: list[torch.Tensor] = []
+        talker_hidden_states_list: list[torch.Tensor] = []
+        for turn_index, (
+            input_id,
+            instruct_id,
+            (talker_input_embed, trailing_text_hidden, tts_pad_embed),
+        ) in enumerate(zip(input_ids, instruct_ids, prepared_prompts)):
+            turn_embeddings: list[torch.Tensor] = []
+            self._append_instruct_embed_block(turn_embeddings, instruct_id)
+            turn_embeddings.append(talker_input_embed)
+
+            talker_codes, talker_hidden_states, terminated = (
+                self._run_talker_generation(
+                    talker_input_embeds=history_embeddings + turn_embeddings,
+                    trailing_text_hidden=trailing_text_hidden,
+                    tts_pad_embed=tts_pad_embed,
+                    suppress_tokens=self._build_talker_suppress_tokens(eos_token_id),
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    top_k=top_k,
+                    top_p=top_p,
+                    temperature=temperature,
+                    subtalker_configuration=subtalker_configuration,
+                    eos_token_id=eos_token_id,
+                    repetition_penalty=repetition_penalty,
+                    output_hidden_states=output_hidden_states,
+                    return_dict_in_generate=return_dict_in_generate,
+                )
+            )
+            talker_codes_list.append(talker_codes)
+            talker_hidden_states_list.append(talker_hidden_states)
+
+            if turn_index + 1 < len(prepared_prompts):
+                if not terminated:
+                    raise RuntimeError(
+                        f"Turn {turn_index + 1} did not reach codec EOS. Increase "
+                        "`max_new_tokens` before generating a subsequent turn."
+                    )
+                history_embeddings.extend(turn_embeddings)
+                history_embeddings.append(
+                    self._build_generated_codec_history_embeddings(
+                        talker_codes=talker_codes,
+                        trailing_text_hidden=trailing_text_hidden,
+                        tts_pad_embed=tts_pad_embed,
+                    )
+                )
+                history_embeddings.append(
+                    self._build_codec_eos_history_embedding(
+                        tts_pad_embed=tts_pad_embed,
+                        input_dtype=input_id.dtype,
+                        eos_token_id=(
+                            eos_token_id
+                            if eos_token_id is not None
+                            else self.config.talker_config.codec_eos_token_id
+                        ),
+                    )
+                )
+
+        return talker_codes_list, talker_hidden_states_list
+
+    def _generate_standard_turns_from_ids(
+        self,
+        input_ids: list[torch.Tensor],
+        instruct_ids: list[torch.Tensor | None],
+        language_id: int | None,
+        speaker_embed: torch.Tensor | None,
+        non_streaming_mode: bool,
+        max_new_tokens: int,
+        do_sample: bool,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        eos_token_id: int | None,
+        repetition_penalty: float,
+        output_hidden_states: bool,
+        return_dict_in_generate: bool,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        prepared_prompts = [
+            self._prepare_standard_generation(
+                input_id=input_id,
+                language_id=language_id,
+                speaker_embed=speaker_embed,
+                non_streaming_mode=non_streaming_mode,
+            )
+            for input_id in input_ids
+        ]
+        return self._generate_turns_with_prepared_prompts(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            prepared_prompts=prepared_prompts,
+            max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            subtalker_configuration=subtalker_configuration,
+            eos_token_id=eos_token_id,
+            repetition_penalty=repetition_penalty,
+            output_hidden_states=output_hidden_states,
+            return_dict_in_generate=return_dict_in_generate,
+        )
+
+    def _generate_voice_clone_turns_from_ids(
+        self,
+        input_ids: list[torch.Tensor],
+        instruct_ids: list[torch.Tensor | None],
+        language_id: int | None,
+        speaker_embed: torch.Tensor | None,
+        non_streaming_mode: bool,
+        ref_code: torch.Tensor | None,
+        ref_id: torch.Tensor | None,
+        use_icl_prompt: bool,
+        max_new_tokens: int,
+        do_sample: bool,
+        top_k: int,
+        top_p: float,
+        temperature: float,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        eos_token_id: int | None,
+        repetition_penalty: float,
+        output_hidden_states: bool,
+        return_dict_in_generate: bool,
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        prepared_prompts = [
+            self._prepare_voice_clone_generation(
+                input_id=input_id,
+                language_id=language_id,
+                speaker_embed=speaker_embed,
+                non_streaming_mode=non_streaming_mode,
+                ref_code=ref_code if turn_index == 0 else None,
+                ref_id=ref_id if turn_index == 0 else None,
+                use_icl_prompt=use_icl_prompt and turn_index == 0,
+            )
+            for turn_index, input_id in enumerate(input_ids)
+        ]
+        return self._generate_turns_with_prepared_prompts(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            prepared_prompts=prepared_prompts,
             max_new_tokens=max_new_tokens,
             do_sample=do_sample,
             top_k=top_k,

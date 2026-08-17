@@ -26,6 +26,9 @@ from .qwen3_tts_base_model import (
     AudioLike,
     GenerateExtraArg,
     Qwen3TTSBaseModel,
+    TTSBatchInput,
+    TTSInput,
+    TTSInputItem,
 )
 
 
@@ -61,6 +64,24 @@ SpeakerBatchInput = (
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
     model: Qwen3TTSCustomVoiceForConditionalGeneration
+
+    def _validate_chunk_instruction_support(
+        self, chunks: Sequence[TTSInputItem]
+    ) -> None:
+        if self.model.tts_model_size == "0b6" and any(
+            chunk["instruction"] != "" for chunk in chunks
+        ):
+            raise ValueError(
+                "CustomVoice 0.6B does not support non-empty chunk instructions."
+            )
+
+    def _tokenize_custom_voice_chunks(
+        self, chunks: Sequence[TTSInputItem]
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor | None]]:
+        input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
+        if self.model.tts_model_size == "0b6":
+            instruct_ids = [None] * len(chunks)
+        return input_ids, instruct_ids
 
     @torch.inference_mode()
     def create_custom_voice_prompt(
@@ -189,71 +210,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             ref_text=ref_text_raw,
         )
 
-    def _prepend_ref_code_for_decode(
-        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
-    ) -> torch.Tensor:
-        if ref_code is None:
-            return talker_codes
-        return torch.cat([ref_code.to(talker_codes.device), talker_codes], dim=0)
-
-    def _trim_decoded_ref_prefix(
-        self,
-        wav: np.ndarray,
-        ref_code: torch.Tensor | None,
-        total_code_length: int,
-    ) -> np.ndarray:
-        if ref_code is None:
-            return wav
-        ref_len = int(ref_code.shape[0])
-        cut = int(ref_len / max(total_code_length, 1) * wav.shape[0])
-        return wav[cut:]
-
-    def _decode_custom_voice_codes_single(
-        self, talker_codes: torch.Tensor, ref_code: torch.Tensor | None
-    ) -> tuple[np.ndarray, int]:
-        codes_for_decode = self._prepend_ref_code_for_decode(talker_codes, ref_code)
-        wavs, fs = self._decode_talker_codes_batch([codes_for_decode])
-        return (
-            self._trim_decoded_ref_prefix(
-                wavs[0],
-                ref_code=ref_code,
-                total_code_length=int(codes_for_decode.shape[0]),
-            ),
-            fs,
-        )
-
-    def _decode_custom_voice_codes_batch(
-        self,
-        talker_codes_list: Sequence[torch.Tensor],
-        ref_codes: Sequence[torch.Tensor | None],
-    ) -> tuple[list[np.ndarray], int]:
-        if len(talker_codes_list) != len(ref_codes):
-            raise ValueError(
-                "Batch size mismatch between generated codes and reference codes."
-            )
-
-        codes_for_decode = [
-            self._prepend_ref_code_for_decode(talker_codes, ref_code)
-            for talker_codes, ref_code in zip(talker_codes_list, ref_codes)
-        ]
-        wavs, fs = self._decode_talker_codes_batch(codes_for_decode)
-        wavs_out = [
-            self._trim_decoded_ref_prefix(
-                wav,
-                ref_code=ref_code,
-                total_code_length=int(codes.shape[0]),
-            )
-            for wav, ref_code, codes in zip(wavs, ref_codes, codes_for_decode)
-        ]
-        return wavs_out, fs
-
     @torch.no_grad()
     def generate_custom_voice(
         self,
-        text: str,
+        tts_input: TTSInput,
         speaker: SpeakerConfiguration | torch.Tensor,
         language: str = "Auto",
-        instruct: str = "",
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -268,24 +230,18 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         | CustomVoicePromptItem
         | None = None,
         **kwargs: GenerateExtraArg,
-    ) -> tuple[np.ndarray, int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
-        Generate one utterance with the CustomVoice model using a speaker
-        configuration or a direct speaker embedding. Optionally, an ICL
-        reference prompt can be layered on top through `ref_audio`/`ref_text`
-        or `custom_voice_prompt`.
+        Generate one assistant waveform per turn in a shared CustomVoice
+        context. An ICL reference prompt can be layered on top through
+        `ref_audio`/`ref_text` or `custom_voice_prompt`.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice")
 
+        chunks = self._normalize_tts_input(tts_input)
+        self._validate_chunk_instruction_support(chunks)
         language_value = self._normalize_language_value(language)
         speaker_value = speaker
-
-        model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size == "0b6":
-            # for 0b6 model, instruct is not supported
-            instruct_value = ""
-        else:
-            instruct_value = instruct
 
         self._validate_languages([language_value])
         if not isinstance(speaker_value, torch.Tensor):
@@ -332,8 +288,7 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 )
             ref_text_for_id = custom_voice_prompt_single["ref_text"]
 
-        input_id = self._tokenize_assistant_input(text)
-        instruct_id = self._tokenize_instruct(instruct_value)
+        input_ids, instruct_ids = self._tokenize_custom_voice_chunks(chunks)
         ref_id = self._tokenize_ref_text(ref_text_for_id)
 
         gen_kwargs = self._merge_generate_kwargs(
@@ -347,37 +302,34 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes, _ = self.model.generate_custom_voice(
-            input_id=input_id,
-            instruct_id=instruct_id,
+        ref_code = (
+            custom_voice_prompt_single["ref_code"]
+            if custom_voice_prompt_single is not None
+            else None
+        )
+        talker_codes_list, _ = self.model.generate_custom_voice_turns(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
             language=language_value,
             speaker=speaker_value,
-            ref_code=(
-                custom_voice_prompt_single["ref_code"]
-                if custom_voice_prompt_single is not None
-                else None
-            ),
+            ref_code=ref_code,
             ref_id=ref_id,
             use_icl_prompt=custom_voice_prompt_single is not None,
             non_streaming_mode=non_streaming_mode,
             **gen_kwargs,
         )
 
-        if custom_voice_prompt_single is not None:
-            return self._decode_custom_voice_codes_single(
-                talker_codes,
-                custom_voice_prompt_single["ref_code"],
-            )
-        wavs, fs = self._decode_talker_codes_batch([talker_codes])
-        return wavs[0], fs
+        return self._decode_talker_turns(
+            talker_codes_list,
+            prefix_code=ref_code if custom_voice_prompt_single is not None else None,
+        )
 
     @torch.no_grad()
     def generate_custom_voice_batch(
         self,
-        text: list[str],
+        tts_input: TTSBatchInput,
         speaker: SpeakerBatchInput,
         language: StringBatchInput = (),
-        instruct: StringBatchInput = (),
         non_streaming_mode: bool = True,
         do_sample: bool = True,
         top_k: int = 50,
@@ -392,32 +344,24 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
         | list[CustomVoicePromptItem]
         | None = None,
         **kwargs: GenerateExtraArg,
-    ) -> tuple[list[np.ndarray], int]:
+    ) -> tuple[list[list[np.ndarray]], int]:
         """
-        Generate speech with the CustomVoice model using speaker
-        configurations or direct speaker embeddings. Optionally, batched ICL
-        reference prompts can be layered on top.
+        Generate batched shared-context turns. Batched ICL reference prompts
+        can optionally be layered on top.
         """
         self._ensure_model_type("custom_voice", "generate_custom_voice_batch")
 
-        texts = list(text)
-
-        languages = self._normalize_language_values(language, len(texts))
-
+        structured_inputs = self._normalize_tts_batch_input(tts_input)
+        for chunks in structured_inputs:
+            self._validate_chunk_instruction_support(chunks)
+        languages = self._normalize_language_values(language, len(structured_inputs))
         speakers = list(speaker)
 
-        model_size = self.model.tts_model_size
-        if isinstance(model_size, str) and model_size == "0b6":
-            # for 0b6 model, instruct is not supported
-            instructs = [""] * len(texts)
-        elif len(instruct) == 0:
-            instructs = [""] * len(texts)
-        else:
-            instructs = list(instruct)
-
-        if not (len(texts) == len(languages) == len(speakers) == len(instructs)):
+        if not (len(structured_inputs) == len(languages) == len(speakers)):
             raise ValueError(
-                f"Batch size mismatch: text={len(texts)}, language={len(languages)}, speaker={len(speakers)}, instruct={len(instructs)}"
+                "Batch size mismatch: "
+                f"tts_input={len(structured_inputs)}, language={len(languages)}, "
+                f"speaker={len(speakers)}"
             )
 
         self._validate_languages(languages)
@@ -434,9 +378,10 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     ref_audio=list(ref_audio),
                     ref_text=ref_text,
                 )
-                if len(prompt_items) != len(texts):
+                if len(prompt_items) != len(structured_inputs):
                     raise ValueError(
-                        f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
+                        "Batch size mismatch: "
+                        f"prompt={len(prompt_items)}, tts_input={len(structured_inputs)}"
                     )
                 custom_voice_prompt_dict = self._prompt_items_to_custom_voice_prompt(
                     prompt_items
@@ -463,9 +408,10 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                             "`custom_voice_prompt` list items must be CustomVoicePromptItem."
                         )
                     prompt_items.append(item)
-                if len(prompt_items) != len(texts):
+                if len(prompt_items) != len(structured_inputs):
                     raise ValueError(
-                        f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}"
+                        "Batch size mismatch: "
+                        f"prompt={len(prompt_items)}, tts_input={len(structured_inputs)}"
                     )
                 custom_voice_prompt_dict = self._prompt_items_to_custom_voice_prompt(
                     prompt_items
@@ -475,15 +421,12 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                 custom_voice_prompt_dict = self._coerce_custom_voice_prompt_dict(
                     custom_voice_prompt
                 )
-                if len(custom_voice_prompt_dict["ref_code"]) != len(texts):
+                if len(custom_voice_prompt_dict["ref_code"]) != len(structured_inputs):
                     raise ValueError(
-                        "Batch size mismatch in `custom_voice_prompt` fields and `text`."
+                        "Batch size mismatch in `custom_voice_prompt` fields and "
+                        "`tts_input`."
                     )
                 ref_texts_for_ids = custom_voice_prompt_dict["ref_text"]
-
-        input_ids = self._tokenize_assistant_inputs(texts)
-        instruct_ids = self._tokenize_instructs(instructs)
-        ref_ids = self._tokenize_ref_texts(ref_texts_for_ids)
 
         gen_kwargs = self._merge_generate_kwargs(
             do_sample=do_sample,
@@ -496,27 +439,40 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             **kwargs,
         )
 
-        talker_codes_list, _ = self.model.generate_custom_voice_batch(
-            input_ids=input_ids,
-            instruct_ids=instruct_ids,
-            languages=languages,
-            speakers=speakers,
-            ref_codes=(
-                custom_voice_prompt_dict["ref_code"]
-                if custom_voice_prompt_dict is not None
-                else ()
-            ),
-            ref_ids=ref_ids,
-            use_icl_prompts=(
-                [True] * len(texts) if custom_voice_prompt_dict is not None else ()
-            ),
-            non_streaming_mode=non_streaming_mode,
-            **gen_kwargs,
-        )
+        wavs_by_input: list[list[np.ndarray]] = []
+        sample_rate: int | None = None
+        for index, (chunks, language_value, speaker_value) in enumerate(
+            zip(structured_inputs, languages, speakers)
+        ):
+            input_ids, instruct_ids = self._tokenize_custom_voice_chunks(chunks)
+            if custom_voice_prompt_dict is None:
+                ref_code = None
+                ref_id = None
+                use_icl_prompt = False
+            else:
+                ref_code = custom_voice_prompt_dict["ref_code"][index]
+                ref_id = self._tokenize_ref_text(ref_texts_for_ids[index])
+                use_icl_prompt = True
 
-        if custom_voice_prompt_dict is not None:
-            return self._decode_custom_voice_codes_batch(
-                talker_codes_list,
-                custom_voice_prompt_dict["ref_code"],
+            talker_codes_list, _ = self.model.generate_custom_voice_turns(
+                input_ids=input_ids,
+                instruct_ids=instruct_ids,
+                language=language_value,
+                speaker=speaker_value,
+                ref_code=ref_code,
+                ref_id=ref_id,
+                use_icl_prompt=use_icl_prompt,
+                non_streaming_mode=non_streaming_mode,
+                **gen_kwargs,
             )
-        return self._decode_talker_codes_batch(talker_codes_list)
+            wavs, fs = self._decode_talker_turns(
+                talker_codes_list,
+                prefix_code=ref_code if use_icl_prompt else None,
+            )
+            if sample_rate is not None and fs != sample_rate:
+                raise RuntimeError("Decoded sample rates differ across batch items.")
+            sample_rate = fs
+            wavs_by_input.append(wavs)
+        if sample_rate is None:
+            raise RuntimeError("Structured batch generation produced no outputs.")
+        return wavs_by_input, sample_rate
