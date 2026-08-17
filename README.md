@@ -20,7 +20,7 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 
 Each generation method accepts `tts_input`, a non-empty sequence of `{"text": str, "instruction": str}` turns. Every item is serialized causally as a user instruction followed by an assistant text/audio response. Before a later turn is generated, its Transformer context includes the earlier instructions, assistant text prefills, generated codec tokens, and codec end markers. Single-request methods return one waveform per assistant turn; batch methods group those waveforms by logical `TTSInput`.
 
-An empty instruction omits the user instruction block, matching the native single-turn API. Multi-turn inputs require `non_streaming_mode=True` (the public API default). Each waveform is decoded with the reference and prior turn codes as acoustic context, then trimmed at the exact codec boundary.
+An empty instruction omits the user instruction block, matching the native single-turn API. Shared-context turns support both dual-track layouts: `non_streaming_mode=True` prefills each turn's complete text, while `False` consumes its text alongside generated codec frames. Each waveform is decoded with the reference and prior turn codes as acoustic context, then trimmed at the exact codec boundary.
 
 Structured multi-turn generation is a fork-level experimental mode. The upstream checkpoints and API document independent utterances, not repeated assistant audio turns in one ChatML history. Retained text and codec context can therefore change later delivery based on dialogue semantics rather than preserve the first turn's style exactly.
 

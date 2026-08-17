@@ -82,7 +82,7 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
         ref_id: torch.Tensor | None = None,
         language: str = "Auto",
         speaker: str = "",
-        non_streaming_mode: bool = True,
+        non_streaming_mode: bool = False,
         max_new_tokens: int = 4096,
         do_sample: bool = True,
         top_k: int = 50,
@@ -99,8 +99,6 @@ class Qwen3TTSVoiceCloneForConditionalGeneration(Qwen3TTSConditionalGenerationBa
             self._validate_input_id(input_id)
             for input_id in self._validate_input_ids_batch(input_ids)
         ]
-        if len(input_ids) > 1 and not non_streaming_mode:
-            raise ValueError("Shared-context turns require `non_streaming_mode=True`.")
         instruct_ids = [
             self._normalize_instruct_id(instruct_id)
             for instruct_id in self._normalize_instruct_ids_batch(

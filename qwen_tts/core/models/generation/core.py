@@ -406,10 +406,17 @@ class Qwen3TTSGenerationCoreMixin:
     def _build_codec_eos_history_embedding(
         self,
         tts_pad_embed: torch.Tensor,
+        trailing_text_hidden: torch.Tensor,
+        generated_length: int,
         input_dtype: torch.dtype,
         eos_token_id: int,
     ) -> torch.Tensor:
-        return tts_pad_embed + self.talker.get_input_embeddings()(
+        text_embedding = tts_pad_embed
+        if generated_length < trailing_text_hidden.shape[1]:
+            text_embedding = trailing_text_hidden[
+                :, generated_length : generated_length + 1
+            ]
+        return text_embedding + self.talker.get_input_embeddings()(
             torch.tensor(
                 [[eos_token_id]],
                 device=self.talker.device,

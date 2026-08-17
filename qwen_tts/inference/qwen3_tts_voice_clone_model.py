@@ -312,7 +312,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         voice_clone_prompt: VoiceClonePromptSingleInput
         | VoiceClonePromptItem
         | None = None,
-        non_streaming_mode: bool = True,
+        non_streaming_mode: bool = False,
         do_sample: bool = True,
         top_k: int = 50,
         top_p: float = 1.0,
@@ -412,7 +412,7 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         voice_clone_prompt: VoiceClonePromptInput
         | list[VoiceClonePromptItem]
         | None = None,
-        non_streaming_mode: bool = True,
+        non_streaming_mode: bool = False,
         do_sample: bool = True,
         top_k: int = 50,
         top_p: float = 1.0,

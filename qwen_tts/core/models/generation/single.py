@@ -309,6 +309,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
                 history_embeddings.append(
                     self._build_codec_eos_history_embedding(
                         tts_pad_embed=tts_pad_embed,
+                        trailing_text_hidden=trailing_text_hidden,
+                        generated_length=int(talker_codes.shape[0]),
                         input_dtype=input_id.dtype,
                         eos_token_id=(
                             eos_token_id
