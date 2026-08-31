@@ -28,10 +28,6 @@ from .vq.whisper_encoder import get_mel_audio, get_T_after_cnn
 logger = logging.get_logger(__name__)
 
 
-class _WarningOnce(Protocol):
-    def __call__(self, message: str) -> None: ...
-
-
 class _PretrainedModelLoader(Protocol):
     def __call__(
         self,
@@ -92,28 +88,16 @@ class Qwen3TTSTokenizerV1Decoder(Qwen3TTSTokenizerV1DecoderPreTrainedModel):
     def __init__(self, config: Qwen3TTSTokenizerV1DecoderConfig) -> None:
         super().__init__(config)
         attn_impl = config._attn_implementation
-        warning_once = getattr(logger, "warning_once", None)
         if config._attn_implementation == "flash_attention_2":
-            if callable(warning_once):
-                cast(_WarningOnce, warning_once)(
-                    "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
-                    "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
-                )
-            else:
-                logger.warning(
-                    "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
-                    "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
-                )
+            logger.warning_once(
+                "Qwen3TTSTokenizerV1Decoder must inference with fp32, but flash_attention_2 only supports fp16 and bf16, "
+                "attention implementation of Qwen3TTSTokenizerV1Decoder will fallback to sdpa."
+            )
             attn_impl = "sdpa"
         elif config._attn_implementation == "eager":
-            if callable(warning_once):
-                cast(_WarningOnce, warning_once)(
-                    "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
-                )
-            else:
-                logger.warning(
-                    "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
-                )
+            logger.warning_once(
+                "Qwen3TTSTokenizerV1Decoder does not support eager attention implementation, fall back to sdpa"
+            )
             attn_impl = "sdpa"
         self.dit = Qwen3TTSTokenizerV1DecoderDiTModel._from_config(
             config.dit_config, attn_implementation=attn_impl

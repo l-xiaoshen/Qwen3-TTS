@@ -238,15 +238,9 @@ class Qwen3TTSTalkerModel(Qwen3TTSTalkerTextPreTrainedModel):
             )
 
         if self.gradient_checkpointing and self.training and use_cache:
-            warning_once = getattr(logger, "warning_once", None)
-            if callable(warning_once):
-                warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
-            else:
-                logger.warning(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+            )
             use_cache = False
 
         if use_cache and past_key_values is None:
