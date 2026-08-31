@@ -17,6 +17,10 @@
 from typing import cast
 
 import torch
+from transformers.generation.logits_process import (
+    LogitsProcessorList,
+    RepetitionPenaltyLogitsProcessor,
+)
 
 from ...config import SpeakerConfiguration
 from ..configuration_qwen3_tts import Qwen3TTSConfig
@@ -26,6 +30,16 @@ from ..modeling_qwen3_tts_talker import Qwen3TTSTalkerForConditionalGeneration
 class Qwen3TTSGenerationCoreMixin:
     config: Qwen3TTSConfig
     talker: Qwen3TTSTalkerForConditionalGeneration
+
+    @staticmethod
+    def _build_talker_logits_processors(
+        repetition_penalty: float,
+    ) -> LogitsProcessorList:
+        """Apply the penalty only to generated codec IDs, not the embedding prompt."""
+        processors = LogitsProcessorList()
+        if repetition_penalty != 1.0:
+            processors.append(RepetitionPenaltyLogitsProcessor(repetition_penalty))
+        return processors
 
     def generate_icl_prompt(
         self,

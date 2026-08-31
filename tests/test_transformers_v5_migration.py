@@ -1,4 +1,5 @@
 import unittest
+import warnings
 from tempfile import TemporaryDirectory
 
 import torch
@@ -8,6 +9,7 @@ from qwen_tts.core.models.configuration_qwen3_tts import (
     Qwen3TTSTalkerCodePredictorConfig,
     Qwen3TTSTalkerConfig,
 )
+from qwen_tts.core.models.generation.single import Qwen3TTSGenerationSingleMixin
 from qwen_tts.core.models.modeling_qwen3_tts_attention import (
     Qwen3TTSRotaryEmbedding,
     Qwen3TTSTalkerRotaryEmbedding,
@@ -174,6 +176,40 @@ class TransformersV5MigrationTest(unittest.TestCase):
 
         self.assertEqual(tuple(result.sequences.shape), (1, 2))
         self.assertEqual(len(result.hidden_states), 2)
+
+    def test_talker_repetition_penalty_with_embedded_prompt_does_not_warn(
+        self,
+    ) -> None:
+        predictor_config = self.predictor_config()
+        model = Qwen3TTSTalkerForConditionalGeneration(
+            self.talker_config(predictor_config)
+        ).eval()
+        generation = Qwen3TTSGenerationSingleMixin()
+        generation.talker = model
+
+        with warnings.catch_warnings(), torch.no_grad():
+            warnings.filterwarnings(
+                "error",
+                message=(r"Passing `repetition_penalty` with `inputs_embeds`.*"),
+                category=UserWarning,
+            )
+            talker_codes, talker_hidden_states, _ = generation._run_talker_generation(
+                talker_input_embeds=[torch.randn(1, 2, 12)],
+                trailing_text_hidden=torch.randn(1, 4, 12),
+                tts_pad_embed=torch.randn(1, 1, 12),
+                suppress_tokens=[15],
+                max_new_tokens=2,
+                do_sample=True,
+                top_k=0,
+                top_p=1.0,
+                temperature=1.0,
+                subtalker_configuration=None,
+                eos_token_id=15,
+                repetition_penalty=1.05,
+            )
+
+        self.assertEqual(tuple(talker_codes.shape), (1, 2))
+        self.assertEqual(tuple(talker_hidden_states.shape), (1, 12))
 
     def test_v5_parallel_plans_and_tied_weights(self) -> None:
         predictor_config = self.predictor_config(
