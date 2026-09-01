@@ -15,6 +15,9 @@ from .modeling_qwen3_tts_tokenizer_v2_core import (
     Qwen3TTSTokenizerV2Decoder,
     Qwen3TTSTokenizerV2Encoder,
 )
+from .modeling_qwen3_tts_tokenizer_v2_incremental import (
+    Qwen3TTSTokenizerV2DecodeState,
+)
 
 logger = logging.get_logger(__name__)
 
@@ -186,5 +189,46 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
 
         return Qwen3TTSTokenizerV2DecoderOutput(audio_values=audio_values)
 
+    @staticmethod
+    def new_decode_state() -> Qwen3TTSTokenizerV2DecodeState:
+        """Create request-local state for an incremental 12 Hz decode stream."""
+        return Qwen3TTSTokenizerV2DecodeState()
 
-__all__ = ["Qwen3TTSTokenizerV2Model", "Qwen3TTSTokenizerV2PreTrainedModel"]
+    @torch.inference_mode()
+    def decode_incremental(
+        self,
+        audio_codes: torch.Tensor,
+        state: Qwen3TTSTokenizerV2DecodeState,
+        return_dict: bool | None = None,
+    ) -> tuple[list[torch.Tensor]] | Qwen3TTSTokenizerV2DecoderOutput:
+        """Decode only fresh, unpadded frames and advance ``state`` in place."""
+        return_dict = (
+            return_dict if return_dict is not None else self.config.return_dict
+        )
+        if audio_codes.ndim != 3:
+            raise ValueError(
+                "`audio_codes` must have shape (1, fresh_frames, num_quantizers)."
+            )
+        if audio_codes.shape[0] != 1:
+            raise ValueError("One incremental codec state accepts one batch row.")
+        if audio_codes.shape[2] != self.decoder.config.num_quantizers:
+            raise ValueError(
+                f"Expected {self.decoder.config.num_quantizers} codebooks, "
+                f"got {audio_codes.shape[2]}."
+            )
+        if audio_codes.dtype != torch.long:
+            raise TypeError("`audio_codes` must use torch.long dtype.")
+        decoded_audio = self.decoder.incremental_decode(
+            audio_codes.transpose(1, 2), state
+        ).squeeze(1)
+        audio_values = [decoded_audio[0]]
+        if not return_dict:
+            return (audio_values,)
+        return Qwen3TTSTokenizerV2DecoderOutput(audio_values=audio_values)
+
+
+__all__ = [
+    "Qwen3TTSTokenizerV2DecodeState",
+    "Qwen3TTSTokenizerV2Model",
+    "Qwen3TTSTokenizerV2PreTrainedModel",
+]

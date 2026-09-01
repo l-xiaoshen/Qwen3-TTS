@@ -38,7 +38,10 @@ from ..core.tokenizer_25hz.modeling_qwen3_tts_tokenizer_v1 import (
     Qwen3TTSTokenizerV1Model,
 )
 from .qwen3_tts_tokenizer_audio_mixin import Qwen3TTSTokenizerAudioMixin
-from .qwen3_tts_tokenizer_decode_mixin import Qwen3TTSTokenizerDecodeMixin
+from .qwen3_tts_tokenizer_decode_mixin import (
+    Qwen3TTSTokenizerDecodeMixin,
+    Qwen3TTSTokenizerDecodeStream,
+)
 
 AudioInput = (
     str  # wav path, or base64 string
@@ -267,3 +270,6 @@ class Qwen3TTSTokenizer(Qwen3TTSTokenizerDecodeMixin, Qwen3TTSTokenizerAudioMixi
                 return_dict=return_dict,
             )
         return enc
+
+
+__all__ = ["Qwen3TTSTokenizer", "Qwen3TTSTokenizerDecodeStream"]

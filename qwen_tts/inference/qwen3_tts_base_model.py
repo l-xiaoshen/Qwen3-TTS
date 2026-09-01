@@ -645,6 +645,35 @@ class Qwen3TTSBaseModel:
         if len(talker_codes_list) == 0:
             raise ValueError("`talker_codes_list` must contain at least one turn.")
 
+        speech_tokenizer = self._require_speech_tokenizer()
+        if speech_tokenizer.supports_incremental_decode():
+            stream = speech_tokenizer.create_decode_stream()
+            if prefix_code is not None:
+                # Reference audio primes acoustic state exactly once. Its PCM is
+                # conditioning context and must not appear in generated turns.
+                stream.decode_chunk(prefix_code)
+
+            samples_per_code = speech_tokenizer.get_decode_upsample_rate()
+            turn_wavs: list[np.ndarray] = []
+            sample_rate: int | None = None
+            for talker_codes in talker_codes_list:
+                waveform, fs = stream.decode_chunk(talker_codes)
+                if sample_rate is not None and fs != sample_rate:
+                    raise RuntimeError("Decoded sample rates differ across turns.")
+                sample_rate = fs
+
+                expected_length = int(talker_codes.shape[0]) * samples_per_code
+                if waveform.shape[0] != expected_length:
+                    raise RuntimeError(
+                        "Incremental turn decoding produced an unexpected waveform "
+                        f"length: expected {expected_length}, got {waveform.shape[0]}."
+                    )
+                turn_wavs.append(waveform)
+
+            if sample_rate is None:
+                raise RuntimeError("Turn decoding produced no outputs.")
+            return turn_wavs, sample_rate
+
         first_code = talker_codes_list[0]
         code_parts: list[torch.Tensor] = []
         history_length = 0
@@ -654,7 +683,7 @@ class Qwen3TTSBaseModel:
                 prefix_code.to(device=first_code.device, dtype=first_code.dtype)
             )
 
-        samples_per_code = self._require_speech_tokenizer().get_decode_upsample_rate()
+        samples_per_code = speech_tokenizer.get_decode_upsample_rate()
         turn_wavs: list[np.ndarray] = []
         sample_rate: int | None = None
         for talker_codes in talker_codes_list:

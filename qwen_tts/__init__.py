@@ -29,7 +29,10 @@ from .inference.qwen3_tts_custom_voice_model import (
     CustomVoicePromptItem,
     Qwen3TTSCustomVoiceModel,
 )
-from .inference.qwen3_tts_tokenizer import Qwen3TTSTokenizer
+from .inference.qwen3_tts_tokenizer import (
+    Qwen3TTSTokenizer,
+    Qwen3TTSTokenizerDecodeStream,
+)
 from .inference.qwen3_tts_voice_clone_model import (
     Qwen3TTSVoiceCloneModel,
     VoiceClonePromptItem,
@@ -43,6 +46,7 @@ __all__ = [
     "Qwen3TTSBaseModel",
     "Qwen3TTSCustomVoiceModel",
     "Qwen3TTSTokenizer",
+    "Qwen3TTSTokenizerDecodeStream",
     "Qwen3TTSVoiceCloneModel",
     "Qwen3TTSVoiceDesignModel",
     "SpeakerConfiguration",

@@ -8,6 +8,10 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
+from ..core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2_incremental import (
+    Qwen3TTSTokenizerV2DecodeState,
+)
+
 
 @runtime_checkable
 class _TokenizerDecodeOutput(Protocol):
@@ -29,6 +33,18 @@ class _TokenizerDecodeModel(Protocol):
     def get_encode_downsample_rate(self) -> int: ...
     def get_decode_upsample_rate(self) -> int: ...
     def decode(self, *args: object, **kwargs: object) -> object: ...
+
+
+@runtime_checkable
+class _TokenizerIncrementalDecodeModel(_TokenizerDecodeModel, Protocol):
+    def new_decode_state(self) -> Qwen3TTSTokenizerV2DecodeState: ...
+
+    def decode_incremental(
+        self,
+        audio_codes: torch.Tensor,
+        state: Qwen3TTSTokenizerV2DecodeState,
+        return_dict: bool | None = None,
+    ) -> object: ...
 
 
 def _to_tensor(value: object, dtype: torch.dtype | None = None) -> torch.Tensor:
@@ -207,6 +223,57 @@ def _audio_values_to_tensors(value: object) -> list[torch.Tensor]:
     raise TypeError(f"Unsupported decoded audio container type: {type(value)}")
 
 
+class Qwen3TTSTokenizerDecodeStream:
+    """Request-local stateful decoder for successive 12 Hz codec chunks."""
+
+    def __init__(
+        self,
+        model: _TokenizerIncrementalDecodeModel,
+        device: torch.device,
+    ) -> None:
+        self._model = model
+        self._device = device
+        self._state = model.new_decode_state()
+
+    @property
+    def frame_position(self) -> int:
+        """Number of codec frames consumed by this stream."""
+        return self._state.frame_position
+
+    def reset(self) -> None:
+        """Start a new acoustically independent stream."""
+        self._state = self._model.new_decode_state()
+
+    def decode_chunk(
+        self,
+        audio_codes: torch.Tensor | np.ndarray,
+    ) -> tuple[np.ndarray, int]:
+        """Decode fresh ``(frames, codebooks)`` codes and retain causal state."""
+        codes = _to_tensor(audio_codes, dtype=torch.long)
+        if codes.ndim == 2:
+            codes = codes.unsqueeze(0)
+        elif codes.ndim != 3 or codes.shape[0] != 1:
+            raise ValueError(
+                "Incremental `audio_codes` must have shape "
+                "(frames, codebooks) or (1, frames, codebooks)."
+            )
+        codes = codes.to(self._device)
+
+        with torch.inference_mode():
+            decoded = self._model.decode_incremental(
+                codes,
+                self._state,
+                return_dict=True,
+            )
+        if not isinstance(decoded, _TokenizerDecodeOutput):
+            raise TypeError("Incremental tokenizer output has no `audio_values` field.")
+        wav_tensors = _audio_values_to_tensors(decoded.audio_values)
+        if len(wav_tensors) != 1:
+            raise RuntimeError("Incremental codec returned an unexpected batch size.")
+        waveform = wav_tensors[0].to(torch.float32).detach().cpu().numpy()
+        return waveform, int(self._model.get_output_sample_rate())
+
+
 class Qwen3TTSTokenizerDecodeMixin:
     def _require_decode_state(
         self,
@@ -284,6 +351,21 @@ class Qwen3TTSTokenizerDecodeMixin:
         wavs = [w.to(torch.float32).detach().cpu().numpy() for w in wav_tensors]
         return wavs, int(model.get_output_sample_rate())
 
+    def supports_incremental_decode(self) -> bool:
+        """Return whether the loaded tokenizer has a stateful codec decoder."""
+        model, _ = self._require_decode_state()
+        return isinstance(model, _TokenizerIncrementalDecodeModel)
+
+    def create_decode_stream(self) -> Qwen3TTSTokenizerDecodeStream:
+        """Create independent state for successive 12 Hz codec chunks."""
+        model, device = self._require_decode_state()
+        if not isinstance(model, _TokenizerIncrementalDecodeModel):
+            raise NotImplementedError(
+                "Stateful incremental decoding is currently available only for "
+                "the Qwen3-TTS 12 Hz tokenizer."
+            )
+        return Qwen3TTSTokenizerDecodeStream(model, device)
+
     def get_model_type(self) -> str:
         """
         Get the underlying tokenizer model type.
@@ -334,3 +416,6 @@ class Qwen3TTSTokenizerDecodeMixin:
         """
         model, _ = self._require_decode_state()
         return int(model.get_decode_upsample_rate())
+
+
+__all__ = ["Qwen3TTSTokenizerDecodeMixin", "Qwen3TTSTokenizerDecodeStream"]

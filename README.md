@@ -16,11 +16,12 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 - Weighted speaker merge.
 - Reusable prompt builders.
 - Structured `TTSInput` chunks with an independent instruction per chunk.
+- Stateful 12 Hz codec decoding for exact long-form, streaming, and multi-turn audio.
 - Hybrid custom voice generation with `speaker`, reference audio, and reference text.
 
 Each generation method accepts `tts_input`, a non-empty sequence of `{"text": str, "instruction": str}` turns. Every item is serialized causally as a user instruction followed by an assistant text/audio response. Before a later turn is generated, its Transformer context includes the earlier instructions, assistant text prefills, generated codec tokens, and codec end markers. Single-request methods return one waveform per assistant turn; batch methods group those waveforms by logical `TTSInput`.
 
-An empty instruction omits the user instruction block, matching the native single-turn API. Shared-context turns support both dual-track layouts: `non_streaming_mode=True` prefills each turn's complete text, while `False` consumes its text alongside generated codec frames. Each waveform is decoded with the reference and prior turn codes as acoustic context, then trimmed at the exact codec boundary.
+An empty instruction omits the user instruction block, matching the native single-turn API. Shared-context turns support both dual-track layouts: `non_streaming_mode=True` prefills each turn's complete text, while `False` consumes its text alongside generated codec frames. The 12 Hz codec keeps one request-local causal state across the optional reference prefix and all generated turns, so each returned waveform contains only fresh samples while retaining prior acoustic context.
 
 Structured multi-turn generation is a fork-level experimental mode. The upstream checkpoints and API document independent utterances, not repeated assistant audio turns in one ChatML history. Retained text and codec context can therefore change later delivery based on dialogue semantics rather than preserve the first turn's style exactly.
 
@@ -160,6 +161,21 @@ turn_wavs, sr = tts.generate_custom_voice(
 )
 ```
 
+### Stream 12 Hz codec chunks
+
+`Qwen3TTSTokenizer.create_decode_stream()` exposes the stateful codec directly for pipelines that already receive complete 16-codebook frames. Every stream owns independent Transformer KV, causal-convolution history, and transposed-convolution overlap state.
+
+```python
+codec_stream = speech_tokenizer.create_decode_stream()
+for fresh_codes in codec_chunks:  # shape: (fresh_frames, 16)
+    wav_chunk, sr = codec_stream.decode_chunk(fresh_codes)
+    consume_audio(wav_chunk, sr)
+```
+
+Call `codec_stream.reset()` before starting an acoustically independent sequence. Chunks must be unpadded and ordered; the stream emits exactly 1920 samples per 12 Hz codec frame.
+
+`non_streaming_mode=False` controls the Talker's text/audio alignment and does not itself make the public `generate_*` methods yield while generation is running. Those methods now use stateful decoding between completed turns; a live generation loop can feed newly produced codec frames into the same stream API.
+
 ### Generation controls
 
 All single and batch generation methods expose the same closed set of keyword-only controls: `do_sample`, `top_k`, `top_p`, `temperature`, `repetition_penalty`, `subtalker_configuration`, `max_new_tokens`, and `eos_token_id`. Omitting a sampling override, or passing `None`, uses the checkpoint's `generation_config.json` value and then the library fallback when the checkpoint does not define one. `eos_token_id=None` uses the model's codec EOS token.
@@ -194,6 +210,7 @@ The fork exports the following top-level objects:
 - `Qwen3TTSVoiceCloneModel`
 - `Qwen3TTSCustomVoiceModel`
 - `Qwen3TTSVoiceDesignModel`
+- `Qwen3TTSTokenizerDecodeStream`
 - `VoiceClonePromptItem`
 - `CustomVoicePromptItem`
 - `SpeakerConfiguration`

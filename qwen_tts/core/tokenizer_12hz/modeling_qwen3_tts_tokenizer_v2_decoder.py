@@ -1,6 +1,8 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
-from typing import cast
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
@@ -24,6 +26,12 @@ from .modeling_qwen3_tts_tokenizer_v2_transformer import (
     Qwen3TTSTokenizerV2DecoderTransformerModel,
     _call_tensor_module,
 )
+
+if TYPE_CHECKING:
+    from .modeling_qwen3_tts_tokenizer_v2_incremental import (
+        Qwen3TTSTokenizerV2DecodeState,
+        Qwen3TTSTokenizerV2IncrementalDecoder,
+    )
 
 logger = logging.get_logger(__name__)
 
@@ -320,6 +328,7 @@ class SplitResidualVectorQuantizer(nn.Module):
 class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
     def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig) -> None:
         super().__init__(config)
+        self._incremental_decoder: Qwen3TTSTokenizerV2IncrementalDecoder | None = None
         self.total_upsample = int(
             np.prod((*config.upsample_rates, *config.upsampling_ratios))
         )
@@ -370,6 +379,17 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
 
         self.post_init()
 
+    def _get_incremental_decoder(
+        self,
+    ) -> Qwen3TTSTokenizerV2IncrementalDecoder:
+        from .modeling_qwen3_tts_tokenizer_v2_incremental import (
+            Qwen3TTSTokenizerV2IncrementalDecoder,
+        )
+
+        if self._incremental_decoder is None:
+            self._incremental_decoder = Qwen3TTSTokenizerV2IncrementalDecoder(self)
+        return self._incremental_decoder
+
     @override
     def forward(self, codes: torch.Tensor) -> torch.Tensor:
         if codes.shape[1] != self.config.num_quantizers:
@@ -401,20 +421,52 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
         chunk_size: int = 300,
         left_context_size: int = 25,
     ) -> torch.Tensor:
+        """Decode bounded chunks with exact request-local causal state.
+
+        ``left_context_size`` remains for call compatibility. Stateful decoding
+        derives the complete required context from the model instead of replaying
+        an approximate fixed number of input frames.
+        """
+        if chunk_size <= 0:
+            raise ValueError("`chunk_size` must be positive.")
+        if left_context_size < 0:
+            raise ValueError("`left_context_size` must be non-negative.")
+        if codes.ndim != 3:
+            raise ValueError("`codes` must have shape (batch, codebooks, frames).")
+
+        from .modeling_qwen3_tts_tokenizer_v2_incremental import (
+            Qwen3TTSTokenizerV2DecodeState,
+        )
+
+        if codes.shape[-1] == 0:
+            return next(self.parameters()).new_empty((codes.shape[0], 1, 0))
+
+        incremental_decoder = self._get_incremental_decoder()
+        states = [Qwen3TTSTokenizerV2DecodeState() for _ in range(codes.shape[0])]
         wavs: list[torch.Tensor] = []
         start_index = 0
         while start_index < codes.shape[-1]:
             end_index = min(start_index + chunk_size, codes.shape[-1])
-            context_size = (
-                left_context_size
-                if start_index - left_context_size > 0
-                else start_index
-            )
-            codes_chunk = codes[..., start_index - context_size : end_index]
-            wav_chunk = self(codes_chunk)
-            wavs.append(wav_chunk[..., context_size * self.total_upsample :])
+            wavs.append(incremental_decoder(codes[..., start_index:end_index], states))
             start_index = end_index
         return torch.cat(wavs, dim=-1)
+
+    @staticmethod
+    def new_decode_state() -> Qwen3TTSTokenizerV2DecodeState:
+        """Create independent state for one incremental codec stream."""
+        from .modeling_qwen3_tts_tokenizer_v2_incremental import (
+            Qwen3TTSTokenizerV2DecodeState,
+        )
+
+        return Qwen3TTSTokenizerV2DecodeState()
+
+    def incremental_decode(
+        self,
+        codes: torch.Tensor,
+        state: Qwen3TTSTokenizerV2DecodeState,
+    ) -> torch.Tensor:
+        """Decode fresh ``(1, codebooks, frames)`` codes and advance state."""
+        return self._get_incremental_decoder()(codes, [state])
 
 
 class Qwen3TTSTokenizerV2Encoder(MimiModel):
