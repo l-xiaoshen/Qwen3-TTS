@@ -16,7 +16,8 @@ The fork keeps `voice_clone` and `custom_voice` as separate APIs:
 - Weighted speaker merge.
 - Reusable prompt builders.
 - Structured `TTSInput` chunks with an independent instruction per chunk.
-- Stateful 12 Hz codec decoding for exact long-form, streaming, and multi-turn audio.
+- Live Talker-to-waveform yielding with stateful 12 Hz codec decoding.
+- Exact stateful long-form and multi-turn audio decoding.
 - Hybrid custom voice generation with `speaker`, reference audio, and reference text.
 
 Each generation method accepts `tts_input`, a non-empty sequence of `{"text": str, "instruction": str}` turns. Every item is serialized causally as a user instruction followed by an assistant text/audio response. Before a later turn is generated, its Transformer context includes the earlier instructions, assistant text prefills, generated codec tokens, and codec end markers. Single-request methods return one waveform per assistant turn; batch methods group those waveforms by logical `TTSInput`.
@@ -161,7 +162,33 @@ turn_wavs, sr = tts.generate_custom_voice(
 )
 ```
 
-### Stream 12 Hz codec chunks
+### Generate live waveform chunks
+
+The single-input APIs have live siblings that run Talker generation concurrently and yield immutable, fresh waveform chunks as soon as enough complete codec frames are available:
+
+```python
+with tts.generate_custom_voice_stream(
+    tts_input=tts_input,
+    speaker=embedding,
+    codec_chunk_frames=4,
+) as stream:
+    for chunk in stream:
+        consume_audio(
+            chunk.waveform,
+            chunk.sample_rate,
+            turn_index=chunk.turn_index,
+        )
+```
+
+The corresponding APIs are `generate_voice_clone_stream()` and `generate_voice_design_stream()`. The default four-frame chunk is 7,680 samples, or about 320 ms at 24 kHz. Set `codec_chunk_frames=1` for the minimum codec-side latency of 1,920 samples (80 ms), at the cost of more decoder launches.
+
+One request-local codec state spans the optional reference prefix and every structured turn. Reference PCM is never yielded. `turn_index` identifies the source `TTSInput` turn, and a partial final chunk is flushed before the next turn begins. The stream is bounded for backpressure; closing it cancels generation cooperatively and joins its worker. The context-manager form above guarantees cleanup if playback stops early.
+
+Live waveform generation currently requires the causal 12 Hz tokenizer. The 25 Hz diffusion/vocoder path remains available through the regular completed-generation APIs, but cannot emit exact immutable suffixes incrementally.
+
+`non_streaming_mode` still controls the Talker's text/audio alignment. It is independent of whether the public API yields live chunks.
+
+### Stream existing 12 Hz codec chunks
 
 `Qwen3TTSTokenizer.create_decode_stream()` exposes the stateful codec directly for pipelines that already receive complete 16-codebook frames. Every stream owns independent Transformer KV, causal-convolution history, and transposed-convolution overlap state.
 
@@ -173,8 +200,6 @@ for fresh_codes in codec_chunks:  # shape: (fresh_frames, 16)
 ```
 
 Call `codec_stream.reset()` before starting an acoustically independent sequence. Chunks must be unpadded and ordered; the stream emits exactly 1920 samples per 12 Hz codec frame.
-
-`non_streaming_mode=False` controls the Talker's text/audio alignment and does not itself make the public `generate_*` methods yield while generation is running. Those methods now use stateful decoding between completed turns; a live generation loop can feed newly produced codec frames into the same stream API.
 
 ### Generation controls
 
@@ -211,6 +236,8 @@ The fork exports the following top-level objects:
 - `Qwen3TTSCustomVoiceModel`
 - `Qwen3TTSVoiceDesignModel`
 - `Qwen3TTSTokenizerDecodeStream`
+- `TTSStream`
+- `TTSStreamChunk`
 - `VoiceClonePromptItem`
 - `CustomVoicePromptItem`
 - `SpeakerConfiguration`

@@ -1,7 +1,8 @@
 """PyTorch Qwen3TTS model."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -79,6 +80,7 @@ class Qwen3TTSTalkerOutputWithPast(ModelOutput):
     attentions: tuple[torch.Tensor, ...] | None = None
     past_hidden: torch.Tensor | None = None
     generation_step: int | None = None
+    rope_deltas: torch.Tensor | None = None
     trailing_text_hidden: torch.Tensor | None = None
     tts_pad_embed: torch.Tensor | None = None
 
@@ -398,8 +400,6 @@ class Qwen3TTSTalkerForConditionalGeneration(
             config=config.code_predictor_config,
             talker_config=config,
         )
-        self.rope_deltas: torch.Tensor | None = None
-
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -431,6 +431,34 @@ class Qwen3TTSTalkerForConditionalGeneration(
     @override
     def get_decoder(self) -> Qwen3TTSTalkerModel:
         return self.model
+
+    @override
+    def prepare_inputs_for_generation(
+        self,
+        input_ids: torch.LongTensor,
+        next_sequence_length: int | None = None,
+        past_key_values: Cache | None = None,
+        attention_mask: torch.LongTensor | None = None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        is_first_iteration: bool | None = False,
+        codec_frame_callback: Callable[[torch.Tensor, torch.Tensor], None]
+        | None = None,
+        **kwargs: Any,
+    ) -> dict[str, object]:
+        """Keep the Python streaming callback outside the compiled forward."""
+        del codec_frame_callback
+        return cast(
+            dict[str, object],
+            super().prepare_inputs_for_generation(  # ty: ignore[invalid-argument-type]
+                input_ids=input_ids,
+                next_sequence_length=next_sequence_length,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                is_first_iteration=is_first_iteration,
+                **kwargs,
+            ),
+        )
 
     def forward_sub_talker_finetune(
         self, codec_ids: torch.Tensor, talker_hidden_states: torch.Tensor
@@ -505,6 +533,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
         trailing_text_hidden: torch.Tensor | None = None,
         tts_pad_embed: torch.Tensor | None = None,
         generation_step: int | None = None,
+        rope_deltas: torch.Tensor | None = None,
         subtalker_configuration: SubTalkerConfiguration | None = None,
         **kwargs: Unpack[TalkerForwardKwargs],
     ) -> Qwen3TTSTalkerOutputWithPast:
@@ -533,6 +562,10 @@ class Qwen3TTSTalkerForConditionalGeneration(
                 resolved_temperature,
             ) = self._resolve_subtalker_generation_config(subtalker_configuration)
             last_id_hidden = cast(torch.Tensor, self.get_input_embeddings()(input_ids))
+            if resolved_do_sample is False:
+                resolved_top_p = None
+                resolved_top_k = None
+                resolved_temperature = None
             # Transformers 5's generation protocol rejects official models too (transformers#44233).
             predictor_result = self.code_predictor.generate(  # ty: ignore[invalid-argument-type, missing-argument]
                 inputs_embeds=torch.cat((past_hidden, last_id_hidden), dim=1),
@@ -541,18 +574,13 @@ class Qwen3TTSTalkerForConditionalGeneration(
                 top_p=resolved_top_p,
                 top_k=resolved_top_k,
                 temperature=resolved_temperature,
-                output_hidden_states=True,
-                return_dict_in_generate=True,
+                output_hidden_states=False,
+                return_dict_in_generate=False,
             )
 
-            if isinstance(predictor_result, torch.Tensor):
-                predictor_sequences = predictor_result
-            else:
-                predictor_sequences = getattr(predictor_result, "sequences", None)
-                if not isinstance(predictor_sequences, torch.Tensor):
-                    raise TypeError(
-                        "Code predictor generation output does not contain `sequences`."
-                    )
+            if not isinstance(predictor_result, torch.Tensor):
+                raise TypeError("Code predictor generation did not return token IDs.")
+            predictor_sequences = predictor_result
 
             codec_ids = torch.cat((input_ids, predictor_sequences), dim=-1)
             codec_hiddens = torch.cat(
@@ -588,17 +616,16 @@ class Qwen3TTSTalkerForConditionalGeneration(
             past_seen_tokens = (
                 past_key_values.get_seq_length() if past_key_values is not None else 0
             )
-            if past_seen_tokens == 0 or self.rope_deltas is None:
+            if past_seen_tokens == 0 or rope_deltas is None:
                 delta0 = (1 - attention_mask).sum(dim=-1).unsqueeze(1)
                 position_ids, rope_deltas = self.get_rope_index(
                     attention_mask,
                 )
                 rope_deltas = rope_deltas - delta0
-                self.rope_deltas = rope_deltas
             else:
                 batch_size = inputs_embeds.shape[0]
                 seq_length = inputs_embeds.shape[1]
-                delta = past_seen_tokens + self.rope_deltas
+                delta = past_seen_tokens + rope_deltas
                 position_ids = torch.arange(seq_length, device=inputs_embeds.device)
                 position_ids = position_ids.view(1, -1).expand(batch_size, -1)
                 position_ids = position_ids.add(delta)
@@ -651,6 +678,7 @@ class Qwen3TTSTalkerForConditionalGeneration(
             attentions=outputs.attentions,
             past_hidden=hidden_states[:, -1:, :],
             generation_step=generation_step_value + 1,
+            rope_deltas=rope_deltas,
             trailing_text_hidden=trailing_text_hidden,
             tts_pad_embed=tts_pad_embed,
         )
@@ -723,15 +751,31 @@ class Qwen3TTSTalkerForConditionalGeneration(
         is_encoder_decoder: bool = False,
         num_new_tokens: int = 1,
     ) -> dict[str, object]:
+        talker_outputs = cast(Qwen3TTSTalkerOutputWithPast, outputs)
+        frame_callback = model_kwargs.get("codec_frame_callback")
+        hidden_states = talker_outputs.hidden_states
+        codec_ids = hidden_states[1] if hidden_states is not None else None
+        if codec_ids is not None and frame_callback is not None:
+            if not callable(frame_callback):
+                raise TypeError("`codec_frame_callback` must be callable.")
+            aligned_hidden = model_kwargs.get("past_hidden")
+            if not isinstance(aligned_hidden, torch.Tensor):
+                raise TypeError(
+                    "Talker codec frame does not have an aligned hidden state."
+                )
+            cast(Callable[[torch.Tensor, torch.Tensor], None], frame_callback)(
+                codec_ids, aligned_hidden
+            )
+
         model_kwargs = cast(
             dict[str, object],
             super()._update_model_kwargs_for_generation(
                 outputs, model_kwargs, is_encoder_decoder, num_new_tokens
             ),
         )
-        talker_outputs = cast(Qwen3TTSTalkerOutputWithPast, outputs)
         model_kwargs["past_hidden"] = talker_outputs.past_hidden
         model_kwargs["generation_step"] = talker_outputs.generation_step
+        model_kwargs["rope_deltas"] = talker_outputs.rope_deltas
         model_kwargs["trailing_text_hidden"] = talker_outputs.trailing_text_hidden
         model_kwargs["tts_pad_embed"] = talker_outputs.tts_pad_embed
         return model_kwargs

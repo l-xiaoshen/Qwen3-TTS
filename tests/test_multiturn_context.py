@@ -1,4 +1,5 @@
 import unittest
+from collections.abc import Callable
 
 import torch
 from typing_extensions import override
@@ -46,6 +47,7 @@ class _GenerationHarness(Qwen3TTSGenerationSingleMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
+        codec_frame_callback: Callable[[torch.Tensor], None] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, bool]:
         _ = (
             trailing_text_hidden,
@@ -59,6 +61,7 @@ class _GenerationHarness(Qwen3TTSGenerationSingleMixin):
             subtalker_configuration,
             eos_token_id,
             repetition_penalty,
+            codec_frame_callback,
         )
         self.calls.append([int(block.item()) for block in talker_input_embeds])
         self.turn_index += 1

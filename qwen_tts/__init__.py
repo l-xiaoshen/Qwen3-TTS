@@ -24,6 +24,8 @@ from .inference.qwen3_tts_base_model import (
     TTSBatchInput,
     TTSInput,
     TTSInputItem,
+    TTSStream,
+    TTSStreamChunk,
 )
 from .inference.qwen3_tts_custom_voice_model import (
     CustomVoicePromptItem,
@@ -54,5 +56,7 @@ __all__ = [
     "TTSBatchInput",
     "TTSInput",
     "TTSInputItem",
+    "TTSStream",
+    "TTSStreamChunk",
     "VoiceClonePromptItem",
 ]

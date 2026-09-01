@@ -159,6 +159,14 @@ class TransformersV5MigrationTest(unittest.TestCase):
         model = Qwen3TTSTalkerForConditionalGeneration(
             self.talker_config(predictor_config)
         ).eval()
+        streamed_frames: list[torch.Tensor] = []
+        streamed_aligned_hidden: list[torch.Tensor] = []
+
+        def collect_streamed_frame(
+            frame: torch.Tensor, aligned_hidden: torch.Tensor
+        ) -> None:
+            streamed_frames.append(frame.detach().clone())
+            streamed_aligned_hidden.append(aligned_hidden.detach().clone())
 
         with torch.no_grad():
             result = model.generate(
@@ -172,10 +180,18 @@ class TransformersV5MigrationTest(unittest.TestCase):
                 eos_token_id=15,
                 output_hidden_states=True,
                 return_dict_in_generate=True,
+                codec_frame_callback=collect_streamed_frame,
             )
 
         self.assertEqual(tuple(result.sequences.shape), (1, 2))
         self.assertEqual(len(result.hidden_states), 2)
+        self.assertEqual(len(streamed_frames), 1)
+        self.assertEqual(tuple(streamed_frames[0].shape), (1, 2))
+        torch.testing.assert_close(streamed_frames[0], result.hidden_states[1][1])
+        torch.testing.assert_close(
+            streamed_aligned_hidden[0],
+            result.hidden_states[0][0][-1][:, -1:],
+        )
 
     def test_talker_repetition_penalty_with_embedded_prompt_does_not_warn(
         self,
@@ -186,6 +202,7 @@ class TransformersV5MigrationTest(unittest.TestCase):
         ).eval()
         generation = Qwen3TTSGenerationSingleMixin()
         generation.talker = model
+        streamed_frames: list[torch.Tensor] = []
 
         with warnings.catch_warnings(), torch.no_grad():
             warnings.filterwarnings(
@@ -206,10 +223,14 @@ class TransformersV5MigrationTest(unittest.TestCase):
                 subtalker_configuration=None,
                 eos_token_id=15,
                 repetition_penalty=1.05,
+                codec_frame_callback=lambda frame: streamed_frames.append(
+                    frame.detach().clone()
+                ),
             )
 
         self.assertEqual(tuple(talker_codes.shape), (1, 2))
         self.assertEqual(tuple(talker_hidden_states.shape), (1, 12))
+        torch.testing.assert_close(torch.cat(streamed_frames, dim=0), talker_codes)
 
     def test_v5_parallel_plans_and_tied_weights(self) -> None:
         predictor_config = self.predictor_config(

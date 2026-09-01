@@ -26,10 +26,14 @@ from ..core.models import (
 )
 from .qwen3_tts_base_model import (
     AudioLike,
+    CodecFrameCallback,
+    CodecTurnEndCallback,
     GenerationDefaults,
     Qwen3TTSBaseModel,
+    ResolvedGenerationOptions,
     TTSBatchInput,
     TTSInput,
+    TTSStream,
 )
 
 
@@ -67,6 +71,16 @@ VoiceClonePromptSingleInput = VoiceClonePromptSingleDict
 AudioBatchInput = list[AudioLike] | tuple[AudioLike, ...]
 StringBatchInput = list[str] | tuple[str, ...]
 BoolBatchInput = list[bool] | tuple[bool, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _VoiceCloneGenerationRequest:
+    input_ids: list[torch.Tensor]
+    instruct_ids: list[torch.Tensor | None]
+    language: str
+    prompt: VoiceClonePromptSingleDict
+    ref_id: torch.Tensor | None
+    generation_options: ResolvedGenerationOptions
 
 
 class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
@@ -247,6 +261,81 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
             icl_mode=prompt["icl_mode"],
         )
 
+    def _prepare_voice_clone_generation(
+        self,
+        tts_input: TTSInput,
+        language: str,
+        ref_audio: AudioLike | None,
+        ref_text: str,
+        x_vector_only_mode: bool,
+        voice_clone_prompt: VoiceClonePromptSingleInput | VoiceClonePromptItem | None,
+        do_sample: bool | None,
+        top_k: int | None,
+        top_p: float | None,
+        temperature: float | None,
+        repetition_penalty: float | None,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        max_new_tokens: int | None,
+        eos_token_id: int | None,
+    ) -> _VoiceCloneGenerationRequest:
+        chunks = self._normalize_tts_input(tts_input)
+        language_value = self._normalize_language_value(language)
+        self._validate_languages([language_value])
+
+        voice_clone_prompt_single: VoiceClonePromptSingleDict
+        ref_text_for_id: str
+        if voice_clone_prompt is None:
+            if ref_audio is None:
+                raise ValueError(
+                    "Either `voice_clone_prompt` or `ref_audio` must be provided."
+                )
+            prompt_items = self.create_voice_clone_prompt(
+                ref_audio=[ref_audio],
+                ref_text=[ref_text],
+                x_vector_only_mode=[x_vector_only_mode],
+            )
+            if len(prompt_items) != 1:
+                raise ValueError(
+                    "Single generation requires exactly one voice clone prompt item."
+                )
+            prompt_item = prompt_items[0]
+            voice_clone_prompt_single = self._prompt_item_to_voice_clone_prompt_single(
+                prompt_item
+            )
+            ref_text_for_id = prompt_item.ref_text
+        elif isinstance(voice_clone_prompt, VoiceClonePromptItem):
+            voice_clone_prompt_single = self._prompt_item_to_voice_clone_prompt_single(
+                voice_clone_prompt
+            )
+            ref_text_for_id = voice_clone_prompt.ref_text
+        else:
+            voice_clone_prompt_single = self._coerce_voice_clone_prompt_single(
+                voice_clone_prompt
+            )
+            ref_text_for_id = ref_text
+
+        if voice_clone_prompt_single["icl_mode"] and ref_text_for_id.strip() == "":
+            raise ValueError("`ref_text` is required for ICL voice clone prompts.")
+
+        input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
+        return _VoiceCloneGenerationRequest(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            language=language_value,
+            prompt=voice_clone_prompt_single,
+            ref_id=self._tokenize_ref_text(ref_text_for_id),
+            generation_options=self._resolve_generation_options(
+                do_sample=do_sample,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                subtalker_configuration=subtalker_configuration,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=eos_token_id,
+            ),
+        )
+
     @torch.no_grad()
     def generate_voice_clone(
         self,
@@ -274,51 +363,13 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("base", "generate_voice_clone")
 
-        chunks = self._normalize_tts_input(tts_input)
-        language_value = self._normalize_language_value(language)
-        self._validate_languages([language_value])
-
-        voice_clone_prompt_single: VoiceClonePromptSingleDict
-        ref_text_for_id: str
-        if voice_clone_prompt is None:
-            if ref_audio is None:
-                raise ValueError(
-                    "Either `voice_clone_prompt` or `ref_audio` must be provided."
-                )
-            prompt_items = self.create_voice_clone_prompt(
-                ref_audio=[ref_audio],
-                ref_text=[ref_text],
-                x_vector_only_mode=[x_vector_only_mode],
-            )
-            if len(prompt_items) != 1:
-                raise ValueError(
-                    "Single generation requires exactly one voice clone prompt item."
-                )
-            prompt_item = prompt_items[0]
-            voice_clone_prompt_single = self._prompt_item_to_voice_clone_prompt_single(
-                prompt_item
-            )
-            ref_text_for_id = prompt_item.ref_text
-        else:
-            if isinstance(voice_clone_prompt, VoiceClonePromptItem):
-                prompt_item = voice_clone_prompt
-                voice_clone_prompt_single = (
-                    self._prompt_item_to_voice_clone_prompt_single(prompt_item)
-                )
-                ref_text_for_id = prompt_item.ref_text
-            else:
-                voice_clone_prompt_single = self._coerce_voice_clone_prompt_single(
-                    voice_clone_prompt
-                )
-                ref_text_for_id = ref_text
-
-        if voice_clone_prompt_single["icl_mode"] and ref_text_for_id.strip() == "":
-            raise ValueError("`ref_text` is required for ICL voice clone prompts.")
-
-        input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
-        ref_id = self._tokenize_ref_text(ref_text_for_id)
-
-        generation_options = self._resolve_generation_options(
+        request = self._prepare_voice_clone_generation(
+            tts_input=tts_input,
+            language=language,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            x_vector_only_mode=x_vector_only_mode,
+            voice_clone_prompt=voice_clone_prompt,
             do_sample=do_sample,
             top_k=top_k,
             top_p=top_p,
@@ -330,22 +381,87 @@ class Qwen3TTSVoiceCloneModel(Qwen3TTSBaseModel):
         )
 
         talker_codes_list, _ = self.model.generate_voice_clone_turns(
-            input_ids=input_ids,
-            instruct_ids=instruct_ids,
-            ref_id=ref_id,
-            voice_clone_prompt=voice_clone_prompt_single,
-            language=language_value,
+            input_ids=request.input_ids,
+            instruct_ids=request.instruct_ids,
+            ref_id=request.ref_id,
+            voice_clone_prompt=request.prompt,
+            language=request.language,
             non_streaming_mode=non_streaming_mode,
-            **generation_options,
+            **request.generation_options,
         )
 
         return self._decode_talker_turns(
             talker_codes_list,
             prefix_code=(
-                voice_clone_prompt_single["ref_code"]
-                if voice_clone_prompt_single["icl_mode"]
-                else None
+                request.prompt["ref_code"] if request.prompt["icl_mode"] else None
             ),
+        )
+
+    @torch.no_grad()
+    def generate_voice_clone_stream(
+        self,
+        tts_input: TTSInput,
+        *,
+        language: str = "Auto",
+        ref_audio: AudioLike | None = None,
+        ref_text: str = "",
+        x_vector_only_mode: bool = False,
+        voice_clone_prompt: VoiceClonePromptSingleInput
+        | VoiceClonePromptItem
+        | None = None,
+        non_streaming_mode: bool = False,
+        codec_chunk_frames: int = 4,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
+    ) -> TTSStream:
+        """Yield fresh VoiceClone PCM while its Talker generation is running."""
+        self._ensure_model_type("base", "generate_voice_clone_stream")
+        self._require_live_speech_tokenizer()
+        request = self._prepare_voice_clone_generation(
+            tts_input=tts_input,
+            language=language,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            x_vector_only_mode=x_vector_only_mode,
+            voice_clone_prompt=voice_clone_prompt,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_configuration=subtalker_configuration,
+            max_new_tokens=max_new_tokens,
+            eos_token_id=eos_token_id,
+        )
+
+        def produce(
+            frame_callback: CodecFrameCallback,
+            turn_end_callback: CodecTurnEndCallback,
+        ) -> None:
+            self.model.generate_voice_clone_turns(
+                input_ids=request.input_ids,
+                instruct_ids=request.instruct_ids,
+                ref_id=request.ref_id,
+                voice_clone_prompt=request.prompt,
+                language=request.language,
+                non_streaming_mode=non_streaming_mode,
+                codec_frame_callback=frame_callback,
+                codec_turn_end_callback=turn_end_callback,
+                **request.generation_options,
+            )
+
+        return self._stream_talker_audio(
+            produce,
+            prefix_code=(
+                request.prompt["ref_code"] if request.prompt["icl_mode"] else None
+            ),
+            codec_chunk_frames=codec_chunk_frames,
         )
 
     @torch.no_grad()

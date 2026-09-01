@@ -178,7 +178,6 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             if eos_token_id is not None
             else self.talker.codec_special_token_ids.eos
         )
-
         # Transformers 5's generation protocol rejects official models too (transformers#44233).
         talker_result = self.talker.generate(  # ty: ignore[invalid-argument-type, missing-argument]
             inputs_embeds=talker_input_embeds_tensor,
@@ -188,9 +187,9 @@ class Qwen3TTSGenerationBatchMixin(Qwen3TTSGenerationCoreMixin):
             max_new_tokens=max_new_tokens,
             min_new_tokens=2,
             do_sample=do_sample,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
+            top_k=top_k if do_sample else None,
+            top_p=top_p if do_sample else None,
+            temperature=temperature if do_sample else None,
             subtalker_configuration=subtalker_configuration,
             eos_token_id=resolved_eos_token_id,
             repetition_penalty=None,

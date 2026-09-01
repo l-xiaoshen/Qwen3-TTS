@@ -27,11 +27,15 @@ from ..core.models import (
 )
 from .qwen3_tts_base_model import (
     AudioLike,
+    CodecFrameCallback,
+    CodecTurnEndCallback,
     GenerationDefaults,
     Qwen3TTSBaseModel,
+    ResolvedGenerationOptions,
     TTSBatchInput,
     TTSInput,
     TTSInputItem,
+    TTSStream,
 )
 
 
@@ -63,6 +67,18 @@ SpeakerBatchInput = (
     list[SpeakerConfiguration | torch.Tensor]
     | tuple[SpeakerConfiguration | torch.Tensor, ...]
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _CustomVoiceGenerationRequest:
+    input_ids: list[torch.Tensor]
+    instruct_ids: list[torch.Tensor | None]
+    language: str
+    speaker: SpeakerConfiguration | torch.Tensor
+    ref_code: torch.Tensor | None
+    ref_id: torch.Tensor | None
+    use_icl_prompt: bool
+    generation_options: ResolvedGenerationOptions
 
 
 class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
@@ -189,43 +205,31 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             ref_text=prompt["ref_text"],
         )
 
-    @torch.no_grad()
-    def generate_custom_voice(
+    def _prepare_custom_voice_generation(
         self,
         tts_input: TTSInput,
         speaker: SpeakerConfiguration | torch.Tensor,
-        *,
-        language: str = "Auto",
-        non_streaming_mode: bool = True,
-        do_sample: bool | None = None,
-        top_k: int | None = None,
-        top_p: float | None = None,
-        temperature: float | None = None,
-        repetition_penalty: float | None = None,
-        subtalker_configuration: SubTalkerConfiguration | None = None,
-        max_new_tokens: int | None = None,
-        eos_token_id: int | None = None,
-        ref_audio: AudioLike | None = None,
-        ref_text: str = "",
+        language: str,
+        do_sample: bool | None,
+        top_k: int | None,
+        top_p: float | None,
+        temperature: float | None,
+        repetition_penalty: float | None,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        max_new_tokens: int | None,
+        eos_token_id: int | None,
+        ref_audio: AudioLike | None,
+        ref_text: str,
         custom_voice_prompt: CustomVoicePromptSingleInput
         | CustomVoicePromptItem
-        | None = None,
-    ) -> tuple[list[np.ndarray], int]:
-        """
-        Generate one assistant waveform per turn in a shared CustomVoice
-        context. An ICL reference prompt can be layered on top through
-        `ref_audio`/`ref_text` or `custom_voice_prompt`.
-        """
-        self._ensure_model_type("custom_voice", "generate_custom_voice")
-
+        | None,
+    ) -> _CustomVoiceGenerationRequest:
         chunks = self._normalize_tts_input(tts_input)
         self._validate_chunk_instruction_support(chunks)
         language_value = self._normalize_language_value(language)
-        speaker_value = speaker
-
         self._validate_languages([language_value])
-        if not isinstance(speaker_value, torch.Tensor):
-            self._validate_speaker_configuration(speaker_value)
+        if not isinstance(speaker, torch.Tensor):
+            self._validate_speaker_configuration(speaker)
 
         custom_voice_prompt_single: CustomVoicePromptSingleDict | None = None
         ref_text_for_id = ""
@@ -258,9 +262,8 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
                     "`ref_text` is already included in `custom_voice_prompt`."
                 )
             if isinstance(custom_voice_prompt, CustomVoicePromptItem):
-                prompt_item = custom_voice_prompt
                 custom_voice_prompt_single = (
-                    self._prompt_item_to_custom_voice_prompt_single(prompt_item)
+                    self._prompt_item_to_custom_voice_prompt_single(custom_voice_prompt)
                 )
             else:
                 custom_voice_prompt_single = self._coerce_custom_voice_prompt_single(
@@ -269,9 +272,64 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             ref_text_for_id = custom_voice_prompt_single["ref_text"]
 
         input_ids, instruct_ids = self._tokenize_custom_voice_chunks(chunks)
-        ref_id = self._tokenize_ref_text(ref_text_for_id)
+        ref_code = (
+            custom_voice_prompt_single["ref_code"]
+            if custom_voice_prompt_single is not None
+            else None
+        )
+        return _CustomVoiceGenerationRequest(
+            input_ids=input_ids,
+            instruct_ids=instruct_ids,
+            language=language_value,
+            speaker=speaker,
+            ref_code=ref_code,
+            ref_id=self._tokenize_ref_text(ref_text_for_id),
+            use_icl_prompt=custom_voice_prompt_single is not None,
+            generation_options=self._resolve_generation_options(
+                do_sample=do_sample,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                subtalker_configuration=subtalker_configuration,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=eos_token_id,
+            ),
+        )
 
-        generation_options = self._resolve_generation_options(
+    @torch.no_grad()
+    def generate_custom_voice(
+        self,
+        tts_input: TTSInput,
+        speaker: SpeakerConfiguration | torch.Tensor,
+        *,
+        language: str = "Auto",
+        non_streaming_mode: bool = True,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
+        ref_audio: AudioLike | None = None,
+        ref_text: str = "",
+        custom_voice_prompt: CustomVoicePromptSingleInput
+        | CustomVoicePromptItem
+        | None = None,
+    ) -> tuple[list[np.ndarray], int]:
+        """
+        Generate one assistant waveform per turn in a shared CustomVoice
+        context. An ICL reference prompt can be layered on top through
+        `ref_audio`/`ref_text` or `custom_voice_prompt`.
+        """
+        self._ensure_model_type("custom_voice", "generate_custom_voice")
+
+        request = self._prepare_custom_voice_generation(
+            tts_input=tts_input,
+            speaker=speaker,
+            language=language,
             do_sample=do_sample,
             top_k=top_k,
             top_p=top_p,
@@ -280,28 +338,92 @@ class Qwen3TTSCustomVoiceModel(Qwen3TTSBaseModel):
             subtalker_configuration=subtalker_configuration,
             max_new_tokens=max_new_tokens,
             eos_token_id=eos_token_id,
-        )
-
-        ref_code = (
-            custom_voice_prompt_single["ref_code"]
-            if custom_voice_prompt_single is not None
-            else None
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            custom_voice_prompt=custom_voice_prompt,
         )
         talker_codes_list, _ = self.model.generate_custom_voice_turns(
-            input_ids=input_ids,
-            instruct_ids=instruct_ids,
-            language=language_value,
-            speaker=speaker_value,
-            ref_code=ref_code,
-            ref_id=ref_id,
-            use_icl_prompt=custom_voice_prompt_single is not None,
+            input_ids=request.input_ids,
+            instruct_ids=request.instruct_ids,
+            language=request.language,
+            speaker=request.speaker,
+            ref_code=request.ref_code,
+            ref_id=request.ref_id,
+            use_icl_prompt=request.use_icl_prompt,
             non_streaming_mode=non_streaming_mode,
-            **generation_options,
+            **request.generation_options,
         )
 
         return self._decode_talker_turns(
             talker_codes_list,
-            prefix_code=ref_code if custom_voice_prompt_single is not None else None,
+            prefix_code=request.ref_code if request.use_icl_prompt else None,
+        )
+
+    @torch.no_grad()
+    def generate_custom_voice_stream(
+        self,
+        tts_input: TTSInput,
+        speaker: SpeakerConfiguration | torch.Tensor,
+        *,
+        language: str = "Auto",
+        non_streaming_mode: bool = True,
+        codec_chunk_frames: int = 4,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
+        ref_audio: AudioLike | None = None,
+        ref_text: str = "",
+        custom_voice_prompt: CustomVoicePromptSingleInput
+        | CustomVoicePromptItem
+        | None = None,
+    ) -> TTSStream:
+        """Yield fresh CustomVoice PCM while its Talker generation is running."""
+        self._ensure_model_type("custom_voice", "generate_custom_voice_stream")
+        self._require_live_speech_tokenizer()
+        request = self._prepare_custom_voice_generation(
+            tts_input=tts_input,
+            speaker=speaker,
+            language=language,
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_configuration=subtalker_configuration,
+            max_new_tokens=max_new_tokens,
+            eos_token_id=eos_token_id,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            custom_voice_prompt=custom_voice_prompt,
+        )
+
+        def produce(
+            frame_callback: CodecFrameCallback,
+            turn_end_callback: CodecTurnEndCallback,
+        ) -> None:
+            self.model.generate_custom_voice_turns(
+                input_ids=request.input_ids,
+                instruct_ids=request.instruct_ids,
+                language=request.language,
+                speaker=request.speaker,
+                ref_code=request.ref_code,
+                ref_id=request.ref_id,
+                use_icl_prompt=request.use_icl_prompt,
+                non_streaming_mode=non_streaming_mode,
+                codec_frame_callback=frame_callback,
+                codec_turn_end_callback=turn_end_callback,
+                **request.generation_options,
+            )
+
+        return self._stream_talker_audio(
+            produce,
+            prefix_code=request.ref_code if request.use_icl_prompt else None,
+            codec_chunk_frames=codec_chunk_frames,
         )
 
     @torch.no_grad()

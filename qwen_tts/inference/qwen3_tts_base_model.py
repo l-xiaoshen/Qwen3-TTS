@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from queue import Empty, Full, Queue
+from threading import Event, Thread
 from typing import ClassVar, TypedDict, cast
 
 import numpy as np
@@ -21,7 +24,7 @@ import torch
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.auto.configuration_auto import AutoConfig
 from transformers.models.auto.processing_auto import AutoProcessor
-from typing_extensions import Self
+from typing_extensions import Self, override
 
 from qwen_tts.core import SpeakerConfiguration, SubTalkerConfiguration
 
@@ -50,6 +53,48 @@ class TTSInputItem(TypedDict):
 
 TTSInput = list[TTSInputItem] | tuple[TTSInputItem, ...]
 TTSBatchInput = list[TTSInput] | tuple[TTSInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TTSStreamChunk:
+    """One fresh waveform chunk emitted while the Talker is still generating."""
+
+    waveform: np.ndarray
+    sample_rate: int
+    turn_index: int
+
+
+class TTSStream(Iterator[TTSStreamChunk]):
+    """Closeable, context-managed iterator for one live TTS request."""
+
+    def __init__(self, iterator: Generator[TTSStreamChunk, None, None]) -> None:
+        self._iterator = iterator
+
+    @override
+    def __iter__(self) -> "TTSStream":
+        return self
+
+    @override
+    def __next__(self) -> TTSStreamChunk:
+        return next(self._iterator)
+
+    def close(self) -> None:
+        self._iterator.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+CodecFrameCallback = Callable[[int, torch.Tensor], None]
+CodecTurnEndCallback = Callable[[int], None]
+LiveTalkerProducer = Callable[[CodecFrameCallback, CodecTurnEndCallback], None]
+
+
+class _LiveStreamCancelled(Exception):
+    """Internal cooperative cancellation signal for a live generation worker."""
 
 
 class GenerationDefaults(TypedDict, total=False):
@@ -709,6 +754,157 @@ class Qwen3TTSBaseModel:
         if sample_rate is None:
             raise RuntimeError("Turn decoding produced no outputs.")
         return turn_wavs, sample_rate
+
+    def _stream_talker_audio(
+        self,
+        producer: LiveTalkerProducer,
+        *,
+        prefix_code: torch.Tensor | None = None,
+        codec_chunk_frames: int = 4,
+    ) -> TTSStream:
+        """Bridge blocking Talker generation to a bounded live PCM iterator."""
+        if (
+            not isinstance(codec_chunk_frames, int)
+            or isinstance(codec_chunk_frames, bool)
+            or codec_chunk_frames <= 0
+        ):
+            raise ValueError("`codec_chunk_frames` must be a positive integer.")
+
+        speech_tokenizer = self._require_live_speech_tokenizer()
+
+        def iterate() -> Generator[TTSStreamChunk, None, None]:
+            output_queue: Queue[TTSStreamChunk] = Queue(maxsize=2)
+            cancelled = Event()
+            finished = Event()
+            worker_error: list[BaseException] = []
+
+            def check_cancelled() -> None:
+                if cancelled.is_set():
+                    raise _LiveStreamCancelled
+
+            def put_chunk(chunk: TTSStreamChunk) -> None:
+                while True:
+                    check_cancelled()
+                    try:
+                        output_queue.put(chunk, timeout=0.1)
+                        return
+                    except Full:
+                        continue
+
+            def run() -> None:
+                pending_codes: list[torch.Tensor] = []
+                pending_turn_index: int | None = None
+                sample_rate: int | None = None
+
+                try:
+                    with torch.inference_mode():
+                        decode_stream = speech_tokenizer.create_decode_stream()
+                        if prefix_code is not None:
+                            check_cancelled()
+                            decode_stream.decode_chunk(prefix_code)
+
+                        def flush_pending(turn_index: int) -> None:
+                            nonlocal pending_turn_index, sample_rate
+                            check_cancelled()
+                            if pending_turn_index is None:
+                                return
+                            if pending_turn_index != turn_index:
+                                raise RuntimeError(
+                                    "Live codec turn callbacks arrived out of order."
+                                )
+
+                            fresh_codes = torch.cat(pending_codes, dim=0)
+                            pending_codes.clear()
+                            pending_turn_index = None
+                            waveform, current_sample_rate = decode_stream.decode_chunk(
+                                fresh_codes
+                            )
+                            if (
+                                sample_rate is not None
+                                and current_sample_rate != sample_rate
+                            ):
+                                raise RuntimeError(
+                                    "Decoded sample rates differ across live chunks."
+                                )
+                            sample_rate = current_sample_rate
+                            put_chunk(
+                                TTSStreamChunk(
+                                    waveform=waveform,
+                                    sample_rate=current_sample_rate,
+                                    turn_index=turn_index,
+                                )
+                            )
+
+                        def on_frame(turn_index: int, codec_ids: torch.Tensor) -> None:
+                            nonlocal pending_turn_index
+                            check_cancelled()
+                            if codec_ids.dim() != 2 or codec_ids.shape[0] != 1:
+                                raise ValueError(
+                                    "Live single-input generation requires codec frames "
+                                    "with shape (1, code_groups)."
+                                )
+                            if pending_turn_index is None:
+                                pending_turn_index = turn_index
+                            elif pending_turn_index != turn_index:
+                                raise RuntimeError(
+                                    "A live turn ended without flushing its codec frames."
+                                )
+
+                            pending_codes.append(codec_ids)
+                            if len(pending_codes) >= codec_chunk_frames:
+                                flush_pending(turn_index)
+
+                        def on_turn_end(turn_index: int) -> None:
+                            if pending_turn_index is not None:
+                                flush_pending(turn_index)
+
+                        producer(on_frame, on_turn_end)
+                        if pending_turn_index is not None:
+                            raise RuntimeError(
+                                "Talker generation ended without a turn-end callback."
+                            )
+                except _LiveStreamCancelled:
+                    pass
+                except BaseException as error:  # noqa: BLE001 - re-raised by consumer
+                    worker_error.append(error)
+                finally:
+                    finished.set()
+
+            worker = Thread(
+                target=run,
+                name="qwen3-tts-live-generation",
+                daemon=True,
+            )
+            worker.start()
+            try:
+                while True:
+                    try:
+                        yield output_queue.get(timeout=0.1)
+                    except Empty:
+                        if not finished.is_set():
+                            continue
+                        if worker_error:
+                            raise worker_error[0]
+                        return
+            finally:
+                cancelled.set()
+                while True:
+                    try:
+                        output_queue.get_nowait()
+                    except Empty:
+                        break
+                worker.join()
+
+        return TTSStream(iterate())
+
+    def _require_live_speech_tokenizer(self) -> Qwen3TTSTokenizer:
+        speech_tokenizer = self._require_speech_tokenizer()
+        if not speech_tokenizer.supports_incremental_decode():
+            raise NotImplementedError(
+                "Live waveform generation currently requires the stateful "
+                "Qwen3-TTS 12 Hz tokenizer."
+            )
+        return speech_tokenizer
 
     def _resolve_generation_options(
         self,

@@ -21,10 +21,14 @@ from ..core.models import (
     SubTalkerConfiguration,
 )
 from .qwen3_tts_base_model import (
+    CodecFrameCallback,
+    CodecTurnEndCallback,
     GenerationDefaults,
     Qwen3TTSBaseModel,
+    ResolvedGenerationOptions,
     TTSBatchInput,
     TTSInput,
+    TTSStream,
 )
 
 StringBatchInput = list[str] | tuple[str, ...]
@@ -41,6 +45,40 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         generate_defaults: GenerationDefaults | None = None,
     ) -> None:
         super().__init__(model, processor, generate_defaults)
+
+    def _prepare_voice_design_generation(
+        self,
+        tts_input: TTSInput,
+        language: str,
+        do_sample: bool | None,
+        top_k: int | None,
+        top_p: float | None,
+        temperature: float | None,
+        repetition_penalty: float | None,
+        subtalker_configuration: SubTalkerConfiguration | None,
+        max_new_tokens: int | None,
+        eos_token_id: int | None,
+    ) -> tuple[
+        list[torch.Tensor],
+        list[torch.Tensor | None],
+        str,
+        ResolvedGenerationOptions,
+    ]:
+        chunks = self._normalize_tts_input(tts_input)
+        language_value = self._normalize_language_value(language)
+        self._validate_languages([language_value])
+        input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
+        generation_options = self._resolve_generation_options(
+            do_sample=do_sample,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            subtalker_configuration=subtalker_configuration,
+            max_new_tokens=max_new_tokens,
+            eos_token_id=eos_token_id,
+        )
+        return input_ids, instruct_ids, language_value, generation_options
 
     @torch.no_grad()
     def generate_voice_design(
@@ -63,21 +101,19 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         """
         self._ensure_model_type("voice_design", "generate_voice_design")
 
-        chunks = self._normalize_tts_input(tts_input)
-        language_value = self._normalize_language_value(language)
-        self._validate_languages([language_value])
-
-        input_ids, instruct_ids = self._tokenize_tts_chunks(chunks)
-
-        generation_options = self._resolve_generation_options(
-            do_sample=do_sample,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
-            repetition_penalty=repetition_penalty,
-            subtalker_configuration=subtalker_configuration,
-            max_new_tokens=max_new_tokens,
-            eos_token_id=eos_token_id,
+        input_ids, instruct_ids, language_value, generation_options = (
+            self._prepare_voice_design_generation(
+                tts_input=tts_input,
+                language=language,
+                do_sample=do_sample,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                subtalker_configuration=subtalker_configuration,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=eos_token_id,
+            )
         )
 
         talker_codes_list, _ = self.model.generate_voice_design_turns(
@@ -89,6 +125,60 @@ class Qwen3TTSVoiceDesignModel(Qwen3TTSBaseModel):
         )
 
         return self._decode_talker_turns(talker_codes_list)
+
+    @torch.no_grad()
+    def generate_voice_design_stream(
+        self,
+        tts_input: TTSInput,
+        *,
+        language: str = "Auto",
+        non_streaming_mode: bool = True,
+        codec_chunk_frames: int = 4,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
+        subtalker_configuration: SubTalkerConfiguration | None = None,
+        max_new_tokens: int | None = None,
+        eos_token_id: int | None = None,
+    ) -> TTSStream:
+        """Yield fresh VoiceDesign PCM while its Talker generation is running."""
+        self._ensure_model_type("voice_design", "generate_voice_design_stream")
+        self._require_live_speech_tokenizer()
+        input_ids, instruct_ids, language_value, generation_options = (
+            self._prepare_voice_design_generation(
+                tts_input=tts_input,
+                language=language,
+                do_sample=do_sample,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                subtalker_configuration=subtalker_configuration,
+                max_new_tokens=max_new_tokens,
+                eos_token_id=eos_token_id,
+            )
+        )
+
+        def produce(
+            frame_callback: CodecFrameCallback,
+            turn_end_callback: CodecTurnEndCallback,
+        ) -> None:
+            self.model.generate_voice_design_turns(
+                input_ids=input_ids,
+                instruct_ids=instruct_ids,
+                language=language_value,
+                non_streaming_mode=non_streaming_mode,
+                codec_frame_callback=frame_callback,
+                codec_turn_end_callback=turn_end_callback,
+                **generation_options,
+            )
+
+        return self._stream_talker_audio(
+            produce,
+            codec_chunk_frames=codec_chunk_frames,
+        )
 
     @torch.no_grad()
     def generate_voice_design_batch(

@@ -14,7 +14,7 @@
 # limitations under the License.
 """Single-sample generation helpers without batch collation overhead."""
 
-from collections.abc import Sequence
+from collections.abc import Callable
 
 import torch
 
@@ -92,6 +92,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
+        codec_frame_callback: Callable[[torch.Tensor], None] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, bool]:
         if len(talker_input_embeds) == 0:
             raise RuntimeError(
@@ -109,6 +110,17 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             dtype=torch.long,
         )
 
+        talker_code_steps: list[torch.Tensor] = []
+        talker_hidden_steps: list[torch.Tensor] = []
+
+        def collect_frame(
+            codec_ids: torch.Tensor, aligned_hidden: torch.Tensor
+        ) -> None:
+            talker_code_steps.append(codec_ids)
+            talker_hidden_steps.append(aligned_hidden)
+            if codec_frame_callback is not None:
+                codec_frame_callback(codec_ids)
+
         # Transformers 5's generation protocol rejects official models too (transformers#44233).
         talker_result = self.talker.generate(  # ty: ignore[invalid-argument-type, missing-argument]
             inputs_embeds=talker_input_embed,
@@ -118,38 +130,18 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             max_new_tokens=max_new_tokens,
             min_new_tokens=2,
             do_sample=do_sample,
-            top_k=top_k,
-            top_p=top_p,
-            temperature=temperature,
+            top_k=top_k if do_sample else None,
+            top_p=top_p if do_sample else None,
+            temperature=temperature if do_sample else None,
             subtalker_configuration=subtalker_configuration,
             eos_token_id=resolved_eos_token_id,
             repetition_penalty=None,
             logits_processor=self._build_talker_logits_processors(repetition_penalty),
             suppress_tokens=suppress_tokens,
-            output_hidden_states=True,
+            output_hidden_states=False,
             return_dict_in_generate=True,
+            codec_frame_callback=collect_frame,
         )
-
-        hidden_states = getattr(talker_result, "hidden_states", None)
-        if not isinstance(hidden_states, Sequence):
-            raise TypeError("Talker generate output does not contain `hidden_states`.")
-
-        talker_code_steps: list[torch.Tensor] = []
-        talker_hidden_steps: list[torch.Tensor] = []
-        for step in hidden_states:
-            if not isinstance(step, tuple) or len(step) == 0:
-                continue
-            codec_ids = step[-1]
-            if isinstance(codec_ids, torch.Tensor):
-                talker_code_steps.append(codec_ids)
-
-            text_hidden_states = step[0]
-            if (
-                isinstance(text_hidden_states, tuple)
-                and len(text_hidden_states) > 0
-                and isinstance(text_hidden_states[-1], torch.Tensor)
-            ):
-                talker_hidden_steps.append(text_hidden_states[-1][:, -1:])
 
         if len(talker_code_steps) == 0 or len(talker_hidden_steps) == 0:
             raise RuntimeError(
@@ -157,7 +149,7 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             )
 
         talker_codes = torch.stack(talker_code_steps, dim=1)
-        talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)[:, :-1]
+        talker_hidden_states = torch.cat(talker_hidden_steps, dim=1)
 
         first_codebook = talker_codes[0, :, 0]
         stop_positions = torch.nonzero(
@@ -238,6 +230,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
+        codec_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
+        codec_turn_end_callback: Callable[[int], None] | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         if not (len(input_ids) == len(instruct_ids) == len(prepared_prompts) != 0):
             raise ValueError("Structured generation turn counts must match.")
@@ -254,6 +248,15 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             self._append_instruct_embed_block(turn_embeddings, instruct_id)
             turn_embeddings.append(talker_input_embed)
 
+            turn_frame_callback: Callable[[torch.Tensor], None] | None = None
+            if codec_frame_callback is not None:
+
+                def turn_frame_callback(
+                    codec_ids: torch.Tensor,
+                    current_turn_index: int = turn_index,
+                ) -> None:
+                    codec_frame_callback(current_turn_index, codec_ids)
+
             talker_codes, talker_hidden_states, terminated = (
                 self._run_talker_generation(
                     talker_input_embeds=history_embeddings + turn_embeddings,
@@ -268,10 +271,13 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
                     subtalker_configuration=subtalker_configuration,
                     eos_token_id=eos_token_id,
                     repetition_penalty=repetition_penalty,
+                    codec_frame_callback=turn_frame_callback,
                 )
             )
             talker_codes_list.append(talker_codes)
             talker_hidden_states_list.append(talker_hidden_states)
+            if codec_turn_end_callback is not None:
+                codec_turn_end_callback(turn_index)
 
             if turn_index + 1 < len(prepared_prompts):
                 if not terminated:
@@ -318,6 +324,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
+        codec_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
+        codec_turn_end_callback: Callable[[int], None] | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         prepared_prompts = [
             self._prepare_standard_generation(
@@ -340,6 +348,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
+            codec_frame_callback=codec_frame_callback,
+            codec_turn_end_callback=codec_turn_end_callback,
         )
 
     def _generate_voice_clone_turns_from_ids(
@@ -360,6 +370,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
         subtalker_configuration: SubTalkerConfiguration | None,
         eos_token_id: int | None,
         repetition_penalty: float,
+        codec_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
+        codec_turn_end_callback: Callable[[int], None] | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         prepared_prompts = [
             self._prepare_voice_clone_generation(
@@ -385,6 +397,8 @@ class Qwen3TTSGenerationSingleMixin(Qwen3TTSGenerationCoreMixin):
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
+            codec_frame_callback=codec_frame_callback,
+            codec_turn_end_callback=codec_turn_end_callback,
         )
 
     def _generate_standard_from_ids(

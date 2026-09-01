@@ -1,6 +1,6 @@
 """Voice-design conditional-generation model for Qwen3 TTS."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import torch
@@ -64,6 +64,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
         subtalker_configuration: SubTalkerConfiguration | None = None,
         eos_token_id: int | None = None,
         repetition_penalty: float = 1.05,
+        codec_frame_callback: Callable[[int, torch.Tensor], None] | None = None,
+        codec_turn_end_callback: Callable[[int], None] | None = None,
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         input_ids = [
             self._validate_input_id(input_id)
@@ -91,6 +93,8 @@ class Qwen3TTSVoiceDesignForConditionalGeneration(Qwen3TTSConditionalGenerationB
             subtalker_configuration=subtalker_configuration,
             eos_token_id=eos_token_id,
             repetition_penalty=repetition_penalty,
+            codec_frame_callback=codec_frame_callback,
+            codec_turn_end_callback=codec_turn_end_callback,
         )
 
     @torch.no_grad()
